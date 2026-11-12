@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: capturekit
+
+jobs:
+  core:
+    name: core (cmake + ctest)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: Configure
+        run: cmake -S core -B build/core -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build/core --parallel
+      - name: Test
+        run: ctest --test-dir build/core --output-on-failure
+
+  python:
+    name: python (ruff + pytest)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: capturekit/tools
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.12"
+      - name: Install (locked)
+        run: uv sync --locked --extra dev
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: Test
+        run: uv run pytest
+      - name: CLI smoke
+        run: uv run ckit --version
+
+  android:
+    name: android (assemble + unit tests)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: capturekit/android
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive   # core/ is compiled via externalNativeBuild
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Assemble + unit tests
+        # AGP downloads the pinned NDK/CMake into the runner's SDK if missing.
+        run: ./gradlew assembleDebug testDebugUnitTest --console=plain
+
+  ios:
+    name: ios (swift build/test)
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: capturekit/ios
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: xcodebuild -version && swift --version
+      - name: swift build (macOS host)
+        run: swift build
+      - name: swift test (macOS host)
+        run: swift test
+      - name: Build for iOS Simulator
+        run: xcodebuild build -scheme CaptureKit -destination 'generic/platform=iOS Simulator' -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO

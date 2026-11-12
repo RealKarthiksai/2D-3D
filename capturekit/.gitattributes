@@ -1,0 +1,3 @@
+bench/fixtures/** filter=lfs diff=lfs merge=lfs -text
+bench/thermal/**/*.csv filter=lfs diff=lfs merge=lfs -text
+bench/fixtures/**/README.md -filter -diff -merge text
