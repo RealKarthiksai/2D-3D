@@ -170,7 +170,7 @@ def test_e6_pycolmap_sfm_eth3d(tmp_path):
     names = sorted(p.name for p in imgs.glob("*.JPG"))[:30]
     db = tmp_path / "db.db"
     opts = pycolmap.FeatureExtractionOptions()
-    opts.sift.max_image_size = 1600
+    opts.max_image_size = 1600  # pycolmap 4.2: on FeatureExtractionOptions, not .sift
     pycolmap.extract_features(
         db, imgs, image_names=names, extraction_options=opts, camera_mode=pycolmap.CameraMode.SINGLE
     )

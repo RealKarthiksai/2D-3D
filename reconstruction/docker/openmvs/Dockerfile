@@ -25,7 +25,16 @@ RUN git clone https://github.com/cdcseacave/VCG.git /src/vcglib \
  && git -C /src/vcglib checkout -q ${VCG_COMMIT}
 RUN git clone --branch ${OPENMVS_TAG} --depth 1 --recurse-submodules --shallow-submodules \
       https://github.com/cdcseacave/openMVS.git /src/openMVS \
- && test "$(git -C /src/openMVS rev-parse HEAD)" = "${OPENMVS_COMMIT}"
+ && test "$(git -C /src/openMVS rev-parse HEAD)" = "${OPENMVS_COMMIT}" \
+ && sed -i 's/COMPONENTS iostreams program_options system serialization/COMPONENTS iostreams program_options serialization/' \
+      /src/openMVS/CMakeLists.txt \
+ && sed -i 's/cv::IMWRITE_JPEGXL_QUALITY/640 \/* cv::IMWRITE_JPEGXL_QUALITY (OpenCV>=4.11) *\//' \
+      /src/openMVS/libs/Common/Types.inl
+# Source patches needed against Ubuntu 26.04 packages:
+# 1. Boost >= 1.89 (26.04 ships 1.90) has no boost_system CMake package:
+#    Boost.System is header-only, so the component is dropped from find_package.
+# 2. cv::IMWRITE_JPEGXL_QUALITY first appears in OpenCV 4.11; 26.04 ships 4.10. It is only
+#    used when *saving .jxl* images (never done by our pipeline); replaced by its value 640.
 
 RUN cmake -S /src/openMVS -B /src/build \
       -DCMAKE_BUILD_TYPE=Release \
