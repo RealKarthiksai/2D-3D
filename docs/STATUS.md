@@ -1,5 +1,7 @@
 # CaptureKit Part 1: status and what is needed from you
 
+See also [NEXT_SESSION.md](NEXT_SESSION.md) for the copy-paste start kit for a new conversation.
+
 Updated 2026-11-14 · branch `part1-phases` · last commit `93f20d6`
 
 ## 1. Overall progress
