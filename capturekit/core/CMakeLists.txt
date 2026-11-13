@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(CAPTUREKIT_BUILD_TESTS "Build capturekit_core unit tests" ${PROJECT_IS_TOP_LEVEL})
+option(CAPTUREKIT_BUILD_PYTHON "Build the _ckcore nanobind module" OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(CAPTUREKIT_THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/../third_party" CACHE PATH "third_party root")
 foreach(dep eigen sophus mcap/cpp/mcap/include)
@@ -21,6 +23,7 @@ add_subdirectory(geometry)
 add_subdirectory(bundle)
 add_subdirectory(quality)
 add_subdirectory(governor)
+add_subdirectory(util)
 
 target_include_directories(capturekit_core
   PUBLIC
@@ -33,6 +36,10 @@ target_include_directories(capturekit_core
 # Compression backends for MCAP (lz4/zstd) are not wired yet; disable until added.
 target_compile_definitions(capturekit_core PUBLIC MCAP_COMPRESSION_NO_LZ4 MCAP_COMPRESSION_NO_ZSTD)
 target_compile_features(capturekit_core PUBLIC cxx_std_20)
+
+if(CAPTUREKIT_BUILD_PYTHON)
+  add_subdirectory(bindings/python)
+endif()
 
 if(CAPTUREKIT_BUILD_TESTS)
   enable_testing()

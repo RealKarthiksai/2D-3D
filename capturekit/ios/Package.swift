@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "CaptureKit",
     platforms: [
-        .iOS(.v16),
+        .iOS(.v17),
         // macOS is declared only so `swift build` / `swift test` can run on a Mac host in CI.
         // The SDK itself targets iOS; ARKit/CoreMotion are linked on iOS only.
         .macOS(.v13),
@@ -29,6 +29,8 @@ let package = Package(
                 "Session/README.md", "ARAdapter/README.md", "Camera/README.md",
                 "Sensors/README.md", "Upload/README.md", "Platform/README.md", "UI/README.md",
             ],
+            // Swift 5 mode: AR/CoreMotion delegate callbacks are not yet annotated for strict concurrency.
+            swiftSettings: [.swiftLanguageMode(.v5)],
             linkerSettings: [
                 .linkedFramework("ARKit", .when(platforms: [.iOS])),
                 .linkedFramework("AVFoundation"),

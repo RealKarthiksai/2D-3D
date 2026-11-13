@@ -36,11 +36,15 @@ jobs:
         working-directory: capturekit/tools
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive   # _ckcore (C++ core bindings) is built from core/
       - uses: astral-sh/setup-uv@v10
         with:
           python-version: "3.12"
       - name: Install (locked)
         run: uv sync --locked --extra dev
+      - name: Build _ckcore
+        run: ../scripts/build_core_py.sh
       - name: Lint
         run: |
           uv run ruff check .
@@ -77,6 +81,8 @@ jobs:
         working-directory: capturekit/ios
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
       - name: Toolchain
         run: xcodebuild -version && swift --version
       - name: swift build (macOS host)
