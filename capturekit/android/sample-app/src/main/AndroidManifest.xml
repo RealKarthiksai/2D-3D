@@ -8,6 +8,7 @@
             </intent-filter>
         </activity>
         <activity android:name=".RecorderActivity" android:screenOrientation="landscape" />
+        <activity android:name=".CaptureActivity" android:screenOrientation="landscape" />
         <activity android:name=".ClockCheckActivity" android:screenOrientation="landscape" />
         <meta-data android:name="com.google.ar.core" android:value="required" />
     </application>

@@ -237,3 +237,32 @@ def quality_report_cmd(
             f"reg_uniform={r.get('sfm_uniform_same_count', {}).get('registration_rate', '-')} "
             f"hard={r['hard_reject_histogram']}"
         )
+
+
+@app.command("simulate-capture")
+def simulate_capture_cmd(
+    source: Path,
+    out: Path,
+    threaded: Annotated[bool, typer.Option(help="Use the core worker thread.")] = False,
+    kill_after: Annotated[
+        int | None, typer.Option(help="SIGKILL this process after N input events (crash test).")
+    ] = None,
+    config: Annotated[Path | None, typer.Option(help="Flat JSON session config.")] = None,
+) -> None:
+    """Replay a bundle through the real C API like a phone would; --kill-after simulates a crash."""
+    import json
+
+    from ckit.simulate import simulate
+
+    cfg = json.loads(config.read_text()) if config else None
+    _dump(simulate(source, out, cfg, threaded, kill_after))
+
+
+@app.command("recover")
+def recover_cmd(bundle: Path) -> None:
+    """Turn an interrupted session directory into a valid partial bundle (ck_recover)."""
+    from ckit.capi import recover
+
+    st, rep = recover(bundle)
+    _dump(rep)
+    raise typer.Exit(0 if st == 0 else 1)

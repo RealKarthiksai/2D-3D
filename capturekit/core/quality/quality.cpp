@@ -290,6 +290,20 @@ void FrameAnalyzer::finish(FrameMetrics& m, int tracking_state) {
   m.quality = m.hard_reject ? 0.0 : std::clamp(q, 0.0, 1.0);
 }
 
+std::optional<double> median_point_depth(const geometry::PoseWC& T, const float* xyz, size_t n) {
+  if (n < 10) return std::nullopt;
+  std::vector<double> z;
+  z.reserve(n);
+  auto inv = T.se3().inverse();
+  for (size_t i = 0; i < n; ++i) {
+    Eigen::Vector3d pc = inv * Eigen::Vector3d(xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]);
+    if (pc.z() > 0.2) z.push_back(pc.z());
+  }
+  if (z.size() < 10) return std::nullopt;
+  std::nth_element(z.begin(), z.begin() + long(z.size() / 2), z.end());
+  return z[z.size() / 2];
+}
+
 // ---- Keyframe selector ----
 bool KeyframeSelector::novel(const geometry::PoseWC& T) const {
   const double depth = depth_ > 0 ? depth_ : cfg_.scene_depth_m;
@@ -330,8 +344,13 @@ void KeyframeSelector::push(uint32_t id, int64_t t, const FrameMetrics& m, const
     }
     return;
   }
+  if (rate_scale_ <= 0) {
+    d.reasons |= kMinGap;
+    out.push_back(d);
+    return;
+  }
   if (have_kf_) {
-    if (t - kf_t_ < int64_t(cfg_.min_gap_ms * ms)) {
+    if (t - kf_t_ < int64_t(cfg_.min_gap_ms / rate_scale_ * ms)) {
       d.reasons |= kMinGap;
       out.push_back(d);
       return;

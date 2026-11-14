@@ -6,7 +6,7 @@ import android.os.Bundle
 import android.widget.Button
 import android.widget.LinearLayout
 
-/** Launcher: Phase 0 tools (raw recorder, clock check). */
+/** Launcher: capture session (Phase 6) and Phase 0 tools (raw recorder, clock check). */
 class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -15,6 +15,7 @@ class MainActivity : Activity() {
             text = label
             setOnClickListener { startActivity(Intent(this@MainActivity, cls)) }
         })
+        add("Capture (core session)", CaptureActivity::class.java)
         add("Raw recorder", RecorderActivity::class.java)
         add("Clock check", ClockCheckActivity::class.java)
         setContentView(root)

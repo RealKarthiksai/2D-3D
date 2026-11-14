@@ -28,6 +28,27 @@ jobs:
       - name: Test
         run: ctest --test-dir build/core --output-on-failure
 
+  core-sanitizers:
+    name: core (ASAN+UBSAN, TSAN on session)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: ASAN + UBSAN, all tests
+        run: |
+          cmake -S core -B build/asan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build/asan --parallel --target capturekit_core_tests
+          UBSAN_OPTIONS=halt_on_error=1 build/asan/tests/capturekit_core_tests
+      - name: TSAN, session tests x5
+        run: |
+          cmake -S core -B build/tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS="-fsanitize=thread" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+          cmake --build build/tsan --parallel --target capturekit_core_tests
+          TSAN_OPTIONS=halt_on_error=1 build/tsan/tests/capturekit_core_tests --gtest_filter='Session*' --gtest_repeat=5
+
   python:
     name: python (ruff + pytest)
     runs-on: ubuntu-24.04

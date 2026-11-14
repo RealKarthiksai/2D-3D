@@ -49,17 +49,8 @@ void QualitySink::on_gyro(const bundle::ImuSample& s) { gyro_.push(s.t_ns, s.v[0
 
 void QualitySink::on_points(const bundle::PointCloudRecord& p) {
   if (!have_pose_ || p.xyz.size() < 30) return;
-  // Median depth of sparse points in front of the camera -> selector novelty scale.
-  std::vector<double> z;
-  z.reserve(p.xyz.size() / 3);
-  auto inv = pose_.se3().inverse();
-  for (size_t i = 0; i + 2 < p.xyz.size(); i += 3) {
-    Eigen::Vector3d pc = inv * Eigen::Vector3d(p.xyz[i], p.xyz[i + 1], p.xyz[i + 2]);
-    if (pc.z() > 0.2) z.push_back(pc.z());
-  }
-  if (z.size() < 10) return;
-  std::nth_element(z.begin(), z.begin() + long(z.size() / 2), z.end());
-  selector_.set_scene_depth(std::clamp(z[z.size() / 2], 0.5, 6.0));
+  if (auto d = median_point_depth(pose_, p.xyz.data(), p.xyz.size() / 3))
+    selector_.set_scene_depth(std::clamp(*d, 0.5, 6.0));
 }
 
 void QualitySink::apply(const std::vector<KeyframeSelector::Decision>& ds) {

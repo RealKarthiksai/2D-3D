@@ -1,5 +1,24 @@
 // swift-tools-version:6.1
 import PackageDescription
+import Foundation
+
+// The C++ core (static library for iOS, built by scripts/build_core_ios.sh) is linked only when
+// CAPTUREKIT_CORE_LIB_DIR points at its folder. Without it the package builds exactly as before
+// (Raw recorder only), so host CI keeps working. See ios/README.md.
+let coreLibDir = ProcessInfo.processInfo.environment["CAPTUREKIT_CORE_LIB_DIR"]
+let withCore = coreLibDir != nil
+let coreTargets: [Target] = withCore ? [
+    .target(
+        name: "CCaptureKit",
+        path: "Sources/CCaptureKit",
+        cSettings: [.headerSearchPath("../../../core/include")],
+        linkerSettings: [
+            .unsafeFlags(["-L\(coreLibDir!)"]),
+            .linkedLibrary("capturekit_core"),
+            .linkedLibrary("c++"),
+        ]
+    ),
+] : []
 
 let package = Package(
     name: "CaptureKit",
@@ -17,10 +36,10 @@ let package = Package(
         .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.12.0"),
         .package(url: "https://github.com/getsentry/sentry-cocoa.git", exact: "9.34.0"),
     ],
-    targets: [
+    targets: coreTargets + [
         .target(
             name: "CaptureKit",
-            dependencies: [
+            dependencies: (withCore ? ["CCaptureKit"] : []) + [
                 .product(name: "TUSKit", package: "TUSKit"),
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Sentry", package: "sentry-cocoa"),

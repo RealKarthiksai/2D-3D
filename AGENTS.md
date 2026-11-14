@@ -23,7 +23,7 @@ You are a senior engineer on Part 1. Phases 0–12 in docs/phases/; state is in 
 ## Repo map (paths relative to repo root)
 | Path | Purpose | Entry |
 |---|---|---|
-| capturekit/core | C++20 core: geometry/ bundle/ quality/ governor/ (Eigen, Sophus, MCAP, nanobind) | core/CMakeLists.txt |
+| capturekit/core | C++20 core: geometry/ bundle/ quality/ governor/ replay/ session/ capi/ (Eigen, Sophus, MCAP, nanobind) | core/CMakeLists.txt |
 | capturekit/core/bindings | nanobind module | — |
 | capturekit/ios | Swift pkg CaptureKit (iOS 17+, TUSKit, GRDB, Sentry) + SampleApp | ios/Package.swift |
 | capturekit/android | Kotlin, ARCore, Room, WorkManager, NDK; :capturekit, :sample-app | android/settings.gradle* |

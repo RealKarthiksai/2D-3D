@@ -25,6 +25,8 @@ add_subdirectory(quality)
 add_subdirectory(governor)
 add_subdirectory(util)
 add_subdirectory(replay)
+add_subdirectory(session)
+add_subdirectory(capi)
 
 target_include_directories(capturekit_core
   PUBLIC
@@ -37,8 +39,23 @@ target_include_directories(capturekit_core
 # Compression backends for MCAP (lz4/zstd) are not wired yet; disable until added.
 target_compile_definitions(capturekit_core PUBLIC MCAP_COMPRESSION_NO_LZ4 MCAP_COMPRESSION_NO_ZSTD)
 target_compile_features(capturekit_core PUBLIC cxx_std_20)
+find_package(Threads REQUIRED)
+target_link_libraries(capturekit_core PUBLIC Threads::Threads)
+
+if(ANDROID)
+  # JNI bridge (dev.capturekit.nativebridge.CaptureKitNative), loaded as libcapturekit_jni.so.
+  add_library(capturekit_jni SHARED bindings/jni/ck_jni.cpp)
+  target_link_libraries(capturekit_jni PRIVATE capturekit_core log)
+  set_target_properties(capturekit_jni PROPERTIES CXX_VISIBILITY_PRESET hidden)
+endif()
 
 if(CAPTUREKIT_BUILD_PYTHON)
+  # The C API as a shared library: lets ckit drive the real C ABI through ctypes (simulated phone).
+  add_library(capturekit_capi SHARED capi/shared_stub.cpp)
+  add_dependencies(capturekit_capi capturekit_core)
+  target_link_libraries(capturekit_capi PRIVATE
+    "-Wl,--whole-archive" $<TARGET_FILE:capturekit_core> "-Wl,--no-whole-archive" Threads::Threads)
+  set_target_properties(capturekit_capi PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/py")
   add_subdirectory(bindings/python)
 endif()
 

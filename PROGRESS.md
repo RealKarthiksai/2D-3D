@@ -7,10 +7,11 @@ Program = 2 parts (docs/program-spec/README.md). This whole repo = Part 1 only (
 - Phase 2 geometry core: 28 C++ / 28 Py tests; reprojection_synth.json mean 0.59–1.01 px (bd78bcd).
 - Phase 3 replay harness: C++ ReplaySink + registry, ckit replay/replay-compare/replay-plot, golden replay CI (fb59838).
 - Phase 4 quality + keyframe selector: 1.43 ms/frame, 0 allocs, quality_synth report (7943988).
-- Phase 5 governor: ladder + hysteresis, governor sink, iOS/Android thermal adapters, soak protocol (PHASE5).
+- Phase 6 capture (software): C API + Session (state machine, bounded queues, keyframe handshake, recovery), JNI + Android capture/Room/CaptureActivity, iOS CaptureSession source (unverified), ctypes simulate-capture + SIGKILL tests, ASAN/UBSAN/TSAN clean (PHASE6). Device acceptance blocked.
+- Phase 5 governor: ladder + hysteresis, governor sink, iOS/Android thermal adapters, soak protocol (310d205).
 
 ## Decisions
-- capturekit/docs/decisions/0001 JPEG not video · 0002 synthetic golden stand-ins · 0003 intrinsics pixel centre (verify Phase 2) · 0004 /ar/points + /ar/planes channels · 0005 pixel centre via checkerboard · 0006 sharpness ratio · 0007 thermal mapping
+- capturekit/docs/decisions/0001 JPEG not video · 0002 synthetic golden stand-ins · 0003 intrinsics pixel centre (verify Phase 2) · 0004 /ar/points + /ar/planes channels · 0005 pixel centre via checkerboard · 0006 sharpness ratio · 0007 thermal mapping · 0008 shell encodes JPEGs · 0009 Android keyframes from ARCore CPU image
 
 ## Commands
 - C++: `cd capturekit && cmake -S core -B build/core && cmake --build build/core -j8 && ctest --test-dir build/core`
@@ -21,6 +22,8 @@ Program = 2 parts (docs/program-spec/README.md). This whole repo = Part 1 only (
 - COLMAP: `ckit export-colmap <bundle> <out>`; `ckit reprojection-report build/golden/bundles/G* --json capturekit/docs/reports/reprojection_synth.json` (~6 min)
 - Replay: `ckit replay <bundle> --sink metrics --seed N [faults]`; baselines `capturekit/scripts/replay_golden.sh [--update]`
 - Quality: `ckit quality-report <bundles> [--uniform] [--no-sfm]`; `ckit import-raw RAW OUT --select-keyframes`
+- Simulated phone: `ckit simulate-capture <bundle> <out> [--threaded] [--kill-after N]`; `ckit recover <dir>`
+- Sanitizers: see .github/workflows/ci.yml job core-sanitizers (cmake -fsanitize=address,undefined | thread)
 - Android: `cd capturekit/android && ANDROID_HOME=~/Android/Sdk ./gradlew assembleDebug testDebugUnitTest`
 
 ## Gotchas
@@ -33,7 +36,8 @@ Program = 2 parts (docs/program-spec/README.md). This whole repo = Part 1 only (
 - Planes: same-frame anchors get +1 ns each (per-channel strict monotonic t_ns).
 - /tmp has a per-user quota; VS Code cpptools cache fills it. Long outputs → capturekit/build/.
 - pycolmap DB image IDs are unordered (parallel extraction): export with DB IDs (colmap.py image_ids).
+- Sanitizers caught: enum param UB in C API (use int32_t), test operator-new hook vs ASAN.
 - iOS/Swift never compiled (no macOS): treat as unverified until CI macOS job runs.
 
 ## Next
-- Phase 6: C API + Session (state machine, bounded queues, recovery), JNI + Android capture, iOS sources.
+- Phase 7: finalize verdicts, dev-server verifier + failure tests, Android/iOS tus upload sources.

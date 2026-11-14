@@ -101,6 +101,10 @@ class ImuRing {
 double blur_risk_px(const ImuRing& gyro, int64_t t_ns, int64_t exposure_ns, double focal_px,
                     int64_t default_exposure_ns);
 
+/// Median depth (m) of sparse world points in front of the camera; nullopt if < 10 such points.
+std::optional<double> median_point_depth(const geometry::PoseWC& T_world_from_camera, const float* xyz,
+                                         size_t n_points);
+
 class FrameAnalyzer {
  public:
   explicit FrameAnalyzer(const QualityConfig& cfg) : cfg_(cfg) {}
@@ -134,6 +138,8 @@ class KeyframeSelector {
             const geometry::PoseWC& T_world_from_camera, std::vector<Decision>& out);
   void flush(std::vector<Decision>& out);
   void set_scene_depth(double metres) { depth_ = metres; }
+  /// Governor keyframe_rate_scale: min gap is divided by it; <= 0 stops new keyframes.
+  void set_rate_scale(double s) { rate_scale_ = s; }
   uint64_t keyframes() const { return n_kf_; }
 
  private:
@@ -144,7 +150,7 @@ class KeyframeSelector {
   void close_window(std::vector<Decision>& out);
   bool novel(const geometry::PoseWC& T) const;
   QualityConfig cfg_;
-  double depth_ = 0;
+  double depth_ = 0, rate_scale_ = 1.0;
   bool have_kf_ = false, window_ = false;
   geometry::PoseWC kf_pose_;
   int64_t kf_t_ = 0, window_t0_ = 0;

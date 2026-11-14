@@ -13,7 +13,15 @@
 #include "capturekit/quality/quality.hpp"
 
 // ---- Allocation counter (whole test binary; only read around the call under test) ----
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define CK_NO_ALLOC_HOOK 1  // sanitizers own operator new; the allocation test is skipped there
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define CK_NO_ALLOC_HOOK 1
+#endif
+#endif
 static std::atomic<long> g_allocs{0};
+#ifndef CK_NO_ALLOC_HOOK
 void* operator new(std::size_t n) {
   ++g_allocs;
   if (void* p = std::malloc(n ? n : 1)) return p;
@@ -21,6 +29,7 @@ void* operator new(std::size_t n) {
 }
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+#endif
 
 using namespace capturekit::quality;
 
@@ -281,6 +290,9 @@ TEST(QualityConfigTest, OverridesHashAndVersion) {
 
 // ---- Hot path constraints ----
 TEST(QualityPerf, NoHeapAllocationPerFrame) {
+#ifdef CK_NO_ALLOC_HOOK
+  GTEST_SKIP() << "allocation hook disabled under sanitizers";
+#endif
   FrameAnalyzer a(QualityConfig{});
   auto im = textured(1920, 1440);
   FrameMetrics m;
@@ -310,7 +322,7 @@ TEST(QualityPerf, DesktopProxyTiming) {
   std::printf("[ quality ] %.3f ms per 1920x1440 frame\n", ms);
   // Target <= 3 ms (phase 4). Shared CI runners are slower: enforce strictly only on request.
   const bool strict = std::getenv("CK_PERF_STRICT") != nullptr;
-#ifdef NDEBUG
+#if defined(NDEBUG) && !defined(CK_NO_ALLOC_HOOK)
   EXPECT_LT(ms, strict ? 3.0 : 15.0);
 #endif
 }
