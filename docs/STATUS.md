@@ -1,6 +1,6 @@
 # Part 1 (Intelligent Room Capture, `capturekit/`): status and what is needed from you
 
-The program now has two parts (see [program-spec/README.md](program-spec/README.md)). This file tracks Part 1 only; Part 2 (backend reconstruction) is not started.
+The program now has two parts (see [program-spec/README.md](program-spec/README.md)). This repository is Part 1 only; Part 2 (backend reconstruction) is built separately in `roomscan-recon`.
 
 See also [NEXT_SESSION.md](NEXT_SESSION.md) for the copy-paste start kit for a new conversation.
 

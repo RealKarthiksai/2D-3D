@@ -16,7 +16,7 @@ edits must stay out of every commit. Do not push.
 To work on a different phase, change the first line to "Do Phase N" and read `docs/phases/NN-*.md`.
 
 ## 2. State at hand-off
-- The program is two parts (docs/program-spec/README.md); this repo builds Part 1 only.
+- The program is two parts (docs/program-spec/README.md). This whole repository is Part 1 only; Part 2 is the separate repo `roomscan-recon`.
 - Branch `part1-phases`: `93f20d6` (Phase 0 + 1), `bd78bcd` (Phase 2).
 - Done: Phases 0–2 in software (verified on synthetic data). Phases 3–12 not started.
 - Full status and the list of things only the user can do: `docs/STATUS.md`.

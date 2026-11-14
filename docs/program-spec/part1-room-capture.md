@@ -5,7 +5,7 @@
 > capture quality and guides the user with specific instructions, asking them to revisit areas whenever more
 > information is needed. It produces a complete, validated Scan Bundle.
 
-Code name: **CaptureKit** (`capturekit/`). The guidance engine inside it is **GuideMind** (`capturekit/core/guide/`).
+**This whole repository is Part 1.** Code name: **CaptureKit** (`capturekit/`). The guidance engine inside it is **GuideMind** (`capturekit/core/guide/`).
 Part 1 ends when a validated Scan Bundle is verified on the server. Everything after that is Part 2.
 
 ## 1. Fixed constraints

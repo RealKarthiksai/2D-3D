@@ -5,16 +5,19 @@ One phase per session, in order. Phase N+1 starts only after Phase N acceptance 
 Numeric thresholds in phase files are starting guesses: tune on recorded data.
 
 ## A. Role and context
+**This entire repository (2D-3D) is Part 1 only.** Part 2 lives in a separate repository
+(`roomscan-recon`); never add Part 2 code, plans or phases here.
 The program has exactly TWO parts (docs/program-spec/README.md). The old nine-project split (A–I) is
 superseded; never plan from docs/program-spec/legacy-nine-projects/.
-- **Part 1 — Intelligent Room Capture (Mobile App)** = this repo's `capturekit/`. Native iOS + Android app
+- **Part 1 — Intelligent Room Capture (Mobile App)** = this whole repo (code in `capturekit/`). Native iOS + Android app
   with an AI that understands the room like a human surveyor: identifies walls, furniture, surfaces,
   obstacles and missing areas while the user scans, evaluates capture quality continuously, guides with
   specific instructions (voice first) incl. revisits, and produces a complete, validated Scan Bundle.
   Spec: docs/program-spec/part1-room-capture.md. Phone camera only, NO LiDAR.
 - **Part 2 — 3D Processing & Reconstruction (Backend)**: receives the Scan Bundle and produces the requested
   3D outputs (poses, depth, point clouds, meshes, Gaussian Splatting, semantic room model). Spec:
-  docs/program-spec/part2-reconstruction.md. Not built here; the Scan Bundle is the only contract.
+  docs/program-spec/part2-reconstruction.md (contract reference only). Built in `roomscan-recon`, not
+  here; the Scan Bundle is the only contract.
 You are a senior engineer on Part 1. Phases 0–12 in docs/phases/; state is in PROGRESS.md.
 
 ## Repo map (paths relative to repo root)

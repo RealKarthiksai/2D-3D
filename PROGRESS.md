@@ -1,5 +1,5 @@
 # PROGRESS
-Program = 2 parts (docs/program-spec/README.md). This repo = Part 1 (Intelligent Room Capture). Phases 0–12.
+Program = 2 parts (docs/program-spec/README.md). This whole repo = Part 1 only (Part 2 = separate repo roomscan-recon). Phases 0–12.
 
 ## Done
 - Scaffolding v0.0.1 (362a839).

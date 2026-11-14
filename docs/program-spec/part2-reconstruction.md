@@ -4,7 +4,8 @@
 > user's requirements. It handles geometry reconstruction, depth estimation, point clouds, meshes, Gaussian Splatting
 > and semantic room modelling, producing the required final 3D outputs.
 
-Status: not started in this branch. This file fixes the scope so Part 1 decisions stay compatible.
+**Not part of this repository.** Part 2 is built in the separate repository `roomscan-recon`. This file is kept
+here only as a contract reference, so Part 1 decisions (bundle, conventions) stay compatible.
 
 ## 1. Input contract
 - A Scan Bundle that Part 1's server verifier marked COMPLETE (`capturekit/spec/scanbundle/`, conventions.md).
