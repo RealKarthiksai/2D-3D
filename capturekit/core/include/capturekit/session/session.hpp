@@ -20,6 +20,7 @@
 #include "capturekit/bundle/stream_writer.hpp"
 #include "capturekit/bundle/validate.hpp"
 #include "capturekit/governor/governor.hpp"
+#include "capturekit/guide/engine.hpp"
 #include "capturekit/quality/quality.hpp"
 
 namespace capturekit::session {
@@ -41,6 +42,7 @@ struct SessionConfig {
   bundle::BundleMeta meta;
   quality::QualityConfig quality;
   governor::GovernorConfig governor;
+  guide::GuideParams guide;
   static std::optional<SessionConfig> from_json(std::string_view flat_json, std::string* err);
 };
 
@@ -126,6 +128,7 @@ class Session {
   void flush_ready(bool force_all);
   void expire_acks(int64_t now_t);
   void governor_step(int64_t t);
+  void guide_tick(int64_t t);
   void write_event(int64_t t, const std::string& source, const std::string& code, const std::string& msg,
                    std::vector<std::pair<std::string, std::string>> attrs = {});
   void emit(const std::string& json_line, bool critical);
@@ -159,6 +162,8 @@ class Session {
   quality::KeyframeSelector selector_;
   quality::ImuRing gyro_;
   governor::Governor governor_;
+  guide::GuideEngine guide_;
+  std::vector<guide::Instruction> instr_scratch_;
   governor::Signals signals_;
   mutable std::mutex pmu_;
   governor::Policy policy_;

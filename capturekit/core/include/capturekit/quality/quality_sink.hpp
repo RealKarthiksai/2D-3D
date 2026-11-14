@@ -1,6 +1,7 @@
 #pragma once
 // QualitySink: per-frame quality metrics + keyframe selection as a ReplaySink ("quality").
 // Config: QualityConfig keys plus "emit_frames" (1 = include per-frame records in the report).
+#include <functional>
 #include <map>
 #include <vector>
 
@@ -13,6 +14,11 @@ class QualitySink : public replay::ReplaySink {
  public:
   explicit QualitySink(const QualityConfig& cfg, bool emit_frames = false);
   static std::unique_ptr<replay::ReplaySink> create(const std::string& config_json);
+
+  /// Observers used by the guide sink: per-frame metrics (as soon as measured) and keyframe decisions.
+  using FrameCb = std::function<void(uint32_t frame_id, int64_t t_ns, const FrameMetrics&)>;
+  using KeyframeCb = std::function<void(uint32_t frame_id, int64_t t_ns, double sharpness_norm)>;
+  void set_observers(FrameCb f, KeyframeCb k) { frame_cb_ = std::move(f), keyframe_cb_ = std::move(k); }
 
   const char* name() const override { return "quality"; }
   bool needs_images() const override { return true; }
@@ -46,6 +52,8 @@ class QualitySink : public replay::ReplaySink {
   std::vector<Row> rows_;
   std::map<uint32_t, size_t> row_of_;
   std::vector<KeyframeSelector::Decision> decisions_;
+  FrameCb frame_cb_;
+  KeyframeCb keyframe_cb_;
   void apply(const std::vector<KeyframeSelector::Decision>& d);
 };
 

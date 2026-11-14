@@ -43,7 +43,8 @@
     "sinks": [
       "metrics",
       "quality",
-      "governor"
+      "governor",
+      "guide"
     ]
   },
   "schema": "ckit.replay/1",
@@ -90,6 +91,60 @@
           "reason": "thermal=2",
           "t_s": 2,
           "to": "LOWER_RESOLUTION"
+        }
+      ]
+    },
+    "guide": {
+      "engine": {
+        "coverage": {
+          "completeness": 0.2839,
+          "planes": 1,
+          "seen": 0.5243,
+          "valid_cells": 391
+        },
+        "log": {
+          "by_state": {
+            "ACTIVE": 1,
+            "COMPLETED": 1
+          },
+          "by_type": {
+            "HOLD_STILL": 1,
+            "SWEEP": 1
+          },
+          "instructions": 2,
+          "median_time_to_compliance_s": 0.533,
+          "plans": 8,
+          "plans_with_target": 1,
+          "repetition_rate": 0,
+          "target_switches": 0,
+          "unsafe_targets": 0
+        },
+        "nav": {
+          "floor_y": 0.021,
+          "free_cells": 129,
+          "obstacle_cells": 54,
+          "passable_cells": 129
+        },
+        "params_hash": "f6a8c2122d0421c2",
+        "planner": {
+          "switches": 0,
+          "target_gain": 0,
+          "target_x": 1.75,
+          "target_z": 0.55,
+          "targets_reached": 0
+        },
+        "tier": "B"
+      },
+      "first_instructions": [
+        {
+          "t_s": 1,
+          "text": "Hold still.",
+          "type": "HOLD_STILL"
+        },
+        {
+          "t_s": 3,
+          "text": "Turn slowly left to scan the room.",
+          "type": "SWEEP"
         }
       ]
     },

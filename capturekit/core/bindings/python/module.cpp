@@ -8,6 +8,7 @@ namespace nb = nanobind;
 void bind_bundle(nb::module_& m);
 void bind_geometry(nb::module_& m);
 void bind_replay(nb::module_& m);
+void bind_guide(nb::module_& m);
 
 NB_MODULE(_ckcore, m) {
   m.doc() = "CaptureKit core (C++20) bindings";
@@ -15,4 +16,5 @@ NB_MODULE(_ckcore, m) {
   bind_bundle(m);
   bind_geometry(m);
   bind_replay(m);
+  bind_guide(m);
 }

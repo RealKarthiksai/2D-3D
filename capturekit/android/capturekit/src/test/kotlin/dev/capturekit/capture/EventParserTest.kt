@@ -37,6 +37,15 @@ not json
     }
 
     @Test
+    fun instructionEvent() {
+        val e = EventParser.parseLine(
+            """{"haptic":"tap","id":7,"instruction":"MOVE_TO","long_text":"Walk ahead about 2 meters.","msg_id":"move.to","overlay_hint":"arrow:10:2","params":{"distance_m":2,"rel_bearing_deg":10},"priority":2,"speak_text":"Walk ahead, 2 meters.","t_ns":5,"type":"instruction"}""",
+        ) as CoreEvent.Instruction
+        assertEquals(7, e.id); assertEquals("MOVE_TO", e.type); assertEquals("Walk ahead, 2 meters.", e.speakText)
+        assertEquals(2, e.priority); assertEquals("tap", e.haptic); assertEquals("arrow:10:2", e.overlayHint)
+    }
+
+    @Test
     fun policyDecode() {
         val p = Policy.from(doubleArrayOf(3.0, 0.5, 0.25, 1.0, 0.0, 0.0, 0.0))
         assertEquals("LOWER_RESOLUTION", p.levelName)

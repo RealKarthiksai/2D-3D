@@ -41,6 +41,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
     @Volatile private var lastPolicy: Policy? = null
     @Volatile private var keyframes = 0
     @Volatile private var lastGovernor = "-"
+    @Volatile private var instruction = ""
     private var frames = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -93,13 +94,14 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         status.text = "tracking=$tracking  keyframes=$keyframes  quality=$lastQuality\n" +
             "policy=${p?.levelName ?: "-"} kf x${p?.keyframeRateScale ?: 1.0} res tier ${p?.resolutionTier ?: 0}" +
             (if (p?.mustPause == true) "  PAUSED: phone too hot/low battery" else "") +
-            "\ngovernor: $lastGovernor  dropped@edge=${session?.droppedAtEdge?.get() ?: 0}"
+            "\ngovernor: $lastGovernor  dropped@edge=${session?.droppedAtEdge?.get() ?: 0}\n» $instruction"
     }
 
     override fun onEvent(e: CoreEvent) {
         when (e) {
             is CoreEvent.FrameQuality -> lastQuality = "%.2f%s".format(e.quality, if (e.reasons.isEmpty()) "" else " " + e.reasons.joinToString(","))
             is CoreEvent.KeyframeRequest -> keyframes++
+            is CoreEvent.Instruction -> instruction = e.speakText
             is CoreEvent.Governor -> lastGovernor = "${e.from}->${e.to} (${e.reason})"
             else -> {}
         }

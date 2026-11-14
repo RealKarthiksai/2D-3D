@@ -57,6 +57,7 @@ void QualitySink::apply(const std::vector<KeyframeSelector::Decision>& ds) {
   for (auto& d : ds) {
     auto it = row_of_.find(d.frame_id);
     if (it == row_of_.end()) continue;
+    if (d.keyframe && !rows_[it->second].keyframe && keyframe_cb_) keyframe_cb_(d.frame_id, d.t_ns, rows_[it->second].m.sharpness_norm);
     rows_[it->second].keyframe = d.keyframe;
     rows_[it->second].decision_reasons = d.reasons;
   }
@@ -74,6 +75,7 @@ void QualitySink::on_frame(const replay::FrameView& f) {
   analyzer_.finish(m, have_pose_ ? state_ : 0);
   row_of_[f.frame_id] = rows_.size();
   rows_.push_back({f.frame_id, f.t_ns, m});
+  if (frame_cb_) frame_cb_(f.frame_id, f.t_ns, m);
   decisions_.clear();
   selector_.push(f.frame_id, f.t_ns, m, pose_, decisions_);
   apply(decisions_);

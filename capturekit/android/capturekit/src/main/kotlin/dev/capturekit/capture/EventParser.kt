@@ -7,6 +7,11 @@ sealed class CoreEvent {
     data class StateChange(val from: String, val to: String, val reason: String) : CoreEvent()
     data class FrameQuality(val frameId: Int, val quality: Double, val hardReject: Boolean, val reasons: List<String>) : CoreEvent()
     data class Governor(val from: String, val to: String, val reason: String) : CoreEvent()
+    /** A guidance instruction (Phase 8). Voice/overlay shells render it; params are in the raw line. */
+    data class Instruction(
+        val id: Int, val type: String, val speakText: String, val longText: String,
+        val priority: Int, val haptic: String, val overlayHint: String,
+    ) : CoreEvent()
     data class IngestDrop(val counts: Map<String, Long>) : CoreEvent()
     data class Other(val type: String, val raw: String) : CoreEvent()
 }
@@ -31,6 +36,11 @@ object EventParser {
                 line.contains("\"hard_reject\":true"),
                 Regex("\"reasons\":\\[([^\\]]*)]").find(line)?.groupValues?.get(1)
                     ?.split(',')?.map { it.trim().trim('"') }?.filter { it.isNotEmpty() } ?: emptyList(),
+            )
+            "instruction" -> CoreEvent.Instruction(
+                (num(line, "id") ?: return null).toInt(), str(line, "instruction") ?: "", str(line, "speak_text") ?: "",
+                str(line, "long_text") ?: "", (num(line, "priority") ?: 2.0).toInt(), str(line, "haptic") ?: "none",
+                str(line, "overlay_hint") ?: "",
             )
             "ingest_drop" -> CoreEvent.IngestDrop(
                 listOf("pose", "gyro", "accel", "intrinsics", "frame", "points", "plane", "platform")

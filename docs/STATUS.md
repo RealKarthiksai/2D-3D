@@ -91,3 +91,15 @@ cd android && ANDROID_HOME=~/Android/Sdk ./gradlew assembleDebug testDebugUnitTe
 
 ## 5. Next step on my side
 Phase 8 (guidance core) needs no hardware.
+
+## 6. Gate 0: real-device track (from the Phase 8-12 research plan; start now, needs you)
+Phase 8 thresholds were tuned on synthetic rooms and a simulated person, so they are hypotheses until real data exists:
+1. A macOS CI runner (or a Mac) to compile iOS: clears the biggest unknown (CaptureSession, ThermalAdapter, TusUploader never compiled).
+2. Run the Android capture screen and upload worker on two physical phones.
+3. Record the checkerboard sessions (closes ADR 0003) and >= 10 real rooms on 2-3 devices with the raw recorders; I replay them through
+   quality, keyframing, governor and guide, then retune (the keyframe selector lost to fixed spacing on some synthetic sessions).
+4. Send 3-5 real bundles to Part 2 and correlate guide coverage with reconstruction quality: this turns the sufficiency rule
+   (3 views, 15 deg, 75 deg incidence) from a guess into evidence.
+5. Install Polycam/Scaniverse and note what instructions, if any, they give (the plan found none by voice; confirm).
+Open questions to answer before Phase 9: does the bundle ever carry depth (LiDAR / ARCore Depth)? which phones are in scope (LiDAR iPhones only,
+or any iPhone plus broad Android)? which voice locales (English-India, Hindi, Telugu)? who owns legal review of consent and retention?

@@ -47,7 +47,7 @@ std::optional<SessionConfig> SessionConfig::from_json(std::string_view text, std
   if (text.empty()) text = "{}";
   auto obj = json::parse_flat(text, err);
   if (!obj) return std::nullopt;
-  json::Object q, g;
+  json::Object q, g, gd;
   auto num = [](const json::FlatValue& v) -> std::optional<double> {
     if (auto* d = std::get_if<double>(&v)) return *d;
     if (auto* b = std::get_if<bool>(&v)) return *b ? 1.0 : 0.0;
@@ -58,6 +58,7 @@ std::optional<SessionConfig> SessionConfig::from_json(std::string_view text, std
     auto* str = std::get_if<std::string>(&v);
     if (k.rfind("quality.", 0) == 0 && n) q.set(k.substr(8), *n);
     else if (k.rfind("governor.", 0) == 0 && n) g.set(k.substr(9), *n);
+    else if (k.rfind("guide.", 0) == 0 && n) gd.set(k.substr(6), *n);
     else if (k == "threaded" && n) c.threaded = *n != 0;
     else if (k == "frame_slots" && n) c.frame_slots = std::max(1, int(*n));
     else if (k == "queue_capacity" && n) c.queue_capacity = size_t(std::max(16.0, *n));
@@ -80,7 +81,9 @@ std::optional<SessionConfig> SessionConfig::from_json(std::string_view text, std
   }
   auto qc = quality::QualityConfig::from_json(q.dump(), err);
   auto gc = governor::GovernorConfig::from_json(g.dump(), err);
-  if (!qc || !gc) return std::nullopt;
+  auto gu = guide::GuideParams::from_json(gd.dump(), err);
+  if (!qc || !gc || !gu) return std::nullopt;
+  c.guide = *gu;
   c.quality = *qc;
   c.governor = *gc;
   return c;
@@ -88,7 +91,7 @@ std::optional<SessionConfig> SessionConfig::from_json(std::string_view text, std
 
 // ---- Construction ----
 Session::Session(const std::string& dir, const SessionConfig& cfg)
-    : dir_(dir), cfg_(cfg), analyzer_(cfg.quality), selector_(cfg.quality), governor_(cfg.governor) {
+    : dir_(dir), cfg_(cfg), analyzer_(cfg.quality), selector_(cfg.quality), governor_(cfg.governor), guide_(cfg.guide) {
   slots_.resize(size_t(cfg.frame_slots));
   for (int i = cfg.frame_slots - 1; i >= 0; --i) free_slots_.push_back(i);
   decisions_.reserve(64);
@@ -115,7 +118,9 @@ std::unique_ptr<Session> Session::create(const std::string& dir, const SessionCo
       .raw("quality_config", cfg.quality.to_json())
       .set("quality_config_hash", cfg.quality.hash())
       .set("quality_config_version", cfg.quality.version)
-      .raw("governor_config", cfg.governor.to_json());
+      .raw("governor_config", cfg.governor.to_json())
+      .raw("guide_config", cfg.guide.to_json())
+      .set("guide_config_hash", cfg.guide.hash());
   cfg.meta.capture_settings_json = settings.dump();
 
   std::unique_ptr<Session> s(new Session(dir, cfg));
@@ -360,6 +365,8 @@ void Session::process(Item& it) {
           normal_run_ = tracking_ == 1 ? normal_run_ + 1 : 0;
           if (state_.load() == State::Calibrating && normal_run_ >= cfg_.calib_normal_poses)
             set_state(State::Scanning, v.t_ns, "tracking_normal");
+          guide_.on_pose(v);
+          guide_tick(v.t_ns);
         } else if constexpr (std::is_same_v<T, Gyro>) {
           gyro_.push(v.s.t_ns, v.s.v[0], v.s.v[1], v.s.v[2]);
           writer_.write_gyro(v.s);
@@ -368,15 +375,18 @@ void Session::process(Item& it) {
         } else if constexpr (std::is_same_v<T, bundle::IntrinsicsSample>) {
           if (!first_intrinsics_) first_intrinsics_ = v;
           fx_ = v.fx;
+          guide_.on_intrinsics(v);
           writer_.write(v);
         } else if constexpr (std::is_same_v<T, FrameItem>) {
           on_frame(v);
         } else if constexpr (std::is_same_v<T, bundle::PointCloudRecord>) {
           writer_.write(v);
+          guide_.on_points(v);
           if (auto d = quality::median_point_depth(pose_, v.xyz.data(), v.xyz.size() / 3))
             selector_.set_scene_depth(std::clamp(*d, 0.5, 6.0));
         } else if constexpr (std::is_same_v<T, bundle::PlaneRecord>) {
           writer_.write(v);
+          guide_.on_plane(v);
         } else if constexpr (std::is_same_v<T, Platform>) {
           auto& s = v.s;
           if (s.thermal_level != signals_.thermal_level) {
@@ -461,6 +471,13 @@ void Session::on_frame(FrameItem& f) {
                                                     int64_t(cfg_.quality.default_exposure_ms * 1e6))
                            : std::nan("");
   analyzer_.finish(m, tracking_);
+  {
+    guide::FrameObs fo;
+    fo.t_ns = t, fo.frame_id = f.meta.frame_id, fo.hard_reject = m.hard_reject;
+    fo.motion_blur = (m.reasons & quality::kMotionBlur) != 0, fo.underexposed = (m.reasons & quality::kUnderexposed) != 0;
+    fo.sharpness_norm = m.sharpness_norm;
+    guide_.on_frame(fo);
+  }
 
   Pending p;
   auto& r = p.rec;
@@ -508,6 +525,7 @@ void Session::on_decisions(const std::vector<quality::KeyframeSelector::Decision
     p.rec.keyframe = d.keyframe;
     p.rec.reasons = quality::reason_codes(d.reasons);
     if (d.keyframe) {
+      guide_.on_keyframe(d.frame_id, d.t_ns, p.rec.sharpness_norm);
       char name[32];
       std::snprintf(name, sizeof name, "keyframes/%06u.jpg", next_keyframe_++);
       p.rec.file = name;
@@ -561,6 +579,7 @@ void Session::governor_step(int64_t t) {
     std::lock_guard<std::mutex> lk(pmu_);
     policy_ = pol;
   }
+  guide_.set_rate_scale(pol.ml_rate_scale > 0 ? pol.ml_rate_scale : 0.05);  // guidance is the first rung to slow down
   for (auto& tr : transitions_) {
     write_event(tr.t_ns, "governor", "GOVERNOR_LEVEL", tr.reason,
                 {{"from", governor::level_name(tr.from)}, {"to", governor::level_name(tr.to)}});
@@ -573,6 +592,23 @@ void Session::governor_step(int64_t t) {
   if (pol.must_pause && (st == State::Calibrating || st == State::Scanning)) {
     set_state(State::Paused, t, "governor");
     write_event(t, "session", "SESSION_PAUSED", "governor");
+  }
+}
+
+void Session::guide_tick(int64_t t) {
+  if (state_.load() == State::Paused) return;  // no guidance while paused (e.g. governor safe pause)
+  instr_scratch_.clear();
+  guide_.update(t, instr_scratch_);
+  for (auto& i : instr_scratch_) {
+    json::Object o;
+    std::vector<std::string> ps;
+    json::Object params;
+    for (auto& [k, v] : i.params) params.set(k, v);
+    o.set("type", "instruction").set("t_ns", t).set("id", int64_t(i.id)).set("instruction", guide::type_name(i.type))
+        .set("priority", i.priority).set("msg_id", i.msg_id).set("speak_text", i.speak_text).set("long_text", i.long_text)
+        .set("haptic", i.haptic).set("overlay_hint", i.overlay_hint).raw("params", params.dump());
+    emit(o.dump(), true);
+    write_event(t, "guide", "GUIDE_INSTRUCTION", i.speak_text, {{"instruction", guide::type_name(i.type)}, {"id", std::to_string(i.id)}});
   }
 }
 
@@ -643,6 +679,10 @@ Status Session::finalize() {
   if (!bundle::write_camera_json(dir_, *first_intrinsics_, meta)) {
     set_state(State::Failed, last_t_, "camera.json");
     return Status::ErrIo;
+  }
+  {
+    std::ofstream gl(fs::path(dir_) / "guidance_log.json", std::ios::binary | std::ios::trunc);
+    gl << guide_.guidance_log_json() << "\n";
   }
   auto files = bundle::list_files(dir_);
   if (!bundle::write_manifest(dir_, meta, counts, files)) {

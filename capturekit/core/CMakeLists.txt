@@ -25,6 +25,7 @@ add_subdirectory(quality)
 add_subdirectory(governor)
 add_subdirectory(util)
 add_subdirectory(replay)
+add_subdirectory(guide)
 add_subdirectory(session)
 add_subdirectory(capi)
 

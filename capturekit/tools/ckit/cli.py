@@ -316,3 +316,50 @@ def upload_cmd(
     _dump({"status": res.status, "reason": res.reason, "repaired": res.repaired,
            "retries": res.retries, "deleted_local": deleted})  # fmt: skip
     raise typer.Exit(0 if res.status in ("COMPLETE", "UPLOADED") else 1)
+
+
+@app.command("guide-eval")
+def guide_eval_cmd(
+    bundles: Annotated[
+        list[Path] | None, typer.Argument(help="Replay these bundles instead.")
+    ] = None,
+    rooms: Annotated[str, typer.Option(help="comma list: box,L,furniture")] = "box,L,furniture",
+    policies: Annotated[
+        str, typer.Option(help="comma list: planner,scripted,wander")
+    ] = "planner,scripted,wander",
+    seeds: int = 3,
+    max_s: Annotated[float, typer.Option(help="Simulated seconds per run.")] = 450.0,
+    params: Annotated[str, typer.Option(help="Flat JSON GuideParams overrides.")] = "{}",
+    compliance: float = 0.85,
+    workers: int = 6,
+    json_out: Annotated[Path | None, typer.Option("--json", help="Write JSON report here.")] = None,
+) -> None:
+    """Does guidance help? Simulated walkers (planner/scripted/wander) or guidance on bundles."""
+    import json
+
+    from ckit.guide_eval import replay_bundle, simulate_matrix, table
+
+    p = json.loads(params)
+    if bundles:
+        rows = [replay_bundle(b, p) for b in bundles]
+        rep = {"bundles": rows}
+        for r in rows:
+            typer.echo(
+                f"{r['bundle']:<16} tier={r['tier']} coverage={r['coverage_completeness']} "
+                f"instructions={r['instructions']} repetition={r['repetition_rate']} "
+                f"unsafe={r['unsafe_targets']}"
+            )
+    else:
+        rep = simulate_matrix(
+            tuple(rooms.split(",")),
+            tuple(policies.split(",")),
+            seeds,
+            max_s,
+            p,
+            compliance,
+            workers=workers,
+        )
+        typer.echo(table(rep))
+    if json_out:
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(json.dumps(rep, indent=2, sort_keys=True) + "\n")

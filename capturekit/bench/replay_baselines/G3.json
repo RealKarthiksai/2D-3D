@@ -43,7 +43,8 @@
     "sinks": [
       "metrics",
       "quality",
-      "governor"
+      "governor",
+      "guide"
     ]
   },
   "schema": "ckit.replay/1",
@@ -90,6 +91,66 @@
           "reason": "thermal=2",
           "t_s": 2,
           "to": "LOWER_RESOLUTION"
+        }
+      ]
+    },
+    "guide": {
+      "engine": {
+        "coverage": {
+          "completeness": 0,
+          "planes": 4,
+          "seen": 0.0543,
+          "valid_cells": 5024
+        },
+        "log": {
+          "by_state": {
+            "ACTIVE": 1,
+            "COMPLETED": 2
+          },
+          "by_type": {
+            "HOLD_STILL": 1,
+            "ROTATE_TOWARD": 1,
+            "SLOW_DOWN": 1
+          },
+          "instructions": 3,
+          "median_time_to_compliance_s": 1.4,
+          "plans": 8,
+          "plans_with_target": 4,
+          "repetition_rate": 0,
+          "target_switches": 1,
+          "unsafe_targets": 0
+        },
+        "nav": {
+          "floor_y": 0,
+          "free_cells": 1097,
+          "obstacle_cells": 170,
+          "passable_cells": 1097
+        },
+        "params_hash": "f6a8c2122d0421c2",
+        "planner": {
+          "switches": 1,
+          "target_gain": 141,
+          "target_x": 1.05,
+          "target_z": 5.55,
+          "targets_reached": 0
+        },
+        "tier": "B"
+      },
+      "first_instructions": [
+        {
+          "t_s": 1,
+          "text": "Hold still.",
+          "type": "HOLD_STILL"
+        },
+        {
+          "t_s": 1.533,
+          "text": "Slow down.",
+          "type": "SLOW_DOWN"
+        },
+        {
+          "t_s": 2.933,
+          "text": "Turn right toward the unscanned area.",
+          "type": "ROTATE_TOWARD"
         }
       ]
     },

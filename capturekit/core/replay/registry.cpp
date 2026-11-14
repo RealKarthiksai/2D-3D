@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "capturekit/governor/governor_sink.hpp"
+#include "capturekit/guide/guide_sink.hpp"
 #include "capturekit/quality/quality_sink.hpp"
 #include "capturekit/replay/metrics_sink.hpp"
 #include "capturekit/replay/sink.hpp"
@@ -17,6 +18,7 @@ const std::map<std::string, Factory>& registry() {
       {"metrics", [](const std::string&) { return std::make_unique<MetricsSink>(); }},
       {"quality", [](const std::string& c) { return quality::QualitySink::create(c); }},
       {"governor", [](const std::string& c) { return governor::GovernorSink::create(c); }},
+      {"guide", [](const std::string& c) { return guide::GuideSink::create(c); }},
   };
   return r;
 }

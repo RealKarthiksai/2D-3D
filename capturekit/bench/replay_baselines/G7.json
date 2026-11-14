@@ -43,7 +43,8 @@
     "sinks": [
       "metrics",
       "quality",
-      "governor"
+      "governor",
+      "guide"
     ]
   },
   "schema": "ckit.replay/1",
@@ -90,6 +91,60 @@
           "reason": "thermal=2",
           "t_s": 2,
           "to": "LOWER_RESOLUTION"
+        }
+      ]
+    },
+    "guide": {
+      "engine": {
+        "coverage": {
+          "completeness": 0,
+          "planes": 5,
+          "seen": 0.1581,
+          "valid_cells": 2972
+        },
+        "log": {
+          "by_state": {
+            "ACTIVE": 1,
+            "COMPLETED": 1
+          },
+          "by_type": {
+            "ROTATE_TOWARD": 1,
+            "SLOW_DOWN": 1
+          },
+          "instructions": 2,
+          "median_time_to_compliance_s": 2.1,
+          "plans": 8,
+          "plans_with_target": 4,
+          "repetition_rate": 0,
+          "target_switches": 2,
+          "unsafe_targets": 0
+        },
+        "nav": {
+          "floor_y": 0,
+          "free_cells": 378,
+          "obstacle_cells": 145,
+          "passable_cells": 378
+        },
+        "params_hash": "f6a8c2122d0421c2",
+        "planner": {
+          "switches": 2,
+          "target_gain": 132,
+          "target_x": 3.05,
+          "target_z": 1.55,
+          "targets_reached": 0
+        },
+        "tier": "B"
+      },
+      "first_instructions": [
+        {
+          "t_s": 0.933,
+          "text": "Slow down.",
+          "type": "SLOW_DOWN"
+        },
+        {
+          "t_s": 3.033,
+          "text": "Turn around toward the unscanned area.",
+          "type": "ROTATE_TOWARD"
         }
       ]
     },
