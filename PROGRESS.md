@@ -1,9 +1,10 @@
 # PROGRESS
+Program = 2 parts (docs/program-spec/README.md). This repo = Part 1 (Intelligent Room Capture). Phases 0–12.
 
 ## Done
 - Scaffolding v0.0.1 (362a839).
 - Phase 0 software + Phase 1 complete on synthetic data (93f20d6). Device acceptance open; see docs/STATUS.md §3.
-- Phase 2 geometry core: 28 C++ / 28 Py tests; reprojection_synth.json mean 0.59–1.01 px (PHASE2_COMMIT).
+- Phase 2 geometry core: 28 C++ / 28 Py tests; reprojection_synth.json mean 0.59–1.01 px (bd78bcd).
 
 ## Decisions
 - capturekit/docs/decisions/0001 JPEG not video · 0002 synthetic golden stand-ins · 0003 intrinsics pixel centre (verify Phase 2) · 0004 /ar/points + /ar/planes channels · 0005 pixel centre via checkerboard
@@ -18,7 +19,7 @@
 - Android: `cd capturekit/android && ANDROID_HOME=~/Android/Sdk ./gradlew assembleDebug testDebugUnitTest`
 
 ## Gotchas
-- Spec docs: docs/program-spec/room-scanner-program/ (untracked; ask user before committing).
+- Specs: docs/program-spec/part1-room-capture.md (+ part2 for the contract). Old A–I docs in legacy-nine-projects/ (untracked, superseded).
 - User's staged `reconstruction/` deletions + README edits: never include; commit with `git commit -- <paths>`.
 - MCAP C++ indexed reader hangs on unfinalized files → stream_reader uses TypedRecordReader linear scan.
 - Signed int overflow in test loops (i*33'000'000) = UB → infinite loop in Release. Use int64_t.

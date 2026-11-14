@@ -1,6 +1,6 @@
 # CaptureKit
 
-CaptureKit is "Project A" of the Room Scanner Program: a cross-platform phone SDK
+CaptureKit is Part 1 (Intelligent Room Capture) of the two-part Room Scanner Program: a cross-platform phone SDK
 (iOS: Swift + ARKit, Android: Kotlin + ARCore, with a shared C++20 core) that records
 video, camera poses, IMU and exposure metadata, packages them as a versioned **Scan Bundle**
 (`manifest.json` + `video.mp4` + `streams.mcap` + `camera.json` + checksums), and uploads

@@ -3,11 +3,11 @@
 ## 1. Paste this as the first message of the new conversation
 
 ```
-Do Phase 2 (geometry core) on branch part1-phases.
-Read AGENTS.md, docs/phases/02-geometry-core.md and PROGRESS.md only. Then continue
-through the next phases in order (3, 4, 5, then the C++/C-API/server parts of 6, 7, 8, 9)
+Do Phase 3 (replay harness) on branch part1-phases.
+Read AGENTS.md, docs/phases/03-replay-harness.md and PROGRESS.md only. Then continue
+through the next phases in order (4, 5, then the C++/C-API/server/Android parts of 6–12)
 using the repo rules in AGENTS.md. Skip anything that needs phones, a Mac or people and
-list it under "blocked" in docs/STATUS.md instead. Tests first for Phases 2, 4, 5. Run
+list it under "blocked" in docs/STATUS.md instead. Tests first for Phases 4, 5, 9, 10. Run
 each phase's acceptance checks for real before reporting. Commit only your own paths
 (`git commit -- <paths>`): the user's staged reconstruction/ deletions and README.md
 edits must stay out of every commit. Do not push.
@@ -16,8 +16,9 @@ edits must stay out of every commit. Do not push.
 To work on a different phase, change the first line to "Do Phase N" and read `docs/phases/NN-*.md`.
 
 ## 2. State at hand-off
-- Branch `part1-phases`, last commits `93f20d6` (Phase 0 + 1) and `732e243` (status docs).
-- Done: Phase 0 software, Phase 1 (verified on synthetic data). Phases 2–9 not started.
+- The program is two parts (docs/program-spec/README.md); this repo builds Part 1 only.
+- Branch `part1-phases`: `93f20d6` (Phase 0 + 1), `bd78bcd` (Phase 2).
+- Done: Phases 0–2 in software (verified on synthetic data). Phases 3–12 not started.
 - Full status and the list of things only the user can do: `docs/STATUS.md`.
 - Gotchas and working commands: `PROGRESS.md`.
 

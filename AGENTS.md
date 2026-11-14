@@ -5,10 +5,17 @@ One phase per session, in order. Phase N+1 starts only after Phase N acceptance 
 Numeric thresholds in phase files are starting guesses: tune on recorded data.
 
 ## A. Role and context
-Senior engineer in the CaptureKit monorepo: Part 1 of a phone-camera-only (NO LiDAR), voice-guided
-room-to-3D scanner. It guides the user like a surveyor (walls, furniture, surfaces, obstacles, gaps),
-evaluates capture quality continuously, says what to do next (incl. revisits), and outputs a complete,
-validated Scan Bundle. State: v0.0.1, scaffolding + pinned deps + green CI; no algorithms yet.
+The program has exactly TWO parts (docs/program-spec/README.md). The old nine-project split (A–I) is
+superseded; never plan from docs/program-spec/legacy-nine-projects/.
+- **Part 1 — Intelligent Room Capture (Mobile App)** = this repo's `capturekit/`. Native iOS + Android app
+  with an AI that understands the room like a human surveyor: identifies walls, furniture, surfaces,
+  obstacles and missing areas while the user scans, evaluates capture quality continuously, guides with
+  specific instructions (voice first) incl. revisits, and produces a complete, validated Scan Bundle.
+  Spec: docs/program-spec/part1-room-capture.md. Phone camera only, NO LiDAR.
+- **Part 2 — 3D Processing & Reconstruction (Backend)**: receives the Scan Bundle and produces the requested
+  3D outputs (poses, depth, point clouds, meshes, Gaussian Splatting, semantic room model). Spec:
+  docs/program-spec/part2-reconstruction.md. Not built here; the Scan Bundle is the only contract.
+You are a senior engineer on Part 1. Phases 0–12 in docs/phases/; state is in PROGRESS.md.
 
 ## Repo map (paths relative to repo root)
 | Path | Purpose | Entry |
@@ -22,8 +29,9 @@ validated Scan Bundle. State: v0.0.1, scaffolding + pinned deps + green CI; no a
 | capturekit/dev-server | tusd + MinIO (docker compose) | dev-server/ |
 | capturekit/docs/decisions | ADRs NNNN-title.md (this is "docs/decisions/" in phase files) | — |
 | capturekit/bench | Fixtures (Git LFS), thermal logs, calibration | — |
-| docs/program-spec/room-scanner-program | 00-Master-Portfolio.md, A-CaptureKit.md, B-GuideMind.md, … | — |
+| docs/program-spec | README.md (two parts), part1-room-capture.md, part2-reconstruction.md, conventions.md | — |
 | docs/program-spec/conventions.md | Frozen conventions (written in Phase 0) | — |
+| docs/program-spec/legacy-nine-projects | Superseded A–I docs; source material only | — |
 | docs/phases/NN-*.md | One file per phase | — |
 | PROGRESS.md | Only memory between sessions | — |
 
@@ -49,7 +57,7 @@ validated Scan Bundle. State: v0.0.1, scaffolding + pinned deps + green CI; no a
 - Depth: optional topic only (ARCore Depth API). Nothing may require dense depth.
 - Tracking: ARKit / ARCore only. No custom SLAM. Android = ARCore-capable devices only.
 - Bundle: MCAP (Protobuf channels) for time series + separate indexed JPEG keyframes. JSON only for
-  manifest.json and camera.json. (Supersedes video.mp4 in A-CaptureKit.md / README — see ADR 0001.)
+  manifest.json and camera.json. (Supersedes video.mp4 in the legacy CaptureKit doc — see ADR 0001.)
 - Architecture: native shells (Swift, Kotlin) over shared C++ core via a small stable C API. No
   cross-platform UI framework.
 - Upload: tus. User instructions: templated vocabulary, no LLM in the real-time loop.
@@ -58,7 +66,7 @@ validated Scan Bundle. State: v0.0.1, scaffolding + pinned deps + green CI; no a
 **Session:** one phase per session; end with a handoff in PROGRESS.md and start fresh. Load only the
 active phase file. PROGRESS.md ≤40 lines.
 **Read less:** search first (rg), read only needed line ranges; never cat large files or trees. Don't
-re-read unchanged files. Read spec docs by section; B-GuideMind.md only in Phase 8. Never open
+re-read unchanged files. Read spec docs by section (part1-room-capture.md §N as each phase names). Never open
 binaries/MCAP/JPEGs in context — use `ckit inspect-*` / `ckit validate` summaries.
 **Write less:** targeted edits over rewrites. Generate (pydantic from schemas, protobuf codegen,
 bindings from one definition, table-driven tests, shared helpers). One C++ implementation, never

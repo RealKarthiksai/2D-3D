@@ -1,27 +1,32 @@
-# CaptureKit Part 1: status and what is needed from you
+# Part 1 (Intelligent Room Capture, `capturekit/`): status and what is needed from you
+
+The program now has two parts (see [program-spec/README.md](program-spec/README.md)). This file tracks Part 1 only; Part 2 (backend reconstruction) is not started.
 
 See also [NEXT_SESSION.md](NEXT_SESSION.md) for the copy-paste start kit for a new conversation.
 
-Updated 2026-11-14 · branch `part1-phases` · last commit `93f20d6`
+Updated 2026-11-14 · branch `part1-phases` · last Phase 2 commit `bd78bcd`
 
 ## 1. Overall progress
 
-Two of the ten phases are done in software. Phases 2–9 hold most of the algorithm and app work, so roughly **15–20 % of the total build** is complete. Every phase has acceptance items that need real phones, a Mac, or people (section 3). Those items stay open even after the software is written.
+Three of the thirteen phases (0–12) are done in software. Phases 9–11 were added when the program became two parts, to cover room understanding (furniture, openings, missing areas), the voice assistant, and the overlay/review/privacy UI. Roughly **15 % of Part 1** is built. Every phase has acceptance items that need real phones, a Mac, or people (section 3). Those items stay open even after the software is written.
 
 | Phase | Software on this machine | Acceptance status |
 |---|---|---|
 | 0 Conventions + raw recording | **Done**: conventions.md, recording protocol, clock-notes template, Android RawRecorder + clock check (APK builds), iOS RawRecorder + SampleApp sources, `ckit inspect-raw`, `ckit synth` | **Blocked on you**: 8 real golden sessions, per-device clock offsets, iOS build |
 | 1 Scan Bundle spec + serialization | **Done**: proto + JSON Schemas + SPEC.md, C++ MCAP writer/reader, codec, sha256, manifest/camera finalize, nanobind `_ckcore`, `ckit validate`, `ckit import-raw` | **Met on synthetic data** (8/8 golden stand-ins validate with 0 ERROR; 12 broken fixtures give their codes; round trip and truncation fuzz pass). Must be re-run on real recordings |
-| 2 Geometry core | Not started; can be done here | Real-data reprojection report needs your recordings |
+| 2 Geometry core | **Done** (`bd78bcd`): frame-named poses, ARKit/ARCore/COLMAP/OpenGL adapters, rotate/scale/crop, interpolation, `ckit export-colmap`, `ckit reprojection-report` | **Met on synthetic data** (28 C++ / 28 Py tests; mean reprojection 0.59–1.01 px). ADR 0003 check needs your checkerboard recordings (ADR 0005) |
 | 3 Replay harness | Not started; can be done here | Can be met here |
 | 4 Quality + keyframe selector | Not started; can be done here | Can be met here; real-data tuning needs recordings |
 | 5 Thermal/battery governor | Not started; C++ core and tests can be done here | 10-minute soak test needs phones |
 | 6 Native capture pipelines | Not started; C API/session can be done here, Android compiles here, iOS cannot | Needs 2 iOS + 3 Android devices |
 | 7 Finalize + upload | Not started; finalize, dev-server verifier and docker failure tests can be done here | On-device failure cases need phones |
-| 8 GuideMind | Not started; can be done here with synthetic rooms | Manual coverage labels on real sessions need you |
-| 9 Integration + field trials | Not started; `ckit e2e`/`trial-report` can be done here | Trials need participants and your target thresholds |
+| 8 Guidance core (GuideMind) | Not started; can be done here with synthetic rooms | Manual coverage labels on real sessions need you |
+| 9 Room understanding | Not started; geometry parts + synthetic tests can be done here | Detector choice/latency per device tier, missing-area labels need you |
+| 10 Voice assistant | Not started; scheduler, intents, Android TTS/STT can be done here | Latency on phones, user tuning of speech budget |
+| 11 Overlay, review, consent, privacy | Not started; core overlay model, Android UI, redaction pipeline can be done here | iOS UI build, redaction set labelling, consent text owner |
+| 12 Integration + field trials | Not started; `ckit e2e`/`trial-report` can be done here | Trials need participants and your target thresholds |
 
-**Verified on this machine:** C++ core `ctest` 9/9 · Python `pytest` 21/21 + ruff clean · Android `assembleDebug testDebugUnitTest` passes (with the NDK-built core).
+**Verified on this machine:** C++ core `ctest` 28/28 · Python `pytest` 28/28 + ruff clean · Android `assembleDebug testDebugUnitTest` passes (with the NDK-built core).
 **Not verified:** anything iOS/Swift (no macOS here), and GitHub CI (branch not pushed).
 
 ## 2. What I set up on this machine
@@ -33,8 +38,8 @@ Two of the ten phases are done in software. Phases 2–9 hold most of the algori
 ### 3.1 Hardware and accounts to get
 | # | Item | Needed for | Notes |
 |---|---|---|---|
-| H1 | ≥2 ARKit iPhones (iOS 17+), different tiers (e.g. one recent Pro, one older non-Pro) | Phases 0, 2, 5, 6, 7, 9 | Prefer one without LiDAR, since the product is camera-only |
-| H2 | ≥3 ARCore-certified Android phones (low, mid, high tier) | Phases 0, 2, 5, 6, 7, 9 | Check the [ARCore supported devices list](https://developers.google.com/ar/devices); include one with Depth API |
+| H1 | ≥2 ARKit iPhones (iOS 17+), different tiers (e.g. one recent Pro, one older non-Pro) | Phases 0, 2, 5, 6, 7, 9–12 | Prefer one without LiDAR, since the product is camera-only |
+| H2 | ≥3 ARCore-certified Android phones (low, mid, high tier) | Phases 0, 2, 5, 6, 7, 9–12 | Check the [ARCore supported devices list](https://developers.google.com/ar/devices); include one with Depth API |
 | H3 | A Mac with Xcode 16.3+ and `xcodegen` (`brew install xcodegen`) | iOS build/test, SampleApp | Nothing Swift has been compiled yet |
 | H4 | Apple Developer account (free is fine for personal devices) | Installing the SampleApp on iPhones | |
 | H5 | Rooms matching G1–G8 (small, large, corridor, cluttered, dim, blank-wall) | Golden recordings, trials | See `docs/program-spec/recording-protocol.md` |
@@ -57,15 +62,17 @@ Two of the ten phases are done in software. Phases 2–9 hold most of the algori
 | 6 | Android: try whether ARCore frames are high enough resolution or a Camera2 still is needed (test build provided then) | Which devices, what resolution |
 | 7 | Upload failure matrix on phones: airplane mode, app kill, reboot, disk full | Pass/fail per case |
 | 8 | Hand-label coverage on 2–3 real golden sessions (simple tool provided then) | Label files |
-| 9 | Guided vs unguided trials with real participants (protocol and consent placeholder provided) | Session bundles + notes |
+| 9 | Hand-label missing areas (gaps) on 2–3 real sessions | Label files |
+| 10 | Try voice commands and speech rate on each phone | Latency + notes |
+| 12 | Guided vs unguided trials with real participants (protocol and consent placeholder provided) | Session bundles + notes |
 
 ### 3.4 Decisions only you can make
-1. **Phase 9 target thresholds** (registered-image ratio, mean reprojection error, coverage %, crash-free %, battery per scan). These must be agreed before trials.
+1. **Phase 12 target thresholds** (registered-image ratio, mean reprojection error, coverage %, crash-free %, battery per scan). These must be agreed before trials.
 2. **Device support matrix:** which phones and OS versions are officially supported.
-3. **Privacy and consent:** the real consent flow and data-retention policy belong to Part I. Tell me who owns that.
+3. **Privacy and consent:** Part 1 builds the consent screens and on-device redaction (Phase 11); the consent text and the server-side retention policy (Part 2) need an owner. Tell me who.
 4. **Production endpoints and keys:** tus upload URL, Sentry DSN. Never commit them; they go in `config/*.local.json` or CI secrets.
 5. **Repo housekeeping:**
-   - `docs/program-spec/room-scanner-program/` is untracked. Should it be committed?
+   - The superseded nine-project docs are now in `docs/program-spec/legacy-nine-projects/` (still untracked). Commit them as archive, or delete?
    - Your staged deletion of `reconstruction/` and the edits to `README.md` were left as they were and not committed.
    - The branch `part1-phases` has not been pushed. Push it and open a PR so CI, including the macOS job, can run.
 6. Whether **synthetic sessions may stand in** for some device acceptance items in CI (ADR 0002 currently says no).
@@ -83,4 +90,4 @@ cd android && ANDROID_HOME=~/Android/Sdk ./gradlew assembleDebug testDebugUnitTe
 ```
 
 ## 5. Next step on my side
-Phase 2 (geometry core) needs no hardware: Sophus pose types, ARKit/ARCore/OpenGL/COLMAP adapters with projection-invariance tests, interpolation, `ckit export-colmap`, and the pycolmap reprojection report on the synthetic sessions.
+Phase 3 (replay harness) needs no hardware.
