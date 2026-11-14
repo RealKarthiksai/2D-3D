@@ -92,3 +92,33 @@ def validate_cmd(
         json_out.write_text(json.dumps(rep.to_json(), indent=2, sort_keys=True) + "\n")
     typer.echo(rep.summary())
     raise typer.Exit(1 if rep.verdict == "FAIL" else 0)
+
+
+@app.command("export-colmap")
+def export_colmap_cmd(
+    bundle: Path,
+    out: Path,
+    max_gap_ms: Annotated[float, typer.Option(help="Max pose bracket for interpolation.")] = 100.0,
+) -> None:
+    """Write a COLMAP text model (cameras, images as cam_from_world wxyz, empty points)."""
+    from ckit.convert.colmap import export_colmap
+
+    _dump(export_colmap(bundle, out, int(max_gap_ms * 1e6)))
+
+
+@app.command("reprojection-report")
+def reprojection_report_cmd(
+    bundles: list[Path],
+    json_out: Annotated[Path | None, typer.Option("--json", help="Write JSON report here.")] = None,
+) -> None:
+    """Triangulate each bundle with its own poses (pycolmap) and report reprojection error."""
+    import json
+
+    from ckit.convert.reprojection import report, table
+
+    rep = report(bundles)
+    if json_out:
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(json.dumps(rep, indent=2, sort_keys=True) + "\n")
+    typer.echo(table(rep))
+    typer.echo(json.dumps(rep["summary"], sort_keys=True))

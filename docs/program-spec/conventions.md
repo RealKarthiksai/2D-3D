@@ -33,7 +33,7 @@ These conventions apply to the C++ core, Scan Bundles, `ckit`, and every downstr
 - Model `PINHOLE` (fx, fy, cx, cy) or `OPENCV` (+ k1, k2, p1, p2), in pixels of the **stored image** resolution.
 - Pixel convention: OpenCV, so the centre of the top-left pixel is (0, 0) and `u = fx·X/Z + cx`.
 - ARKit `ARCamera.intrinsics` refers to `capturedImage` resolution. ARCore `Camera.getImageIntrinsics()` refers to the CPU image. If the JPEG is captured at another resolution (high-res still), apply `scale_intrinsics`, and `crop_intrinsics` if the aspect ratio changes.
-- Assumption to verify in Phase 2: platform intrinsics already use the integer-centre convention (ADR 0003). The Phase 2 reprojection report detects a ±0.5 px bias.
+- Assumption: platform intrinsics already use the integer-centre convention (ADR 0003). Verified per device by checkerboard calibration (ADR 0005); the reprojection report alone is too noisy to detect ±0.5 px.
 
 ## Time
 - One canonical clock: `t_ns`, int64 nanoseconds, monotonic, mapped once at the edge.

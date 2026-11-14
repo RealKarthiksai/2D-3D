@@ -57,4 +57,4 @@ Say: "Process the golden recordings in capturekit/bench/golden/". Then:
 1. `ckit inspect-raw` each session, filling the device matrix in `docs/program-spec/recording-protocol.md`.
 2. `ckit inspect-raw <clock-session> --clock` and record the offsets in `docs/program-spec/clock-notes.md`; apply any offset above 1 ms in the recorder or `device.json`.
 3. `ckit import-raw` and `ckit validate` each one; fix any recorder bugs found.
-4. After Phase 2: check the reprojection residuals for a constant ±0.5 px bias to confirm or refute ADR 0003.
+4. Re-run `ckit reprojection-report` on the real bundles. Check ADR 0003 with the checkerboard recordings (ADR 0005): calibrated cx, cy vs platform intrinsics, |Δ| ≈ 0.5 px refutes it.

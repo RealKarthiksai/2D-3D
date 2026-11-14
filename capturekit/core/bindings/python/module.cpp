@@ -6,9 +6,11 @@
 namespace nb = nanobind;
 
 void bind_bundle(nb::module_& m);
+void bind_geometry(nb::module_& m);
 
 NB_MODULE(_ckcore, m) {
   m.doc() = "CaptureKit core (C++20) bindings";
   m.def("core_version", [] { return std::string(capturekit::core_version()); });
   bind_bundle(m);
+  bind_geometry(m);
 }

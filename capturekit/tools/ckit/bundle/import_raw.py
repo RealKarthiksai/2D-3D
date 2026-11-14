@@ -15,9 +15,9 @@ from pathlib import Path
 
 import numpy as np
 
+from ckit import geometry
 from ckit.core import load
 from ckit.raw import RawSession
-from ckit.rot import F_FLIP, mat_to_quat, quat_to_mat
 
 STATE = {"NORMAL": 1, "LIMITED": 2, "NOT_AVAILABLE": 3}
 REASON = {
@@ -37,8 +37,9 @@ def to_internal_pose(p, q, convention: str) -> tuple[list[float], list[float]]:
     if convention == "opencv":
         return list(p), list(q)
     if convention in ("arkit", "arcore", "opengl"):
-        R = quat_to_mat(q) @ F_FLIP
-        return list(p), mat_to_quat(R).tolist()
+        # Raw recorders store q as [w,x,y,z] for every platform (recording-protocol.md).
+        t, qq = geometry.from_arkit(p, q)
+        return list(t), list(qq)
     raise ValueError(f"unknown pose_convention {convention!r}")
 
 

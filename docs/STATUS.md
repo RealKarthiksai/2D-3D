@@ -51,7 +51,7 @@ Two of the ten phases are done in software. Phases 2–9 hold most of the algori
 ### 3.3 Later device and field work (by phase)
 | Phase | What you run | What you give back |
 |---|---|---|
-| 2 | Nothing new; I use your 3.2 recordings | — (I commit the reprojection report; it confirms or refutes ADR 0003) |
+| 2 | Per phone: one ~20 s recording of a printed checkerboard (9×6 inner corners, note the square size), moved slowly through different angles | — (I compare checkerboard calibration with platform intrinsics: confirms or refutes ADR 0003, see ADR 0005) |
 | 5 | 10-minute soak test per device (protocol written in Phase 5) | Filled results template |
 | 6 | 5-minute scan, forced kill, phone call, backgrounding, covered lens, low light on 2 iOS + 3 Android | Session folders + notes; device list for `docs/reports/devices.md` |
 | 6 | Android: try whether ARCore frames are high enough resolution or a Camera2 still is needed (test build provided then) | Which devices, what resolution |
