@@ -42,11 +42,57 @@
     "sink_config": {},
     "sinks": [
       "metrics",
-      "quality"
+      "quality",
+      "governor"
     ]
   },
   "schema": "ckit.replay/1",
   "sinks": {
+    "governor": {
+      "config": {
+        "battery_pause_exit_pct": 8,
+        "battery_pause_pct": 5,
+        "battery_warn_exit_pct": 18,
+        "battery_warn_pct": 15,
+        "down_dwell_s": 10,
+        "drop_enter1": 0.1,
+        "drop_enter2": 0.25,
+        "drop_exit1": 0.05,
+        "drop_exit2": 0.15,
+        "frame_budget_ms": 33.3,
+        "kf_scale_reduced": 0.5,
+        "ml_scale_reduced": 0.25,
+        "perf_confirm_s": 1.5,
+        "perf_enter1": 1.25,
+        "perf_enter2": 1.6,
+        "perf_exit1": 1.1,
+        "perf_exit2": 1.35,
+        "version": "g1"
+      },
+      "final_policy": {
+        "capture_resolution_tier": 1,
+        "keyframe_rate_scale": 0.5,
+        "level": "LOWER_RESOLUTION",
+        "ml_rate_scale": 0.25,
+        "must_pause": false,
+        "overlay_enabled": false,
+        "upload_allowed": false
+      },
+      "max_level": "LOWER_RESOLUTION",
+      "safe_pauses": 0,
+      "time_in_level_s": {
+        "LOWER_RESOLUTION": 1.995,
+        "NOMINAL": 2
+      },
+      "transitions": [
+        {
+          "from": "NOMINAL",
+          "reason": "thermal=2",
+          "t_s": 2,
+          "to": "LOWER_RESOLUTION"
+        }
+      ]
+    },
     "metrics": {
       "channels": {
         "accel": {

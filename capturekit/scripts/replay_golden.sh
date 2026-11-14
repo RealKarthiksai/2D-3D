@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 CKIT="${CKIT:-tools/.venv/bin/ckit}"
 W=build/replay_golden
 BASE=bench/replay_baselines
-SINKS=(--sink metrics --sink quality)
+SINKS=(--sink metrics --sink quality --sink governor)
 FAULTS=(--seed 7 --inject-tracking-loss 1:1.5 --inject-thermal 2:serious)
 mkdir -p "$W" "$BASE"
 fail=0
