@@ -3,6 +3,7 @@
 #include <map>
 #include <stdexcept>
 
+#include "capturekit/quality/quality_sink.hpp"
 #include "capturekit/replay/metrics_sink.hpp"
 #include "capturekit/replay/sink.hpp"
 
@@ -13,6 +14,7 @@ using Factory = std::function<std::unique_ptr<ReplaySink>(const std::string&)>;
 const std::map<std::string, Factory>& registry() {
   static const std::map<std::string, Factory> r = {
       {"metrics", [](const std::string&) { return std::make_unique<MetricsSink>(); }},
+      {"quality", [](const std::string& c) { return quality::QualitySink::create(c); }},
   };
   return r;
 }

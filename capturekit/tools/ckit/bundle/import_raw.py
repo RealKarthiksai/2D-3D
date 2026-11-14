@@ -43,8 +43,14 @@ def to_internal_pose(p, q, convention: str) -> tuple[list[float], list[float]]:
     raise ValueError(f"unknown pose_convention {convention!r}")
 
 
-def import_raw(raw_dir: Path, out: Path, keyframe_filter=None) -> dict:
-    """Converts a raw session. keyframe_filter(frame_dict) -> bool selects kept frames (Phase 4)."""
+def import_raw(raw_dir: Path, out: Path, keyframe_filter=None, quality: dict | None = None) -> dict:
+    """Converts a raw session. keyframe_filter(frame_dict) -> bool selects kept frames.
+
+    quality: optional {"frames": {frame_id: per-frame record}, "config": {...}, "config_hash",
+    "config_version"} from the core quality sink: metrics, reasons and keyframe decisions are
+    written to /frame_index, the config hash to the manifest and a QUALITY_CONFIG event.
+    """
+    qf = (quality or {}).get("frames", {})
     ck = load()
     s = RawSession.load(raw_dir)
     conv = s.device.get("pose_convention", "opencv")
@@ -94,7 +100,8 @@ def import_raw(raw_dir: Path, out: Path, keyframe_filter=None) -> dict:
                 default=None,
             )
             state = STATE.get(s.poses[near]["tracking"], 0) if near is not None else 0
-            keep = keyframe_filter(r) if keyframe_filter else True
+            q = qf.get(r["i"])
+            keep = keyframe_filter(r) if keyframe_filter else (q["keyframe"] if q else True)
             rec = {
                 "t_ns": t,
                 "frame_id": r["i"],
@@ -102,6 +109,21 @@ def import_raw(raw_dir: Path, out: Path, keyframe_filter=None) -> dict:
                 "tracking_state": state,
                 "keyframe": keep,
             }
+            if q:
+                for k in (
+                    "sharpness",
+                    "sharpness_norm",
+                    "blur_risk_px",
+                    "clip_low",
+                    "clip_high",
+                    "corners",
+                    "corner_spread",
+                    "quality",
+                    "reasons",
+                ):
+                    v = q.get(k)
+                    if v is not None:
+                        rec[k] = v
             if keep:
                 name = f"keyframes/{kept:06d}.jpg"
                 shutil.copyfile(s.root / r["file"], out / name)
@@ -124,6 +146,14 @@ def import_raw(raw_dir: Path, out: Path, keyframe_filter=None) -> dict:
         f"import-raw from {raw_dir.name}",
         [("pose_convention", conv), ("frames", str(len(s.frames)))],
     )
+    if quality:
+        w.write_event(
+            t0 + 1,  # events are strictly increasing per channel
+            "quality",
+            "QUALITY_CONFIG",
+            "keyframe selection config",
+            [("version", quality["config_version"]), ("hash", quality["config_hash"])],
+        )
     counts = w.close()
 
     k0 = s.intrinsics[0]
@@ -138,7 +168,20 @@ def import_raw(raw_dir: Path, out: Path, keyframe_filter=None) -> dict:
         "clock_offset_ns": off,
         "q_camera_from_imu": s.device.get("q_camera_from_imu", [1, 0, 0, 0]),
         "capture_settings_json": json.dumps(
-            {"source": "import-raw", "pose_convention": conv}, sort_keys=True
+            {
+                "source": "import-raw",
+                "pose_convention": conv,
+                **(
+                    {
+                        "quality_config": quality["config"],
+                        "quality_config_hash": quality["config_hash"],
+                        "quality_config_version": quality["config_version"],
+                    }
+                    if quality
+                    else {}
+                ),
+            },
+            sort_keys=True,
         ),
     }
     ck.bundle.write_camera_json(
@@ -146,4 +189,31 @@ def import_raw(raw_dir: Path, out: Path, keyframe_filter=None) -> dict:
     )
     files = ck.bundle.list_files(str(out))
     ck.bundle.write_manifest(str(out), meta, counts, files)
+    return counts
+
+
+def import_raw_selected(raw_dir: Path, out: Path, config: dict | None = None) -> dict:
+    """Two passes: import all frames to a temp bundle, run the core quality sink over it, then
+    import again keeping only the selected keyframes (with per-frame metrics and reasons)."""
+    import tempfile
+
+    from ckit.replay.driver import replay
+
+    with tempfile.TemporaryDirectory(prefix="ckit_sel_") as td:
+        tmp = Path(td) / "all"
+        import_raw(raw_dir, tmp)
+        cfg = dict(config or {}, emit_frames=1)
+        rep = replay(tmp, ["quality"], sink_config={"quality": cfg})["sinks"]["quality"]
+        frames = {}
+        for fr in rep["per_frame"]:
+            frames[fr["frame_id"]] = fr
+    # Frame ids in the temp bundle are the raw frame indices ("i").
+    q = {
+        "frames": frames,
+        "config": rep["config"],
+        "config_hash": rep["config_hash"],
+        "config_version": rep["config_version"],
+    }
+    counts = import_raw(raw_dir, out, quality=q)
+    counts["selected_keyframes"] = rep["keyframes"]
     return counts

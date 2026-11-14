@@ -68,12 +68,24 @@ def synth_cmd(
 
 
 @app.command("import-raw")
-def import_raw_cmd(raw: Path, out: Path) -> None:
-    """Convert a Phase 0 raw session into a Scan Bundle (all frames kept as keyframes)."""
-    from ckit.bundle.import_raw import import_raw
+def import_raw_cmd(
+    raw: Path,
+    out: Path,
+    select_keyframes: Annotated[
+        bool, typer.Option(help="Keep only frames the core keyframe selector picks (Phase 4).")
+    ] = False,
+    config: Annotated[Path | None, typer.Option(help="Flat JSON quality config overrides.")] = None,
+) -> None:
+    """Convert a raw session into a Scan Bundle (all frames kept unless --select-keyframes)."""
+    import json
 
-    counts = import_raw(raw, out)
-    _dump(counts)
+    from ckit.bundle.import_raw import import_raw, import_raw_selected
+
+    if select_keyframes:
+        cfg = json.loads(config.read_text()) if config else None
+        _dump(import_raw_selected(raw, out, cfg))
+    else:
+        _dump(import_raw(raw, out))
 
 
 @app.command("validate")
@@ -194,3 +206,34 @@ def replay_plot_cmd(bundle: Path, out: Path) -> None:
     from ckit.replay.plot import plot
 
     typer.echo(str(plot(bundle, out)))
+
+
+@app.command("quality-report")
+def quality_report_cmd(
+    bundles: list[Path],
+    json_out: Annotated[Path | None, typer.Option("--json", help="Write JSON report here.")] = None,
+    no_sfm: Annotated[bool, typer.Option("--no-sfm", help="Skip pycolmap registration.")] = False,
+    uniform: Annotated[
+        bool, typer.Option(help="Also register the same count picked at a fixed interval.")
+    ] = False,
+    config: Annotated[Path | None, typer.Option(help="Flat JSON quality config overrides.")] = None,
+) -> None:
+    """Keyframe density, rejection histogram, pycolmap registration rate of selected keyframes."""
+    import json
+
+    from ckit.quality_report import quality_report
+
+    cfg = json.loads(config.read_text()) if config else None
+    rows = [quality_report(b, cfg, register=not no_sfm, uniform=uniform) for b in bundles]
+    if json_out:
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(json.dumps({"bundles": rows}, indent=2, sort_keys=True) + "\n")
+    for r in rows:
+        sfm = r.get("sfm", {})
+        typer.echo(
+            f"{r['bundle']:<16} frames={r['frames']:>4} kf={r['keyframes']:>4} "
+            f"kf/m={r['keyframes_per_m']:<7} rejected={r['hard_rejected']:>4} "
+            f"reg={sfm.get('registration_rate', '-')} "
+            f"reg_uniform={r.get('sfm_uniform_same_count', {}).get('registration_rate', '-')} "
+            f"hard={r['hard_reject_histogram']}"
+        )
