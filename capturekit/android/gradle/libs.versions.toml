@@ -4,6 +4,7 @@ kotlin = "2.4.21"
 ksp = "2.3.13"
 arcore = "1.57.0"
 tusAndroid = "0.1.12"
+tusJava = "0.5.1"
 room = "2.8.5"
 work = "2.12.0"
 sentry = "8.64.0"
@@ -12,6 +13,8 @@ junit = "4.13.2"
 [libraries]
 arcore = { module = "com.google.ar:core", version.ref = "arcore" }
 tus-android-client = { module = "io.tus.android.client:tus-android-client", version.ref = "tusAndroid" }
+# tus-android-client's POM omits its parent class library, so it is declared explicitly.
+tus-java-client = { module = "io.tus.java.client:tus-java-client", version.ref = "tusJava" }
 room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
 room-ktx = { module = "androidx.room:room-ktx", version.ref = "room" }
 room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }

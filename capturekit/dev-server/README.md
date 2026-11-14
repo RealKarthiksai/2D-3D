@@ -31,3 +31,19 @@ curl -i -X PATCH http://localhost:1080/files/<id> \
 Uploaded objects are visible in the MinIO console at http://localhost:9001 (bucket `scanbundles`).
 
 Phones on the LAN: point the SDK at `http://<your-machine-ip>:1080/files/`.
+
+## Verifier (Phase 7)
+
+`verifier` (port 8081) marks a bundle by what is actually in the bucket (never by hook events, so a missed
+hook or restart cannot strand it): `PENDING` (no manifest yet), `INCOMPLETE` (manifest in, files missing),
+`CORRUPT` (size/sha256 differ from the manifest), `COMPLETE`. tusd calls it on `post-finish`.
+
+```sh
+curl localhost:8081/bundles/<bundle_id>       # status JSON incl. missing/corrupt files and the on-device verdict
+./smoke.sh                                    # stack + `ckit upload` of a real synthetic bundle -> COMPLETE
+./failure_test.sh                             # 8-case failure matrix (airplane mode, kill, restart, truncation, ...)
+```
+
+Clients upload one file per tus upload with metadata `bundle_id`, `path`, `sha256`, and `manifest.json` last
+(`tools/ckit/upload.py` is the reference; Kotlin and Swift mirror it). `docs/upload-test-protocol.md` lists the
+device-only cases.

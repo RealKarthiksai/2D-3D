@@ -7,6 +7,7 @@
 #include "capturekit/bundle/finalize.hpp"
 #include "capturekit/bundle/stream_reader.hpp"
 #include "capturekit/bundle/stream_writer.hpp"
+#include "capturekit/bundle/validate.hpp"
 
 namespace nb = nanobind;
 using namespace capturekit::bundle;
@@ -142,6 +143,10 @@ void bind_bundle(nb::module_& root) {
       .def("close", [](StreamWriter& w) { return counts_dict(w.close()); })
       .def("counts", [](StreamWriter& w) { return counts_dict(w.counts()); });
 
+  m.def("validate_semantic", [](const std::string& dir, const std::string& completion) {
+    auto c = read_streams(dir + "/streams.mcap");
+    return validate_semantic(dir, c, completion, nullptr).to_json();
+  }, nb::arg("bundle_dir"), nb::arg("completion") = "complete");
   m.def("read_streams", [](const std::string& path) {
     auto r = read_streams(path);
     nb::dict d;

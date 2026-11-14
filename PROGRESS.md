@@ -1,43 +1,35 @@
 # PROGRESS
-Program = 2 parts (docs/program-spec/README.md). This whole repo = Part 1 only (Part 2 = separate repo roomscan-recon). Phases 0–12.
+Program = 2 parts (docs/program-spec/README.md). This whole repo = Part 1 only (Part 2 = repo roomscan-recon). Phases 0–12.
 
-## Done
-- Scaffolding v0.0.1 (362a839).
-- Phase 0 software + Phase 1 complete on synthetic data (93f20d6). Device acceptance open; see docs/STATUS.md §3.
-- Phase 2 geometry core: 28 C++ / 28 Py tests; reprojection_synth.json mean 0.59–1.01 px (bd78bcd).
-- Phase 3 replay harness: C++ ReplaySink + registry, ckit replay/replay-compare/replay-plot, golden replay CI (fb59838).
-- Phase 4 quality + keyframe selector: 1.43 ms/frame, 0 allocs, quality_synth report (7943988).
-- Phase 6 capture (software): C API + Session (state machine, bounded queues, keyframe handshake, recovery), JNI + Android capture/Room/CaptureActivity, iOS CaptureSession source (unverified), ctypes simulate-capture + SIGKILL tests, ASAN/UBSAN/TSAN clean (PHASE6). Device acceptance blocked.
-- Phase 5 governor: ladder + hysteresis, governor sink, iOS/Android thermal adapters, soak protocol (310d205).
+## Done (software, verified on synthetic data; device acceptance blocked, see docs/STATUS.md §3)
+- 0–1 conventions, raw recorders, Scan Bundle spec/writer/validator (93f20d6) · 2 geometry core (bd78bcd)
+- 3 replay harness (fb59838) · 4 quality + keyframe selector (7943988) · 5 thermal/battery governor (310d205)
+- 6 C API + Session + recovery, JNI/Android capture, iOS source (69eaf41)
+- 7 on-device validator + verdict table, tus clients (Android compiled, iOS source), verifier, docker failure matrix (PHASE7)
 
 ## Decisions
-- capturekit/docs/decisions/0001 JPEG not video · 0002 synthetic golden stand-ins · 0003 intrinsics pixel centre (verify Phase 2) · 0004 /ar/points + /ar/planes channels · 0005 pixel centre via checkerboard · 0006 sharpness ratio · 0007 thermal mapping · 0008 shell encodes JPEGs · 0009 Android keyframes from ARCore CPU image
+- capturekit/docs/decisions 0001 JPEG not video · 0002 synthetic golden · 0003/0005 pixel centre (checkerboard) · 0004 /ar/points+planes · 0006 sharpness ratio · 0007 thermal map · 0008 shell encodes JPEGs · 0009 Android keyframes from ARCore CPU image
 
 ## Commands
 - C++: `cd capturekit && cmake -S core -B build/core && cmake --build build/core -j8 && ctest --test-dir build/core`
-- Py core module: `capturekit/scripts/build_core_py.sh` (ckit loads build/core-py/py/_ckcore)
-- Python: `cd capturekit/tools && uv run pytest -q && uv run ruff check . && uv run ruff format --check .`
-- Golden synth: `capturekit/scripts/make_golden.sh` (8 sessions, ~20 min) → build/golden/raw
-- Bundle: `ckit import-raw <raw> <bundle> && ckit validate <bundle> --level quality`
-- COLMAP: `ckit export-colmap <bundle> <out>`; `ckit reprojection-report build/golden/bundles/G* --json capturekit/docs/reports/reprojection_synth.json` (~6 min)
-- Replay: `ckit replay <bundle> --sink metrics --seed N [faults]`; baselines `capturekit/scripts/replay_golden.sh [--update]`
-- Quality: `ckit quality-report <bundles> [--uniform] [--no-sfm]`; `ckit import-raw RAW OUT --select-keyframes`
-- Simulated phone: `ckit simulate-capture <bundle> <out> [--threaded] [--kill-after N]`; `ckit recover <dir>`
-- Sanitizers: see .github/workflows/ci.yml job core-sanitizers (cmake -fsanitize=address,undefined | thread)
+- Py module + C API lib: `capturekit/scripts/build_core_py.sh`; Python: `cd capturekit/tools && uv run pytest -q && uv run ruff check . && uv run ruff format --check .`
+- Bundles: `ckit import-raw RAW OUT [--select-keyframes]`, `ckit validate B --level quality`, `ckit verdict B`
+- Replay: `ckit replay B --sink metrics --sink quality --sink governor [faults]`; baselines `scripts/replay_golden.sh [--update]`
+- Reports: `ckit reprojection-report`, `ckit quality-report B --uniform` (SfM, minutes)
+- Simulated phone: `ckit simulate-capture B OUT [--kill-after N]`, `ckit recover DIR`
+- Upload: `dev-server/smoke.sh`, `dev-server/failure_test.sh` (docker), `ckit upload B --consent`
 - Android: `cd capturekit/android && ANDROID_HOME=~/Android/Sdk ./gradlew assembleDebug testDebugUnitTest`
+- Sanitizers: CI job core-sanitizers (cmake -fsanitize=address,undefined | thread)
 
 ## Gotchas
-- Specs: docs/program-spec/part1-room-capture.md (+ part2 for the contract). Old A–I docs in legacy-nine-projects/ (untracked, superseded).
-- User's staged `reconstruction/` deletions + README edits: never include; commit with `git commit -- <paths>`.
-- MCAP C++ indexed reader hangs on unfinalized files → stream_reader uses TypedRecordReader linear scan.
-- Signed int overflow in test loops (i*33'000'000) = UB → infinite loop in Release. Use int64_t.
-- `pkill -f <name>` kills the calling shell if the name is in its command line.
-- protobuf python pinned 3.20.3 (nerfstudio extra); use descriptor-based dynamic classes.
-- Planes: same-frame anchors get +1 ns each (per-channel strict monotonic t_ns).
-- /tmp has a per-user quota; VS Code cpptools cache fills it. Long outputs → capturekit/build/.
-- pycolmap DB image IDs are unordered (parallel extraction): export with DB IDs (colmap.py image_ids).
-- Sanitizers caught: enum param UB in C API (use int32_t), test operator-new hook vs ASAN.
-- iOS/Swift never compiled (no macOS): treat as unverified until CI macOS job runs.
+- User's staged `reconstruction/` deletions + root README edits: never include; `git commit -- <paths>`. Old A–I docs untracked in legacy-nine-projects/.
+- MCAP indexed reader hangs on unfinalized files (stream_reader scans linearly). Per-channel t_ns must be strictly increasing (events/planes +1 ns).
+- Signed int overflow in test loops = UB. Use int64_t. `pkill -f` can kill your own shell.
+- /tmp has a per-user quota (VS Code cpptools cache); long outputs go to capturekit/build/.
+- pycolmap DB image IDs are unordered: export with DB ids. SfM registration varies run to run.
+- C API takes int32_t for enums (UBSAN). tus-android-client POM omits tus-java-client: declared explicitly.
+- Killed before the first MCAP chunk flush (~1 s of event time) loses that data; recovery says so.
+- iOS/Swift never compiled (no macOS): CaptureSession, thermal adapter, TusUploader are unverified.
 
 ## Next
-- Phase 7: finalize verdicts, dev-server verifier + failure tests, Android/iOS tus upload sources.
+- Phase 8: guidance core (LiveMap, coverage, NavGrid, planner, instructions, guide-eval). No hardware needed.

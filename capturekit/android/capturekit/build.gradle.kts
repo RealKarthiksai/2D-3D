@@ -41,6 +41,7 @@ android {
 dependencies {
     api(libs.arcore)
     implementation(libs.tus.android.client)
+    implementation(libs.tus.java.client)
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)

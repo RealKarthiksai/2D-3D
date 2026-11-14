@@ -40,3 +40,4 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["docker: needs the dev-server stack (CKIT_DOCKER_TESTS=1, see dev-server/failure_test.sh)"]

@@ -149,6 +149,10 @@ RecoverResult recover(const std::string& dir_s) {
     auto name = e.path().filename().string();
     if (name == "session.json" || name.size() > 4 && name.substr(name.size() - 4) == ".tmp") fs::remove(e.path(), ec);
   }
+  {
+    auto rc = bundle::read_streams(streams.string());
+    meta.validation_json = bundle::validate_semantic(dir.string(), rc, meta.completion_status, &counts).to_json();
+  }
   if (!bundle::write_camera_json(dir.string(), c.intrinsics.front(), meta)) {
     r.error = "camera.json";
     return r;

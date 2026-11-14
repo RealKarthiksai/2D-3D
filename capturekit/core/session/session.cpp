@@ -636,6 +636,10 @@ Status Session::finalize() {
   }
   bundle::BundleMeta meta = cfg_.meta;
   meta.completion_status = "complete";
+  {  // on-device validator subset: the verdict travels in the manifest (Phase 7)
+    auto contents = bundle::read_streams((fs::path(dir_) / "streams.mcap").string());
+    meta.validation_json = bundle::validate_semantic(dir_, contents, meta.completion_status, &counts).to_json();
+  }
   if (!bundle::write_camera_json(dir_, *first_intrinsics_, meta)) {
     set_state(State::Failed, last_t_, "camera.json");
     return Status::ErrIo;

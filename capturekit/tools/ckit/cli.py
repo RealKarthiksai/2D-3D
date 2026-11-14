@@ -266,3 +266,53 @@ def recover_cmd(bundle: Path) -> None:
     st, rep = recover(bundle)
     _dump(rep)
     raise typer.Exit(0 if st == 0 else 1)
+
+
+@app.command("verdict")
+def verdict_cmd(bundle: Path, level: str = "semantic") -> None:
+    """Validate a bundle and print the user-facing verdict (plain-language messages and actions)."""
+    from ckit.bundle.validate import validate
+    from ckit.verdict import for_report
+
+    rep = validate(bundle, level)
+    _dump(for_report(rep.to_json()["issues"]))
+
+
+@app.command("verdict-docs")
+def verdict_docs_cmd(out: Path | None = None) -> None:
+    """Write docs/verdict-messages.md from the verdict table."""
+    from ckit.verdict import to_markdown
+
+    text = to_markdown()
+    if out:
+        out.write_text(text)
+    else:
+        typer.echo(text, nl=False)
+
+
+@app.command("upload")
+def upload_cmd(
+    bundle: Path,
+    server: Annotated[str, typer.Option(help="tus endpoint")] = "http://localhost:1080/files/",
+    verifier: Annotated[
+        str, typer.Option(help="verifier base URL ('' = do not wait)")
+    ] = "http://localhost:8081",
+    delete_after_verify: Annotated[
+        bool, typer.Option(help="Delete local files after COMPLETE (needs --consent).")
+    ] = False,
+    consent: Annotated[
+        bool, typer.Option(help="User consented to upload and local deletion.")
+    ] = False,
+) -> None:
+    """Upload a bundle via tus (manifest last), resume after kill, wait for the server verdict."""
+    from ckit.upload import TusUploader
+    from ckit.upload import delete_after_verify as retention
+
+    if not consent:
+        typer.echo("refusing to upload without --consent (consent flag is recorded by the app)")
+        raise typer.Exit(2)
+    res = TusUploader(server, verifier or None).upload_bundle(bundle)
+    deleted = retention(bundle, res, delete_after_verify) if delete_after_verify else False
+    _dump({"status": res.status, "reason": res.reason, "repaired": res.repaired,
+           "retries": res.retries, "deleted_local": deleted})  # fmt: skip
+    raise typer.Exit(0 if res.status in ("COMPLETE", "UPLOADED") else 1)

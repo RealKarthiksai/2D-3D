@@ -37,17 +37,36 @@ services:
         echo "bucket scanbundles ready"
     restart: "no"
 
+  # Marks a bundle COMPLETE/INCOMPLETE/CORRUPT from what is in the bucket (never from hook events).
+  verifier:
+    build: ./verifier
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: scanbundles
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-capturekit}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-capturekit-dev-only}
+    ports:
+      - "8081:8081"
+    restart: unless-stopped
+
   tusd:
     image: tusproject/tusd:v2.10.1
     depends_on:
       minio-init:
         condition: service_completed_successfully
+      verifier:
+        condition: service_started
     command:
       - -s3-bucket=scanbundles
       - -s3-endpoint=http://minio:9000
       - -s3-disable-ssl
       - -base-path=/files/
       - -port=1080
+      - -hooks-http=http://verifier:8081/hook
+      - -hooks-enabled-events=post-finish
     environment:
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-capturekit}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-capturekit-dev-only}

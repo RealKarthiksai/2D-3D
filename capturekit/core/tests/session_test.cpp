@@ -418,3 +418,47 @@ TEST(SessionRecovery, TruncatedStreamsNeverCrash) {
   }
   EXPECT_GE(recovered, 4);
 }
+
+TEST(SessionValidation, ManifestCarriesOnDeviceVerdict) {
+  auto d = fresh("verdict");
+  auto* s = make(d, "{\"threaded\":0}");
+  Feeder f{s, d};
+  ck_session_start(s, 0);
+  intr(s);
+  for (int64_t i = 0; i < 200; ++i) {
+    f.step(i);
+    ck_session_pump(s);
+    f.handle_events();
+  }
+  ASSERT_EQ(ck_session_finalize(s), CK_OK);
+  ck_session_destroy(s);
+  std::ifstream m(d / "manifest.json");
+  std::string manifest((std::istreambuf_iterator<char>(m)), std::istreambuf_iterator<char>());
+  EXPECT_NE(manifest.find("\"validation\""), std::string::npos);
+  EXPECT_NE(manifest.find("\"verdict\":\"PASS\""), std::string::npos) << manifest;  // INFO-only is a PASS
+  EXPECT_NE(manifest.find("NO_AR_GEOMETRY"), std::string::npos);
+}
+
+TEST(SessionValidation, SemanticChecksFireOnBrokenInput) {
+  using namespace capturekit::bundle;
+  StreamContents s;
+  PoseSample p;
+  p.t_ns = 1000;
+  p.q_world_from_camera_wxyz[0] = 2;  // non-unit
+  s.poses.push_back(p);
+  p.t_ns = 1000 + 2'000'000'000;  // 2 s gap
+  p.q_world_from_camera_wxyz[0] = 1;
+  p.t_world_from_camera[0] = std::nan("");
+  s.poses.push_back(p);
+  FrameRecord fr;
+  fr.t_ns = 500;  // before any pose and before intrinsics
+  fr.keyframe = true;
+  fr.file = "keyframes/none.jpg";
+  fr.tracking_state = TrackingState::Limited;
+  s.frames.push_back(fr);
+  auto r = validate_semantic(CK_TEST_TMP, s, "recovered", nullptr);
+  for (auto code : {"NAN_VALUE", "MISSING_INTRINSICS", "KEYFRAME_WITHOUT_POSE", "KEYFRAME_FILE_MISSING",
+                    "KEYFRAME_TRACKING_LIMITED", "POSE_GAP", "FEW_KEYFRAMES", "NO_AR_GEOMETRY", "PARTIAL_BUNDLE"})
+    EXPECT_TRUE(r.has(code)) << code;
+  EXPECT_EQ(r.verdict(), "FAIL");
+}

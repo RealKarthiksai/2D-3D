@@ -12,4 +12,5 @@ target_sources(capturekit_core PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/stream_writer.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/stream_reader.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/finalize.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/validate.cpp
   "${_gen}")

@@ -18,6 +18,7 @@
 
 #include "capturekit/bundle/finalize.hpp"
 #include "capturekit/bundle/stream_writer.hpp"
+#include "capturekit/bundle/validate.hpp"
 #include "capturekit/governor/governor.hpp"
 #include "capturekit/quality/quality.hpp"
 
