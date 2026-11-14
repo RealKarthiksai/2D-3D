@@ -48,6 +48,41 @@ inline std::string num(uint64_t v) { return std::to_string(v); }
 inline std::string num(int v) { return std::to_string(v); }
 inline std::string str(std::string_view s) { return "\"" + escape(s) + "\""; }
 
+/// Builds a JSON object with keys emitted in sorted order (deterministic reports).
+class Object {
+ public:
+  Object& raw(const std::string& k, std::string v) { kv_[k] = std::move(v); return *this; }
+  Object& set(const std::string& k, double v) { return raw(k, num(v)); }
+  Object& set(const std::string& k, int64_t v) { return raw(k, num(v)); }
+  Object& set(const std::string& k, uint64_t v) { return raw(k, num(v)); }
+  Object& set(const std::string& k, int v) { return raw(k, num(v)); }
+  Object& set(const std::string& k, bool v) { return raw(k, v ? "true" : "false"); }
+  Object& set(const std::string& k, std::string_view v) { return raw(k, str(v)); }
+  Object& set(const std::string& k, const char* v) { return raw(k, str(v)); }
+  Object& set(const std::string& k, const Object& v) { return raw(k, v.dump()); }
+  std::string dump() const {
+    std::string o = "{";
+    bool first = true;
+    for (auto& [k, v] : kv_) {
+      if (!first) o += ",";
+      first = false;
+      o += str(k) + ":" + v;
+    }
+    return o + "}";
+  }
+
+ private:
+  std::map<std::string, std::string, std::less<>> kv_;
+};
+
+/// JSON array from already-serialised elements.
+template <class It>
+std::string array(It begin, It end) {
+  std::string o = "[";
+  for (auto it = begin; it != end; ++it) o += (it == begin ? "" : ",") + *it;
+  return o + "]";
+}
+
 using FlatValue = std::variant<double, std::string, bool>;
 using FlatObject = std::map<std::string, FlatValue, std::less<>>;
 

@@ -5,6 +5,7 @@ Program = 2 parts (docs/program-spec/README.md). This whole repo = Part 1 only (
 - Scaffolding v0.0.1 (362a839).
 - Phase 0 software + Phase 1 complete on synthetic data (93f20d6). Device acceptance open; see docs/STATUS.md §3.
 - Phase 2 geometry core: 28 C++ / 28 Py tests; reprojection_synth.json mean 0.59–1.01 px (bd78bcd).
+- Phase 3 replay harness: C++ ReplaySink + registry, ckit replay/replay-compare/replay-plot, golden replay CI (PHASE3).
 
 ## Decisions
 - capturekit/docs/decisions/0001 JPEG not video · 0002 synthetic golden stand-ins · 0003 intrinsics pixel centre (verify Phase 2) · 0004 /ar/points + /ar/planes channels · 0005 pixel centre via checkerboard
@@ -16,6 +17,7 @@ Program = 2 parts (docs/program-spec/README.md). This whole repo = Part 1 only (
 - Golden synth: `capturekit/scripts/make_golden.sh` (8 sessions, ~20 min) → build/golden/raw
 - Bundle: `ckit import-raw <raw> <bundle> && ckit validate <bundle> --level quality`
 - COLMAP: `ckit export-colmap <bundle> <out>`; `ckit reprojection-report build/golden/bundles/G* --json capturekit/docs/reports/reprojection_synth.json` (~6 min)
+- Replay: `ckit replay <bundle> --sink metrics --seed N [faults]`; baselines `capturekit/scripts/replay_golden.sh [--update]`
 - Android: `cd capturekit/android && ANDROID_HOME=~/Android/Sdk ./gradlew assembleDebug testDebugUnitTest`
 
 ## Gotchas
@@ -31,4 +33,4 @@ Program = 2 parts (docs/program-spec/README.md). This whole repo = Part 1 only (
 - iOS/Swift never compiled (no macOS): treat as unverified until CI macOS job runs.
 
 ## Next
-- Phase 3: replay harness.
+- Phase 4: quality metrics + keyframe selector (tests first).

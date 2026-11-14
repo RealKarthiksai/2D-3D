@@ -1,0 +1,119 @@
+{
+  "bundle": "G3",
+  "input": {
+    "delivered": {
+      "accel": 800,
+      "event": 3,
+      "frame": 20,
+      "gyro": 800,
+      "intrinsics": 1,
+      "planes": 10,
+      "points": 20,
+      "pose": 120
+    },
+    "finalized": true,
+    "injected": {
+      "frames_dropped": 0,
+      "jittered": 0,
+      "poses_lost": 16,
+      "thermal_events": 1
+    },
+    "undecodable": 0
+  },
+  "options": {
+    "faults": {
+      "drop_frames": 0.0,
+      "jitter_ms": 0.0,
+      "seed": 7,
+      "thermal": [
+        [
+          2.0,
+          "serious"
+        ]
+      ],
+      "tracking_loss": [
+        [
+          1.0,
+          1.5
+        ]
+      ]
+    },
+    "mode": "fast",
+    "sink_config": {},
+    "sinks": [
+      "metrics"
+    ]
+  },
+  "schema": "ckit.replay/1",
+  "sinks": {
+    "metrics": {
+      "channels": {
+        "accel": {
+          "max_gap_ms": 5,
+          "n": 800,
+          "rate_hz": 200,
+          "rejected_non_monotonic": 0
+        },
+        "event": {
+          "n": 3,
+          "rejected_non_monotonic": 0
+        },
+        "frame": {
+          "max_gap_ms": 200,
+          "n": 20,
+          "rate_hz": 5,
+          "rejected_non_monotonic": 0
+        },
+        "gyro": {
+          "max_gap_ms": 5,
+          "n": 800,
+          "rate_hz": 200,
+          "rejected_non_monotonic": 0
+        },
+        "intrinsics": {
+          "n": 1,
+          "rejected_non_monotonic": 0
+        },
+        "planes": {
+          "max_gap_ms": 1000,
+          "n": 10,
+          "rate_hz": 3,
+          "rejected_non_monotonic": 0
+        },
+        "points": {
+          "max_gap_ms": 200,
+          "n": 20,
+          "rate_hz": 5,
+          "rejected_non_monotonic": 0
+        },
+        "pose": {
+          "max_gap_ms": 33.333,
+          "n": 120,
+          "rate_hz": 30,
+          "rejected_non_monotonic": 0
+        }
+      },
+      "duration_s": 3.995,
+      "events": {
+        "platform.SESSION_IMPORTED": 1,
+        "platform.thermal": 1,
+        "replay.inject.tracking_loss": 1
+      },
+      "keyframes": 20,
+      "path_length_m": 0.9273,
+      "points_total": 2400,
+      "tracking_not_normal": [
+        {
+          "state": 2,
+          "t0_s": 0,
+          "t1_s": 1
+        },
+        {
+          "state": 3,
+          "t0_s": 1,
+          "t1_s": 1.533
+        }
+      ]
+    }
+  }
+}

@@ -53,6 +53,10 @@ jobs:
         run: uv run pytest
       - name: CLI smoke
         run: uv run ckit --version
+      - name: Golden replay regression (3 small synthetic sessions, < 3 min)
+        working-directory: capturekit
+        timeout-minutes: 5
+        run: scripts/replay_golden.sh
 
   android:
     name: android (assemble + unit tests)

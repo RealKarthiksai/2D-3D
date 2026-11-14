@@ -122,3 +122,75 @@ def reprojection_report_cmd(
         json_out.write_text(json.dumps(rep, indent=2, sort_keys=True) + "\n")
     typer.echo(table(rep))
     typer.echo(json.dumps(rep["summary"], sort_keys=True))
+
+
+@app.command("replay")
+def replay_cmd(
+    bundle: Path,
+    sink: Annotated[list[str] | None, typer.Option(help="Core sink name (repeatable).")] = None,
+    out: Annotated[Path | None, typer.Option(help="Write report JSON here (else stdout).")] = None,
+    fast: Annotated[
+        bool, typer.Option("--fast/--realtime", help="Fast (default) or realtime.")
+    ] = True,
+    speed: Annotated[float, typer.Option(help="Realtime speed factor.")] = 1.0,
+    seed: int = 0,
+    drop_frames: Annotated[float, typer.Option(help="Drop probability per frame.")] = 0.0,
+    jitter_ms: Annotated[float, typer.Option(help="+- jitter on frame/IMU t_ns.")] = 0.0,
+    inject_tracking_loss: Annotated[
+        list[str] | None, typer.Option(help="T0:T1 seconds from start (repeatable).")
+    ] = None,
+    inject_thermal: Annotated[
+        list[str] | None, typer.Option(help="T:STATE nominal|fair|serious|critical (repeatable).")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option(help="JSON {sink: {key: value}} overrides.")
+    ] = None,
+) -> None:
+    """Replay a bundle through core sinks; prints a deterministic JSON report."""
+    import json
+
+    from ckit.replay.driver import Faults, dumps, replay
+
+    f = Faults(
+        drop_frames=drop_frames,
+        jitter_ms=jitter_ms,
+        tracking_loss=[Faults.parse_window(w) for w in inject_tracking_loss or []],
+        thermal=[Faults.parse_thermal(t) for t in inject_thermal or []],
+        seed=seed,
+    )
+    cfg = json.loads(config.read_text()) if config else None
+    text = dumps(replay(bundle, sink, f, realtime=not fast, speed=speed, sink_config=cfg))
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text)
+    else:
+        typer.echo(text, nl=False)
+
+
+@app.command("replay-compare")
+def replay_compare_cmd(
+    a: Path,
+    b: Path,
+    abs_tol: Annotated[float, typer.Option("--abs")] = 1e-9,
+    rel_tol: Annotated[float, typer.Option("--rel")] = 1e-6,
+    tol: Annotated[list[str] | None, typer.Option(help="KEY=ABS per-key tolerance.")] = None,
+) -> None:
+    """Compare two replay reports. Exit 1 if they differ beyond tolerance."""
+    import json
+
+    from ckit.replay.compare import compare
+
+    kt = {k: float(v) for k, v in (t.split("=", 1) for t in tol or [])}
+    diffs = compare(json.loads(a.read_text()), json.loads(b.read_text()), abs_tol, rel_tol, kt)
+    for d in diffs:
+        typer.echo(d)
+    typer.echo(f"{len(diffs)} difference(s)")
+    raise typer.Exit(1 if diffs else 0)
+
+
+@app.command("replay-plot")
+def replay_plot_cmd(bundle: Path, out: Path) -> None:
+    """Top-down trajectory PNG coloured by tracking state."""
+    from ckit.replay.plot import plot
+
+    typer.echo(str(plot(bundle, out)))

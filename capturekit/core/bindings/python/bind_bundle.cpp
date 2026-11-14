@@ -189,6 +189,20 @@ void bind_bundle(nb::module_& root) {
     d["events"] = ev;
     d["n_points"] = r.points.size();
     d["n_planes"] = r.planes.size();
+    nb::list pts;
+    for (auto& p : r.points) pts.append(nb::make_tuple(p.t_ns, p.xyz));
+    d["points"] = pts;
+    nb::list pls;
+    for (auto& p : r.planes) {
+      nb::dict e;
+      e["t_ns"] = p.t_ns; e["id"] = p.id; e["kind"] = p.kind;
+      e["center"] = std::vector<double>(p.center, p.center + 3);
+      e["normal"] = std::vector<double>(p.normal, p.normal + 3);
+      e["axis_u"] = std::vector<double>(p.axis_u, p.axis_u + 3);
+      e["extent_u"] = p.extent_u; e["extent_v"] = p.extent_v;
+      pls.append(e);
+    }
+    d["planes"] = pls;
     return d;
   });
 
