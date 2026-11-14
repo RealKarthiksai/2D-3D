@@ -5,7 +5,7 @@ Program = 2 parts (docs/program-spec/README.md). This whole repo = Part 1 only (
 - 0–1 conventions, raw recorders, Scan Bundle spec/writer/validator (93f20d6) · 2 geometry core (bd78bcd)
 - 3 replay harness (fb59838) · 4 quality + keyframe selector (7943988) · 5 thermal/battery governor (310d205)
 - 6 C API + Session + recovery, JNI/Android capture, iOS source (69eaf41)
-- 7 on-device validator + verdict table, tus clients (Android compiled, iOS source), verifier, docker failure matrix (PHASE7)
+- 7 on-device validator + verdict table, tus clients (Android compiled, iOS source), verifier, docker failure matrix (ca81065)
 
 ## Decisions
 - capturekit/docs/decisions 0001 JPEG not video · 0002 synthetic golden · 0003/0005 pixel centre (checkerboard) · 0004 /ar/points+planes · 0006 sharpness ratio · 0007 thermal map · 0008 shell encodes JPEGs · 0009 Android keyframes from ARCore CPU image
