@@ -8,7 +8,9 @@
 namespace capturekit::guide {
 
 GuideEngine::GuideEngine(const GuideParams& p)
-    : p_(p), cov_(p), nav_(p), planner_(p), gen_(p) {}
+    : p_(p), cov_(p), nav_(p), planner_(p), gen_(p) {
+  map_.set_classify(p.understanding != 0);
+}
 
 void GuideEngine::on_intrinsics(const bundle::IntrinsicsSample& k) {
   K_.width = k.width, K_.height = k.height, K_.fx = k.fx, K_.fy = k.fy, K_.cx = k.cx, K_.cy = k.cy;

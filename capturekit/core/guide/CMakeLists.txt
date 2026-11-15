@@ -1,5 +1,6 @@
 target_sources(capturekit_core PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/params.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/surface_classifier.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/live_map.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/coverage.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/nav_grid.cpp

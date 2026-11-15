@@ -9,7 +9,7 @@ namespace {
 Plane from_record(const bundle::PlaneRecord& r) {
   Plane p;
   p.id = r.id;
-  p.kind = r.kind;
+  p.kind = p.src_kind = r.kind;
   p.c = {r.center[0], r.center[1], r.center[2]};
   p.n = Vec3(r.normal[0], r.normal[1], r.normal[2]).normalized();
   Vec3 u(r.axis_u[0], r.axis_u[1], r.axis_u[2]);
@@ -59,24 +59,60 @@ std::string LiveMap::add_plane(const bundle::PlaneRecord& r) {
     np.t_first = it->second.t_first;
     it->second = np;
     ++version_;
-    refresh_levels();
+    classify_after(key);
     return key;
   }
   // New id: duplicate of an existing plane? (same kind, nearly parallel, same offset, touching)
   for (auto& [id, ex] : planes_) {
-    if (ex.kind != np.kind || std::fabs(ex.n.dot(np.n)) < std::cos(deg2rad(10))) continue;
+    if (ex.src_kind != np.src_kind || std::fabs(ex.n.dot(np.n)) < std::cos(deg2rad(10))) continue;
     if (std::fabs((np.c - ex.c).dot(ex.n)) > 0.10) continue;
     if (rect_gap(ex, np) > 0.30) continue;
-    unite(ex, np);
+    unite(ex, np);  // (ex keeps its kind; reclassified below)
     alias_[r.id] = id;
     ++version_;
-    refresh_levels();
+    classify_after(id);
     return id;
   }
   planes_[r.id] = np;
   ++version_;
-  refresh_levels();
+  classify_after(r.id);
   return r.id;
+}
+
+SurfaceContext LiveMap::context() const {
+  SurfaceContext c;
+  if (cam_.valid()) c.has_cam = true, c.cam_y = cam_.hi.y();
+  for (auto& [_, p] : planes_) {  // the floor reference is the lowest big horizontal plane that lies below the cameras
+    if (std::fabs(p.n.y()) < SurfaceClassifier::kHorizontalMinNy || p.eu * p.ev < 0.5) continue;
+    if (cam_.valid() && p.c.y() > cam_.lo.y() - 0.3) continue;
+    if (!c.has_floor_ref || p.c.y() < c.floor_y) c.has_floor_ref = true, c.floor_y = p.c.y();
+  }
+  return c;
+}
+
+void LiveMap::reclassify(const std::string& id) {
+  auto it = planes_.find(id);
+  if (it == planes_.end()) return;
+  Plane& p = it->second;
+  PlaneGeom g;
+  g.c = p.c, g.n = p.n, g.area = p.eu * p.ev;
+  SurfaceLabel l = cls_.update(id, g, ctx_);
+  if (l.kind != p.kind) ++version_;  // the kind feeds coverage
+  p.kind = l.kind, p.kind_conf = l.confidence;
+}
+
+void LiveMap::classify_after(const std::string& key) {
+  if (classify_) {
+    const bool had = ctx_valid_;
+    const SurfaceContext prev = ctx_;
+    ctx_ = context(), ctx_valid_ = true;
+    reclassify(key);
+    // A moved floor reference changes every other plane's height: give each one hysteresis tick.
+    if (had && (ctx_.has_floor_ref != prev.has_floor_ref || ctx_.floor_y != prev.floor_y))
+      for (auto& [id, _] : planes_)
+        if (id != key) reclassify(id);
+  }
+  refresh_levels();
 }
 
 size_t LiveMap::surface_count() const {

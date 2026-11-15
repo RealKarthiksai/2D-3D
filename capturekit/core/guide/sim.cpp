@@ -293,6 +293,12 @@ std::string simulate(const Config& cfg) {
     double sharp;
     int64_t t;
   };
+  // Furniture top faces seen so far (extent of visible points), for the ARCore-like "floor"-labelled table-top planes.
+  struct Top {
+    double xmin = 1e9, xmax = -1e9, zmin = 1e9, zmax = -1e9;
+    int npts = 0;
+  };
+  std::vector<Top> tops(room.boxes.size());
   std::map<uint32_t, Stash> stash;
   uint32_t frame_id = 0;
   std::vector<quality::KeyframeSelector::Decision> decisions;
@@ -382,6 +388,12 @@ std::string simulate(const Config& cfg) {
         if (!vr.in_image || vr.range > 6.0 || vr.cos_inc < 0.1 || !w.los(vc.pos, p)) continue;
         Vec3 q = p + Vec3(rng.normal(), rng.normal(), rng.normal()) * 0.01;
         pc.xyz.push_back(float(q.x())), pc.xyz.push_back(float(q.y())), pc.xyz.push_back(float(q.z()));
+        if (!sf && n.y() > 0.5) {  // a furniture top face (no RNG use: reports with the flag off are unchanged)
+          Top& tp = tops[(idx - w.surfs.size()) / 5];
+          tp.xmin = std::min(tp.xmin, p.x()), tp.xmax = std::max(tp.xmax, p.x());
+          tp.zmin = std::min(tp.zmin, p.z()), tp.zmax = std::max(tp.zmax, p.z());
+          ++tp.npts;
+        }
         if (sf) {
           double du = (p - sf->o).dot(sf->u), dv = (p - sf->o).dot(sf->v);
           sf->umin = std::min(sf->umin, du), sf->umax = std::max(sf->umax, du);
@@ -406,6 +418,21 @@ std::string simulate(const Config& cfg) {
         pr.extent_v = s.vmax - s.vmin;
         engine.on_plane(pr);
       }
+      // Phase 9: ARCore labels every upward plane "floor", furniture tops included. Emit them like that so the
+      // SurfaceClassifier has to tell them apart (only with understanding on: flag-off reports stay identical).
+      if (gp.understanding != 0)
+        for (size_t i = 0; i < tops.size(); ++i) {
+          const Top& tp = tops[i];
+          if (tp.npts < 15 || !(tp.xmax > tp.xmin) || !(tp.zmax > tp.zmin)) continue;
+          bundle::PlaneRecord pr;
+          pr.t_ns = t_ns + int64_t(w.surfs.size() + i);
+          pr.id = "top" + std::to_string(i);
+          pr.kind = "floor";
+          pr.center[0] = 0.5 * (tp.xmin + tp.xmax), pr.center[1] = room.boxes[i].h, pr.center[2] = 0.5 * (tp.zmin + tp.zmax);
+          pr.normal[1] = 1, pr.axis_u[0] = 1;
+          pr.extent_u = tp.xmax - tp.xmin, pr.extent_v = tp.zmax - tp.zmin;
+          engine.on_plane(pr);
+        }
     }
     // frames (10 Hz): quality from motion, keyframe selection with the real selector
     if (step % 3 == 0) {

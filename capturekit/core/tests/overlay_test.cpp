@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -135,6 +136,34 @@ TEST(Overlay, TrackingAndWallBearingsAreRelativeToTheUser) {
   EXPECT_EQ(r.overlay(2'000'000'000).why_id, "why.wall_right");
 }
 
+TEST(Overlay, NonFiniteWallIsSkippedAndJsonStaysValid) {
+  GuideEngine e;
+  bundle::IntrinsicsSample k;
+  k.width = 640, k.height = 480, k.fx = k.fy = 500, k.cx = 319.5, k.cy = 239.5;
+  e.on_intrinsics(k);
+  const double nan = std::numeric_limits<double>::quiet_NaN(), inf = std::numeric_limits<double>::infinity();
+  e.on_plane(wall("bad_nan", {2, 1.25, 4}, {0, 0, -1}, {1, 0, 0}, nan, 2.5));  // degenerate extent slips past LiveMap checks
+  e.on_plane(wall("bad_inf", {2, 1.25, -4}, {0, 0, 1}, {1, 0, 0}, 4, inf));
+  e.on_plane(wall("good", {-3, 1.25, 0}, {1, 0, 0}, {0, 0, 1}, 4, 2.5));
+  e.on_pose(pose_at(1'000'000'000, 0, 0, 0));
+  auto m = e.overlay(1'000'000'000);
+  auto j = m.to_json();
+  for (const char* bad : {"nan", "NaN", "inf", "Inf"}) EXPECT_EQ(j.find(bad), std::string::npos) << bad << " in " << j;
+  EXPECT_EQ(j.find('['), std::string::npos) << j;
+  EXPECT_EQ(m.walls, 3);  // all walls are counted, only finite ones are drawn
+  ASSERT_EQ(m.wall_list.size(), 1u) << j;
+  EXPECT_GE(m.wall_list[0].seen_pct, 0);
+  EXPECT_LE(m.wall_list[0].seen_pct, 100);
+  // A hand-built model with non-finite endpoints and an out-of-range percentage is sanitised by to_json too.
+  OverlayModel h;
+  h.wall_list = {{nan, 0, 1, 1, 50}, {0, 0, 1, 1, 250}};
+  auto hj = h.to_json();
+  EXPECT_EQ(hj.find("nan"), std::string::npos) << hj;
+  EXPECT_NE(hj.find("\"surfaces\":\"0.00,0.00,1.00,1.00,100\""), std::string::npos) << hj;
+}
+
+// Golden: generated on Linux x86_64 with g++ (Release, glibc libm trig). Coordinates are rounded to cm, but a different
+// libm/arch may shift a value; regenerate on purpose with CK_UPDATE_GOLDEN=1 (see docs/guide.md) and review the diff.
 TEST(Overlay, GoldenFromFixedSeedSimRun) {
   auto got = samples_of(golden_run());
   fs::path g = fs::path(CK_TEST_GOLDEN_DIR) / "overlay_box_seed1.jsonl";

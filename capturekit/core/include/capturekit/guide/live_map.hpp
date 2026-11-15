@@ -8,12 +8,15 @@
 #include <vector>
 
 #include "capturekit/bundle/types.hpp"
+#include "capturekit/guide/surface_classifier.hpp"
 #include "capturekit/guide/types.hpp"
 
 namespace capturekit::guide {
 
 struct Plane {
-  std::string id, kind;  // kind: floor | wall | ceiling | table | other
+  std::string id, kind;  // kind: floor | wall | ceiling | table | other (SurfaceClassifier label when enabled)
+  std::string src_kind;  // platform label, an input hint only (== kind when classification is off)
+  double kind_conf = 1.0;
   Vec3 c, n, u, v;       // centre, normal, in-plane axes (v = n x u); extents are FULL widths
   double eu = 0, ev = 0;
   int64_t t_first = 0, t_last = 0;
@@ -28,6 +31,9 @@ struct Aabb {
 
 class LiveMap {
  public:
+  /// Phase 9: decide plane kinds with SurfaceClassifier (default off = platform kinds, Phase 8 behaviour).
+  void set_classify(bool on) { classify_ = on; }
+  bool classify_enabled() const { return classify_; }
   /// Returns the canonical id the record was stored under (changes on merge).
   std::string add_plane(const bundle::PlaneRecord& p);
   void add_camera(const Vec3& p) { cam_.add(p); ++n_cam_; }
@@ -45,11 +51,18 @@ class LiveMap {
 
  private:
   void refresh_levels();
+  SurfaceContext context() const;
+  void reclassify(const std::string& id);
+  void classify_after(const std::string& key);  // classify (if enabled), then refresh_levels
   std::map<std::string, Plane> planes_;
   std::map<std::string, std::string> alias_;
   Aabb cam_;
   size_t n_cam_ = 0;
   int version_ = 0;
+  bool classify_ = false;
+  SurfaceClassifier cls_;
+  SurfaceContext ctx_;
+  bool ctx_valid_ = false;
   bool floor_ok_ = false, ceil_ok_ = false;
   double floor_y_ = 0, ceil_y_ = 0;
 };

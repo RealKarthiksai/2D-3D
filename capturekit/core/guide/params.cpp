@@ -29,6 +29,10 @@ std::optional<GuideParams> GuideParams::from_json(std::string_view text, std::st
   GuideParams c;
   for (auto& [k, v] : *obj) {
     bool found = false;
+    if (k == "understanding") {
+      if (auto* d = std::get_if<double>(&v)) c.understanding = *d;
+      continue;
+    }
     each(c, [&](const char* name, double& field) {
       if (k == name) {
         found = true;
@@ -47,6 +51,7 @@ std::string GuideParams::to_json() const {
   json::Object o;
   auto c = *this;
   each(c, [&](const char* name, double& field) { o.set(name, field); });
+  if (understanding != 0) o.set("understanding", understanding);
   o.set("version", version);
   return o.dump();
 }

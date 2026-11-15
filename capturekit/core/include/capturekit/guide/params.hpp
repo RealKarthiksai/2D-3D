@@ -25,6 +25,9 @@ struct GuideParams {
   double min_gap_s = 2, cd_slow_down = 4, cd_hold_still = 3, cd_move = 6, cd_rotate = 5, cd_tilt = 5;
   double cd_step_back = 8, cd_finish = 10, cd_light = 15, cd_sweep = 12, expire_s = 12;
   double blur_frames = 3, lost_relocalize_s = 5, tilt_deg = 15, rotate_deg = 40;
+  // Phase 9 room understanding: 0 = off (Phase 8 behaviour, byte-identical); omitted from to_json() while 0 so
+  // the config hash of every existing bundle is unchanged.
+  double understanding = 0;
 
   static std::optional<GuideParams> from_json(std::string_view flat_json, std::string* err = nullptr);
   std::string to_json() const;  // canonical, sorted keys

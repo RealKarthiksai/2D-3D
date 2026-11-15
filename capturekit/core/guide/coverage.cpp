@@ -91,6 +91,13 @@ void Coverage::resize(Grid& g, double u0, double u1, double v0, double v1) {
 
 void Coverage::sync(const LiveMap& map) {
   const double c = p_.cell_m;
+  // A plane re-labelled by the SurfaceClassifier (floor -> table) stops being a coverage target.
+  grids_.erase(std::remove_if(grids_.begin(), grids_.end(),
+                              [&](const Grid& g) {
+                                auto it = map.planes().find(g.id);
+                                return it == map.planes().end() || !it->second.surface();
+                              }),
+               grids_.end());
   for (auto& [id, pl] : map.planes()) {
     if (!pl.surface()) continue;
     Grid* g = find(id);
