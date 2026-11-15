@@ -462,3 +462,51 @@ TEST(SessionValidation, SemanticChecksFireOnBrokenInput) {
     EXPECT_TRUE(r.has(code)) << code;
   EXPECT_EQ(r.verdict(), "FAIL");
 }
+
+// Android brief B1: the guidance core emits a non-critical "overlay" event every 500 ms of EVENT time.
+namespace {
+std::vector<std::string> overlay_events(const char* name) {
+  auto d = fresh(name);
+  auto* s = make(d, "{\"threaded\":0, \"platform\":\"test\"}");
+  Feeder f{s, d};
+  EXPECT_EQ(ck_session_start(s, 0), CK_OK);
+  intr(s);
+  std::vector<std::string> out;
+  for (int64_t i = 0; i < 300; ++i) {
+    f.step(i);
+    ck_session_pump(s);
+    for (auto& e : drain(s)) {
+      if (e.find("\"keyframe_request\"") != std::string::npos) {
+        auto file = json_str(e, "file");
+        write_jpeg(d / file);
+        EXPECT_EQ(ck_keyframe_written(s, json_u32(e, "frame_id"), 1), CK_OK);
+      } else if (e.find("\"type\":\"overlay\"") != std::string::npos) {
+        out.push_back(e);
+      }
+    }
+  }
+  ck_session_stop(s, 300 * 33 * kMs);
+  ck_session_pump(s);
+  ck_session_finalize(s);
+  ck_session_destroy(s);
+  return out;
+}
+}  // namespace
+
+TEST(SessionOverlay, EmittedEvery500msOfEventTimeSmallAndDeterministic) {
+  auto a = overlay_events("overlay_a");
+  ASSERT_GE(a.size(), 15u);  // 9.9 s of event time
+  ASSERT_LE(a.size(), 21u);
+  int64_t prev = -1;
+  for (auto& e : a) {
+    EXPECT_LT(e.size(), 4096u);
+    auto p = e.find("\"t_ns\":");
+    int64_t t = std::stoll(e.substr(p + 7));
+    if (prev >= 0) {
+      EXPECT_GE(t - prev, 500 * kMs);
+      EXPECT_LT(t - prev, 500 * kMs + 34 * kMs);  // next pose after the 500 ms mark
+    }
+    prev = t;
+  }
+  EXPECT_EQ(a, overlay_events("overlay_b"));  // same input stream -> byte-identical events
+}

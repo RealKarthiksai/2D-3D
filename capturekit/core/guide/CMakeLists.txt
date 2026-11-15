@@ -7,5 +7,6 @@ target_sources(capturekit_core PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/instruction.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/guide_log.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/engine.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/overlay.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/guide_sink.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/sim.cpp)

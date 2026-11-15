@@ -12,6 +12,7 @@
 #include "capturekit/guide/instruction.hpp"
 #include "capturekit/guide/live_map.hpp"
 #include "capturekit/guide/nav_grid.hpp"
+#include "capturekit/guide/overlay.hpp"
 #include "capturekit/guide/planner.hpp"
 
 namespace capturekit::guide {
@@ -52,6 +53,8 @@ class GuideEngine {
   char tier() const { return map_.surface_count() > 0 || points_seen_ ? 'B' : 'C'; }
   std::string guidance_log_json() const { return log_.to_json(p_.hash()); }
   std::string report_json() const;
+  /// Glanceable snapshot of what the engine understands at event time t_ns (see overlay.hpp). Pure: no state change.
+  OverlayModel overlay(int64_t t_ns) const;
 
  private:
   void refresh_levels();

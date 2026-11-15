@@ -43,6 +43,7 @@ struct Config {
   uint64_t seed = 0;
   double max_s = 300;
   bool trace = false;  // add a coarse state trace to the report (debugging)
+  double overlay_every_s = 0;  // > 0: add "overlay_samples" (OverlayModel JSON every N s of sim time) and "overlay_max_bytes"; 0 leaves the report unchanged
   Human human;
   GuideParams guide;
 };

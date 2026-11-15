@@ -161,3 +161,74 @@ std::string GuideEngine::report_json() const {
 }
 
 }  // namespace capturekit::guide
+
+namespace capturekit::guide {
+
+OverlayModel GuideEngine::overlay(int64_t t) const {
+  OverlayModel m;
+  m.t_ns = t;
+  auto st = cov_.stats();
+  m.completeness = st.completeness();
+  m.seen = st.seen_fraction();
+  m.tracking = tracking_;
+  m.mode = plan_.mode == Mode::Finish ? "finish" : plan_.mode == Mode::Target ? "target" : "sweep";
+  m.floor_found = map_.has_floor();
+  m.ceiling_found = map_.has_ceiling();
+  m.user_x = user_.pos.x(), m.user_z = user_.pos.z(), m.user_yaw_deg = rad2deg(user_.yaw);
+  m.has_target = plan_.mode == Mode::Target && plan_.target.valid;
+  if (m.has_target) m.target_x = plan_.target.x, m.target_z = plan_.target.z;
+  for (auto& [id, pl] : map_.planes()) {
+    if (pl.kind != "wall") continue;
+    ++m.walls;
+    Vec3 d = pl.n.cross(Vec3::UnitY());  // horizontal direction along the wall
+    d.y() = 0;
+    if (d.norm() < 1e-6) continue;
+    d.normalize();
+    double half = 0.5 * (std::fabs(pl.u.dot(d)) * pl.eu + std::fabs(pl.v.dot(d)) * pl.ev);
+    OverlayWall w;
+    w.x0 = pl.c.x() - d.x() * half, w.z0 = pl.c.z() - d.z() * half;
+    w.x1 = pl.c.x() + d.x() * half, w.z1 = pl.c.z() + d.z() * half;
+    w.seen_pct = int(std::lround(100.0 * cov_.stats(id).seen_fraction()));
+    if (m.wall_list.size() < OverlayModel::kMaxWalls) m.wall_list.push_back(w);
+  }
+  m.wall_found = m.walls > 0;
+
+  // The one most useful reason right now, chosen in priority order.
+  const char* why = "why.keep";
+  const bool dark = underexp_seen_ && t - last_underexp_t_ < 2'000'000'000;
+  if (tracking_ == 3) {
+    why = "why.tracking_lost";
+  } else if (tracking_ == 2) {
+    why = "why.limited";
+  } else if (blur_streak_ >= int(p_.blur_frames)) {
+    why = "why.too_fast";
+  } else if (dark) {
+    why = "why.too_dark";
+  } else if (plan_.mode == Mode::Finish) {
+    why = "why.finish";
+  } else if (plan_.mode == Mode::Sweep) {
+    why = "why.sweep";
+  } else if (plan_.discover && plan_.target.valid && plan_.target.pitch > 0 && !map_.has_ceiling()) {
+    why = "why.ceiling";
+  } else if (plan_.discover && plan_.target.valid && plan_.target.pitch <= 0 && !map_.has_floor()) {
+    why = "why.floor";
+  } else {
+    const OverlayWall* worst = nullptr;
+    for (auto& w : m.wall_list)
+      if (w.seen_pct < 80 && (!worst || w.seen_pct < worst->seen_pct)) worst = &w;
+    if (worst) {
+      double rel = wrap_pi(std::atan2(0.5 * (worst->x0 + worst->x1) - user_.pos.x(), 0.5 * (worst->z0 + worst->z1) - user_.pos.z()) - user_.yaw);  // + = left
+      double a = std::fabs(rel);
+      why = a < deg2rad(45) ? "why.wall_ahead" : a > deg2rad(135) ? "why.wall_behind" : rel > 0 ? "why.wall_left" : "why.wall_right";
+    } else if (!map_.has_ceiling() && map_.surface_count() >= 2) {
+      why = "why.ceiling";
+    } else if (!map_.has_floor() && map_.surface_count() >= 2) {
+      why = "why.floor";
+    }
+  }
+  m.why_id = why;
+  m.why_text = why_line(why);
+  return m;
+}
+
+}  // namespace capturekit::guide

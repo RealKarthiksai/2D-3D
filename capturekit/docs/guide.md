@@ -30,3 +30,23 @@ Average step 1-2 ms (engine + simulator ground truth, `GuideSim.AverageStepWithi
 0.5 s, so the engine runs on the session worker, never on an AR callback.
 Known limits: only detected planes are covered (Phase 9 adds the room shell and missing-area finder); no depth tier; obstacles come from
 sparse points (a dilated 3x3 neighbourhood closes gaps); a person is modelled, not measured; English only.
+
+## Overlay event (glanceable "what the app understands")
+`GuideEngine::overlay(t_ns)` (`core/include/capturekit/guide/overlay.hpp`) builds an `OverlayModel`; `Session::guide_tick` emits it as a
+**non-critical** event every 500 ms of event time (dropped and counted if the outbound queue is full; not written to the bundle; ADR 0013).
+No `capturekit.h` change. Flat JSON, sorted keys, always under 4 KB (tested), one line per event:
+
+| Field | Meaning |
+|---|---|
+| `type` ("overlay"), `t_ns` | event type, event time |
+| `completeness`, `seen` | 0..1, sufficient / seen fraction of valid plane cells |
+| `tracking` | 1 normal, 2 limited, 3 not available |
+| `mode` | `sweep` \| `target` \| `finish` |
+| `wall_found`, `floor_found`, `ceiling_found`, `walls` | map flags and wall plane count |
+| `user_x`, `user_z`, `user_yaw_deg` | user position (m) and heading (positive = left) |
+| `has_target`, `target_x`, `target_z` | current plan target (only while `mode` is `target`) |
+| `why_id`, `why_text` | one reason, rendered by the core catalog (<= 8 words, English): sweep, tracking lost / weak, moving too fast, too dark, left/right/ahead/behind wall not scanned yet, ceiling/floor not seen yet, scan complete, keep scanning |
+| `surfaces` | wall segments, ONE string `x0,z0,x1,z1,pct;...` (world metres, pct = % of the wall's cells seen), at most 12 walls |
+
+Golden: `core/tests/golden/overlay_box_seed1.jsonl` (sim `box`, seed 1, 60 s, one snapshot per 5 s). Regenerate with
+`CK_UPDATE_GOLDEN=1 capturekit_core_tests --gtest_filter='Overlay.Golden*'` and review the diff.

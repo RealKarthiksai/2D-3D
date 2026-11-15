@@ -172,6 +172,7 @@ class Session {
   geometry::PoseWC pose_;
   int tracking_ = 0, normal_run_ = 0;
   int64_t last_t_ = 0, last_event_t_ = INT64_MIN, last_frame_t_ = 0;
+  int64_t last_overlay_t_ = -1;  // event time of the last "overlay" event (500 ms cadence)
   std::map<int64_t, Pending> reorder_;
   std::map<uint32_t, int64_t> t_of_frame_;
   uint32_t next_keyframe_ = 0;

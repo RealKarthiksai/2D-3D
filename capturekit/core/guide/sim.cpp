@@ -300,7 +300,8 @@ std::string simulate(const Config& cfg) {
   double t80 = -1, t90 = -1, t95 = -1;
   int n_frames = 0, n_keyframes = 0, unsafe_gt = 0, last_target_id = 0;
   std::vector<std::pair<double, double>> series;
-  std::vector<std::string> trace;
+  std::vector<std::string> trace, overlay_samples;
+  size_t overlay_max_bytes = 0;
   int tracking = 1, tracking_loss_events = 0;
   double lost_until = -1;
   double finish_issued_t = -1;
@@ -466,6 +467,11 @@ std::string simulate(const Config& cfg) {
     if (use_engine) {
       new_ins.clear();
       engine.update(t_ns, new_ins);
+      if (cfg.overlay_every_s > 0 && step % 15 == 0) {  // the session emits the overlay every 500 ms of event time
+        std::string oj = engine.overlay(t_ns).to_json();
+        overlay_max_bytes = std::max(overlay_max_bytes, oj.size());
+        if (step % std::max(1, int(std::lround(cfg.overlay_every_s * 30))) == 0) overlay_samples.push_back(oj);
+      }
       {  // ground-truth safety: a target must be walkable in the TRUE room (not just in the engine's map)
         const Target& tg = engine.planner().current();
         if (tg.valid && tg.id != last_target_id) {
@@ -683,6 +689,7 @@ std::string simulate(const Config& cfg) {
     o.set("coverage_claimed_final", r3(st.completeness())).set("tier", std::string(1, engine.tier()));
     o.set("finish_issued_s", finish_issued_t < 0 ? -1.0 : r3(finish_issued_t));
     o.set("unsafe_targets_gt", unsafe_gt);
+    if (cfg.overlay_every_s > 0) o.raw("overlay_samples", json::array(overlay_samples.begin(), overlay_samples.end())).set("overlay_max_bytes", uint64_t(overlay_max_bytes));
     o.set("instructions_received", me.received).set("instructions_followed", me.followed);
     o.raw("guide", engine.report_json());
     double mins = std::max(dur / 60.0, 1e-9);

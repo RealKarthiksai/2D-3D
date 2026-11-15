@@ -610,6 +610,12 @@ void Session::guide_tick(int64_t t) {
     emit(o.dump(), true);
     write_event(t, "guide", "GUIDE_INSTRUCTION", i.speak_text, {{"instruction", guide::type_name(i.type)}, {"id", std::to_string(i.id)}});
   }
+  // Glanceable "what the app understands" snapshot every 500 ms of EVENT time; non-critical (dropped and
+  // counted when the outbound queue is full), never written to the bundle.
+  if (last_overlay_t_ < 0 || t - last_overlay_t_ >= 500'000'000) {
+    last_overlay_t_ = t;
+    emit(guide_.overlay(t).to_json(), false);
+  }
 }
 
 void Session::report_drops(int64_t t) {
