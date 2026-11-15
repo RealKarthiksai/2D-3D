@@ -1,17 +1,47 @@
 // JNI bridge: dev.capturekit.nativebridge.CaptureKitNative <-> C API (capi/capturekit.h).
-// Thin by design: argument unpacking only, no logic. The session handle is the ck_session* as jlong.
+// Thin by design: argument unpacking only, no logic.
+// Uses a handle map (small positive integers) instead of raw pointers to avoid
+// ARM64 MTE/TBI tagged-pointer issues where reinterpret_cast<jlong>(ptr) can be
+// negative, fooling the Kotlin "handle <= 0 means error" check.
 #include <jni.h>
 
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "capturekit/capi/capturekit.h"
 
 #define FN(ret, name) extern "C" JNIEXPORT ret JNICALL Java_dev_capturekit_nativebridge_CaptureKitNative_##name
-#define S(h) reinterpret_cast<ck_session*>(h)
 
 namespace {
+
+// ---- Handle map: jlong <-> ck_session* ----
+std::mutex g_mu;
+std::unordered_map<jlong, ck_session*> g_handles;
+jlong g_next = 1;
+
+jlong add_handle(ck_session* s) {
+  std::lock_guard<std::mutex> lk(g_mu);
+  jlong h = g_next++;
+  g_handles[h] = s;
+  return h;  // always > 0
+}
+
+ck_session* get_handle(jlong h) {
+  std::lock_guard<std::mutex> lk(g_mu);
+  auto it = g_handles.find(h);
+  return it != g_handles.end() ? it->second : nullptr;
+}
+
+void remove_handle(jlong h) {
+  std::lock_guard<std::mutex> lk(g_mu);
+  g_handles.erase(h);
+}
+
+#define S(h) get_handle(h)
+
 std::string str(JNIEnv* e, jstring s) {
   if (!s) return {};
   const char* c = e->GetStringUTFChars(s, nullptr);
@@ -27,9 +57,12 @@ FN(jlong, create)(JNIEnv* e, jobject, jstring dir, jstring cfg) {
   ck_status err = CK_OK;
   auto d = str(e, dir), c = str(e, cfg);
   ck_session* s = ck_session_create(d.c_str(), c.empty() ? "{}" : c.c_str(), &err);
-  return s ? reinterpret_cast<jlong>(s) : -jlong(err);  // negative = ck_status error
+  return s ? add_handle(s) : -jlong(err);  // positive = valid handle, negative = ck_status error
 }
-FN(void, destroy)(JNIEnv*, jobject, jlong h) { ck_session_destroy(S(h)); }
+FN(void, destroy)(JNIEnv*, jobject, jlong h) {
+  ck_session* s = get_handle(h);
+  if (s) { ck_session_destroy(s); remove_handle(h); }
+}
 
 FN(jint, start)(JNIEnv*, jobject, jlong h, jlong t) { return ck_session_start(S(h), t); }
 FN(jint, pause)(JNIEnv*, jobject, jlong h, jlong t) { return ck_session_pause(S(h), t); }
