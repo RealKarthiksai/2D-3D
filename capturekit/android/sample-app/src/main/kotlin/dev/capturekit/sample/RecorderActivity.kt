@@ -1,17 +1,17 @@
 package dev.capturekit.sample
 
-import android.Manifest
 import android.app.Activity
-import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Bundle
-import android.widget.Button
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.TextView
 import dev.capturekit.raw.RawRecorder
 import java.io.File
 import java.text.SimpleDateFormat
@@ -25,34 +25,36 @@ import java.util.Locale
 open class RecorderActivity : Activity(), SensorEventListener {
     protected open val clockCheck = false
     private lateinit var ar: ArHost
-    private lateinit var status: TextView
+    private lateinit var hud: Hud
     private lateinit var sensors: SensorManager
     @Volatile protected var recorder: RawRecorder? = null
-    private var frames = 0L
+    @Volatile private var frames = 0L
+    @Volatile private var trackState = "?"
+    @Volatile private var trackFailure = "NONE"
+    private var recStartMs = 0L
+    private var arMessage: String? = null
+    private val ui = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         sensors = getSystemService(SENSOR_SERVICE) as SensorManager
         ar = ArHost(this) { frame ->
+            trackState = frame.camera.trackingState.name
+            trackFailure = frame.camera.trackingFailureReason.name
             val r = recorder ?: return@ArHost
             if (clockCheck) r.onClockSample("ar", frame.timestamp) else r.onArFrame(frame)
-            if (++frames % 30 == 0L) runOnUiThread {
-                status.text = "frames=$frames dropped=${r.droppedCount} tracking=${frame.camera.trackingState}"
-            }
+            frames++
         }
-        status = TextView(this).apply { text = if (clockCheck) "Clock check" else "Raw recorder" }
-        val toggle = Button(this).apply { text = "Start" }
-        toggle.setOnClickListener {
-            if (recorder == null) { start(); toggle.text = "Stop" } else { stop(); toggle.text = "Start" }
-        }
-        val overlay = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(status); addView(toggle)
-        }
-        setContentView(FrameLayout(this).apply { addView(ar.view); addView(overlay) })
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.CAMERA), 1)
-        }
+        ar.onError = { msg -> arMessage = msg; refresh() }
+        hud = Hud(this)
+        hud.setCoaching(if (clockCheck) "Clock check: press Start, wait a few seconds, then Stop" else "Raw recorder: press Start, then move slowly around the room")
+        hud.button.setOnClickListener { if (recorder == null) start() else stop() }
+        setContentView(FrameLayout(this).apply {
+            addView(ar.view, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            addView(hud.root, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        })
+        if (!CameraPermission.granted(this)) CameraPermission.request(this)
     }
 
     private fun start() {
@@ -61,16 +63,52 @@ open class RecorderActivity : Activity(), SensorEventListener {
         val dir = File(getExternalFilesDir("sessions"), "${prefix}_$stamp")
         recorder = RawRecorder(dir).also { it.writeDevice() }
         frames = 0
+        recStartMs = SystemClock.elapsedRealtime()
         for (type in intArrayOf(Sensor.TYPE_GYROSCOPE, Sensor.TYPE_ACCELEROMETER)) {
-            sensors.getDefaultSensor(type)?.let { sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST) }
+            sensors.getDefaultSensor(type)?.let { sensors.registerListener(this, it, IMU_PERIOD_US) }
         }
+        hud.setResult(null)
+        hud.setRecording(true)
+        hud.setDetail("Recording started -> ${dir.name}")
+        hud.haptic(false)
     }
 
     private fun stop() {
         sensors.unregisterListener(this)
-        recorder?.close()
-        status.text = "saved ${recorder?.dir}"
+        val r = recorder
+        val n = frames
         recorder = null
+        r?.close()
+        hud.setRecording(false)
+        hud.setDetail(null)
+        hud.haptic(true)
+        if (r != null) {
+            hud.setResult("Saved: ${r.dir.name}\nframes $n\n${r.dir}", UiKit.Kind.OK)
+            Thread {
+                val size = try { UiKit.dirSizeBytes(r.dir) } catch (t: Throwable) { 0L }
+                runOnUiThread { hud.setResult("Saved: ${r.dir.name}\nframes $n | ${UiKit.humanSize(size)}\n${r.dir}", UiKit.Kind.OK) }
+            }.start()
+        }
+    }
+
+    /** UI refresh at ~4 Hz while resumed. */
+    private val tick = object : Runnable {
+        override fun run() { ar.checkStall(); refresh(); ui.postDelayed(this, 250) }
+    }
+
+    private fun refresh() {
+        hud.setTracking(trackState, trackFailure, ar.live() || ar.lastFrameMs == 0L || ar.state != ArState.READY)
+        recorder?.let { r ->
+            hud.setRecInfo(SystemClock.elapsedRealtime() - recStartMs, "frames $frames  dropped ${r.droppedCount}")
+        }
+        val am = arMessage
+        when {
+            am != null && ar.state == ArState.NO_PERMISSION ->
+                hud.setBanner("Camera permission is needed to scan the room.", UiKit.Kind.ERROR, CameraPermission.retryLabel()) { CameraPermission.retry(this) }
+            am != null && ar.state != ArState.READY ->
+                hud.setBanner(am, UiKit.Kind.ERROR, "Retry") { arMessage = null; ar.retry(); refresh() }
+            else -> hud.setBanner(null)
+        }
     }
 
     override fun onSensorChanged(e: SensorEvent) {
@@ -84,18 +122,38 @@ open class RecorderActivity : Activity(), SensorEventListener {
 
     override fun onResume() {
         super.onResume()
-        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) ar.resume()
+        arMessage = null
+        ar.resume()
+        ui.post(tick)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) UiKit.immersive(this)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (CameraPermission.onResult(this, grantResults)) { arMessage = null; ar.resume() }
+        else { arMessage = "Camera permission is needed to scan the room."; refresh() }
     }
 
     override fun onPause() {
+        ui.removeCallbacks(tick)
         super.onPause()
         if (recorder != null) stop()
         ar.pause()
     }
 
     override fun onDestroy() {
+        hud.release()
         ar.close()
         super.onDestroy()
+    }
+
+    private companion object {
+        /** 200 Hz: the cap without HIGH_SAMPLING_RATE_SENSORS (targetSdk 31+). Spec needs >=100 Hz. */
+        const val IMU_PERIOD_US = 5000
     }
 }
 

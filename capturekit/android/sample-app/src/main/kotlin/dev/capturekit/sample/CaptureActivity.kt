@@ -1,22 +1,21 @@
 package dev.capturekit.sample
 
-import android.Manifest
 import android.app.Activity
 import android.content.Intent
-import android.content.IntentFilter
-import android.content.pm.PackageManager
-import android.os.BatteryManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
-import android.widget.Button
+import android.util.Log
+import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.TextView
 import dev.capturekit.capture.ARAdapter
 import dev.capturekit.capture.CoreEvent
 import dev.capturekit.capture.Policy
 import dev.capturekit.capture.SensorBridge
 import dev.capturekit.capture.SessionManager
+import dev.capturekit.nativebridge.Status
 import dev.capturekit.platform.PlatformSignals
 import dev.capturekit.platform.ThermalAdapter
 import java.io.File
@@ -25,41 +24,76 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Phase 6 capture screen: a real core session (quality, keyframe selection, governor) with live
- * quality and policy readout. Bundles land in getExternalFilesDir("bundles"); interrupted sessions
- * are recovered on the next launch. Pull with: adb pull /sdcard/Android/data/dev.capturekit.sample/files/bundles
+ * Guided scan screen: a real core session (quality, keyframe selection, governor, guidance) over the live
+ * camera image with a friendly HUD. Core instructions are shown (speak_text as coaching, long_text as
+ * subtitle), spoken verbatim by [SpeechRenderer] and mapped to haptics. Finish hands over to [ReviewActivity].
+ * Bundles land in getExternalFilesDir("bundles"); interrupted sessions are recovered on the next launch.
+ * Pull with: adb pull /sdcard/Android/data/dev.capturekit.sample/files/bundles
  */
 class CaptureActivity : Activity(), SessionManager.Listener {
     private lateinit var ar: ArHost
-    private lateinit var status: TextView
-    private lateinit var toggle: Button
+    private lateinit var hud: Hud
+    private lateinit var speech: SpeechRenderer
     private var session: SessionManager? = null
-    private var adapter: ARAdapter? = null
+    @Volatile private var adapter: ARAdapter? = null
+    @Volatile private var arActive = true
     private var sensors: SensorBridge? = null
     private var thermal: ThermalAdapter? = null
-    @Volatile private var lastQuality = "-"
+    private val ui = Handler(Looper.getMainLooper())
+    @Volatile private var lastQuality = -1.0
+    @Volatile private var lastReasons = ""
     @Volatile private var lastPolicy: Policy? = null
     @Volatile private var keyframes = 0
     @Volatile private var lastGovernor = "-"
     @Volatile private var instruction = ""
-    private var frames = 0L
+    @Volatile private var instructionLong = ""
+    @Volatile private var overlay: CoreEvent.Overlay? = null
+    @Volatile private var trackState = "?"
+    @Volatile private var trackFailure = "NONE"
+    @Volatile private var corePaused = false
+    private var recStartMs = 0L
+    private var pausedAtMs = 0L
+    private var pausedTotalMs = 0L
+    private var recording = false
+    private var finishing = false
+    private var arMessage: String? = null
+    private var detailCleared = false
+    private var recovering = true
+    private var recoveredNote: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        status = TextView(this).apply { text = "recovering interrupted sessions..." }
-        toggle = Button(this).apply { text = "Start"; setOnClickListener { if (session == null) start() else stop() } }
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        speech = SpeechRenderer(this)
         ar = ArHost(this) { frame ->
+            if (!arActive) return@ArHost   // no Frame use once onPause started tearing the Session down
             adapter?.onFrame(frame)
-            if (++frames % 15 == 0L) runOnUiThread { render(frame.camera.trackingState.name) }
+            trackState = frame.camera.trackingState.name
+            trackFailure = frame.camera.trackingFailureReason.name
         }
+        ar.onError = { msg -> arMessage = msg; refresh() }
+        hud = Hud(this)
+        hud.pauseEnabled = true
+        hud.button.setOnClickListener { if (session == null) start() else stop() }
+        hud.pauseButton.setOnClickListener { togglePause() }
+        hud.onVoiceToggle = { speech.enabled = !speech.enabled; hud.setVoice(speech.enabled) }
+        hud.setVoice(speech.enabled)
+        hud.setCoaching("Press Start, then move slowly around the room")
         setContentView(FrameLayout(this).apply {
-            addView(ar.view)
-            addView(LinearLayout(this@CaptureActivity).apply { orientation = LinearLayout.VERTICAL; addView(status); addView(toggle) })
+            addView(ar.view, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            addView(hud.root, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         })
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(Manifest.permission.CAMERA), 1)
+        if (!CameraPermission.granted(this)) CameraPermission.request(this)
+        hud.button.isEnabled = false
+        hud.setDetail("Checking for interrupted sessions...")
         Thread {
             val recovered = SessionManager.recoverInterrupted(this)
-            runOnUiThread { status.text = if (recovered.isEmpty()) "ready" else "recovered ${recovered.size} interrupted session(s)" }
+            runOnUiThread {
+                recovering = false
+                recoveredNote = if (recovered.isEmpty()) null else "Recovered ${recovered.size} interrupted session(s)"
+                hud.setDetail(recoveredNote)
+                hud.button.isEnabled = session == null
+            }
         }.start()
     }
 
@@ -67,47 +101,204 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val dir = File(getExternalFilesDir("bundles"), "scan_$stamp")
         val s = SessionManager(this, dir, listener = this)
-        if (!s.start()) { status.text = "could not start session"; return }
+        if (!s.start()) {
+            hud.setBanner("Could not start the capture session. Check free storage and try again.", UiKit.Kind.ERROR)
+            return
+        }
         session = s
-        adapter = ARAdapter(s)
+        ar.stats = s.stats
+        ar.recording = true
+        adapter = ARAdapter(s, 0L) { ar.session }
         sensors = SensorBridge(this, s).also { it.start() }
         thermal = ThermalAdapter(this) { p -> pushPlatform(s, p) }.also { it.start() }
-        keyframes = 0; frames = 0
-        toggle.text = "Finish"
+        keyframes = 0; instruction = ""; instructionLong = ""; overlay = null; detailCleared = false; lastQuality = -1.0; lastReasons = ""
+        corePaused = false; pausedTotalMs = 0; pausedAtMs = 0
+        recStartMs = SystemClock.elapsedRealtime(); recording = true
+        hud.setResult(null)
+        hud.setRecording(true)
+        hud.setDetail("Recording to ${dir.name}")
+        hud.setCoaching("Move slowly and keep the camera steady")
+        hud.haptic(false)
     }
 
     private fun pushPlatform(s: SessionManager, p: PlatformSignals) =
         s.onPlatform(SystemClock.elapsedRealtimeNanos(), p.thermalLevel, p.lowPowerMode, p.batteryPct, p.charging, 0.0)
 
+    private fun togglePause() {
+        val s = session ?: return
+        if (!recording) return
+        if (!corePaused) {
+            if (s.pause() == Status.OK) {
+                speech.stopNow()
+                hud.setCoaching("Paused. Press Resume when you are ready")
+                hud.haptic(false)
+            }
+        } else {
+            val st = s.resume()
+            if (st == Status.OK) hud.setCoaching("Move slowly and keep the camera steady")
+            else hud.setBanner("Cannot resume yet: the phone needs to cool down or charge (status ${UiKit.statusName(st)}).", UiKit.Kind.WARN)
+        }
+    }
+
     private fun stop() {
         val s = session ?: return
+        if (finishing) return
+        finishing = true
+        speech.stopNow()
         sensors?.stop(); thermal?.stop(); adapter = null
-        toggle.isEnabled = false
+        hud.button.isEnabled = false
+        hud.pauseButton.isEnabled = false
+        val elapsed = elapsedMs()
+        recording = false
+        ar.recording = false
+        hud.setRecording(false)
+        hud.setDetail(null)
+        hud.setResult("Saving the scan...", UiKit.Kind.INFO)
+        hud.setCoaching("Saving. Keep the app open")
+        hud.haptic(true)
+        val kf = keyframes
         Thread {
             val st = s.finish()
-            runOnUiThread { status.text = "saved ${s.dir} (status $st)"; toggle.text = "Start"; toggle.isEnabled = true; session = null }
+            runOnUiThread {
+                session = null
+                startActivity(Intent(this, ReviewActivity::class.java)
+                    .putExtra(ReviewActivity.EXTRA_DIR, s.dir.absolutePath)
+                    .putExtra(ReviewActivity.EXTRA_STATUS, st)
+                    .putExtra(ReviewActivity.EXTRA_ELAPSED_MS, elapsed)
+                    .putExtra(ReviewActivity.EXTRA_KEYFRAMES, kf))
+                finish()
+            }
         }.start()
     }
 
-    private fun render(tracking: String) {
-        val p = lastPolicy
-        status.text = "tracking=$tracking  keyframes=$keyframes  quality=$lastQuality\n" +
-            "policy=${p?.levelName ?: "-"} kf x${p?.keyframeRateScale ?: 1.0} res tier ${p?.resolutionTier ?: 0}" +
-            (if (p?.mustPause == true) "  PAUSED: phone too hot/low battery" else "") +
-            "\ngovernor: $lastGovernor  dropped@edge=${session?.droppedAtEdge?.get() ?: 0}\n» $instruction"
+    private fun elapsedMs(): Long {
+        val now = if (corePaused && pausedAtMs != 0L) pausedAtMs else SystemClock.elapsedRealtime()
+        return now - recStartMs - pausedTotalMs
     }
 
+    /** UI refresh at ~4 Hz while resumed: reads volatile state written by the AR/core threads. */
+    private val tick = object : Runnable {
+        override fun run() {
+            ar.checkStall()
+            refresh()
+            ui.postDelayed(this, 250)
+        }
+    }
+
+    private fun refresh() {
+        hud.setTracking(trackState, trackFailure, ar.live() || ar.lastFrameMs == 0L || ar.state != ArState.READY)
+        session?.let { hud.setDebug(it.stats.hudLine()) }
+        if (lastQuality >= 0) hud.setQuality(lastQuality, lastReasons)
+        val ov = if (recording) overlay else null
+        // The "Recording to <dir>" detail line collides with the taller bottom stack (coaching + why) once snapshots flow.
+        if (ov != null && !detailCleared) { detailCleared = true; hud.setDetail(null) }
+        hud.setUnderstanding(ov)
+        if (recording) {
+            hud.setPaused(corePaused)
+            hud.setRecInfo(elapsedMs(), "keyframes $keyframes")
+            if (!corePaused && instruction.isNotEmpty()) hud.setCoaching(instruction, instructionLong)
+        }
+        val p = lastPolicy
+        val thermalMsg = when {
+            !recording || p == null -> null
+            p.mustPause -> "Capture paused: the phone is too hot or the battery is low. Let it rest."
+            p.level >= 4 -> "The phone is hot. Consider a short break."
+            p.level >= 1 -> "The phone is warming up, so capture eases off a little."
+            else -> null
+        }
+        val am = arMessage
+        when {
+            am != null && ar.state == ArState.NO_PERMISSION ->
+                hud.setBanner("Camera permission is needed to scan the room.", UiKit.Kind.ERROR, CameraPermission.retryLabel()) { CameraPermission.retry(this) }
+            am != null && ar.state != ArState.READY ->
+                hud.setBanner(am, UiKit.Kind.ERROR, "Retry") { arMessage = null; ar.retry(); refresh() }
+            !speech.available && recording -> hud.setBanner("Voice guidance is unavailable: no offline text-to-speech voice. On-screen prompts still work.", UiKit.Kind.INFO)
+            thermalMsg != null -> hud.setBanner(thermalMsg, UiKit.Kind.WARN)
+            else -> hud.setBanner(null)
+        }
+    }
+
+    // Core event thread (not the AR thread).
     override fun onEvent(e: CoreEvent) {
         when (e) {
-            is CoreEvent.FrameQuality -> lastQuality = "%.2f%s".format(e.quality, if (e.reasons.isEmpty()) "" else " " + e.reasons.joinToString(","))
+            is CoreEvent.FrameQuality -> { lastQuality = e.quality; lastReasons = e.reasons.joinToString(", ") }
             is CoreEvent.KeyframeRequest -> keyframes++
-            is CoreEvent.Instruction -> instruction = e.speakText
+            is CoreEvent.Instruction -> {
+                instruction = e.speakText; instructionLong = e.longText
+                if (!corePaused) {
+                    speech.onInstruction(e.id, e.speakText, e.priority)
+                    hud.hapticFor(e.haptic, e.priority)
+                }
+            }
+            is CoreEvent.Overlay -> overlay = e
             is CoreEvent.Governor -> lastGovernor = "${e.from}->${e.to} (${e.reason})"
             else -> {}
         }
     }
     override fun onPolicy(p: Policy) { lastPolicy = p }
 
-    override fun onResume() { super.onResume(); ar.resume() }
-    override fun onPause() { ar.pause(); super.onPause() }
+    override fun onState(state: Int) {
+        val nowPaused = state == STATE_PAUSED
+        if (nowPaused == corePaused) return
+        if (nowPaused) { pausedAtMs = SystemClock.elapsedRealtime(); speech.stopNow() }
+        else if (pausedAtMs != 0L) { pausedTotalMs += SystemClock.elapsedRealtime() - pausedAtMs; pausedAtMs = 0 }
+        corePaused = nowPaused
+    }
+
+    override fun onResume() {
+        super.onResume()
+        arMessage = null
+        ar.resume()
+        arActive = true
+        ui.post(tick)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) UiKit.immersive(this)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (CameraPermission.onResult(this, grantResults)) { arMessage = null; ar.resume() }
+        else { arMessage = "Camera permission is needed to scan the room."; refresh() }
+    }
+
+    override fun onPause() {
+        val t0 = SystemClock.elapsedRealtime()
+        ui.removeCallbacks(tick)
+        // Leaving the screen mid-scan: pause the core session so no gap is recorded as tracking data.
+        if (recording && !corePaused && !finishing) session?.pause()
+        speech.stopNow()
+        val t1 = SystemClock.elapsedRealtime()
+        arActive = false
+        ar.pause()
+        val t2 = SystemClock.elapsedRealtime()
+        super.onPause()
+        Log.i(TAG, "timing Activity.onPause total=${SystemClock.elapsedRealtime() - t0}ms core+speech=${t1 - t0}ms ar.pause=${t2 - t1}ms")
+    }
+
+    override fun onDestroy() {
+        // Destroyed mid-scan (Back, swipe-away, system): finish the session so the work is kept as a bundle and
+        // nothing leaks (native handle, ck-events thread, sensor/thermal listeners). finish() writes a complete
+        // bundle; if the process dies before it ends, the DB still says "recording" and next launch recovers it.
+        val s = session
+        if (s != null && !finishing) {
+            finishing = true
+            ar.recording = false
+            sensors?.stop(); thermal?.stop(); adapter = null
+            session = null
+            Log.w(TAG, "destroyed mid-scan: finishing ${s.dir.name} so the scan is kept")
+            Thread {
+                val st = s.finish()
+                Log.w(TAG, "mid-scan finish of ${s.dir.name}: status ${UiKit.statusName(st)}")
+            }.start()
+        }
+        hud.release()
+        speech.release()
+        ar.close()
+        super.onDestroy()
+    }
+
+    private companion object { const val STATE_PAUSED = 3; const val TAG = "CKCapture" }
 }
