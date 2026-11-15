@@ -12,11 +12,30 @@ sealed class CoreEvent {
         val id: Int, val type: String, val speakText: String, val longText: String,
         val priority: Int, val haptic: String, val overlayHint: String,
     ) : CoreEvent()
+    /** Glanceable "what the app understands" snapshot (~2 Hz, non-critical). Wording (whyText) comes from the core. */
+    data class Overlay(
+        val completeness: Double, val seen: Double, val tracking: Int, val mode: String,
+        val wallFound: Boolean, val floorFound: Boolean, val ceilingFound: Boolean, val walls: Int,
+        val userX: Double, val userZ: Double, val userYawDeg: Double,
+        val hasTarget: Boolean, val targetX: Double, val targetZ: Double,
+        val whyId: String, val whyText: String, val surfaces: List<WallSeg>,
+    ) : CoreEvent()
     data class IngestDrop(val counts: Map<String, Long>) : CoreEvent()
     data class Other(val type: String, val raw: String) : CoreEvent()
 }
 
+/** One wall segment in world metres (x,z plan view) and the percentage of its cells seen. */
+data class WallSeg(val x0: Double, val z0: Double, val x1: Double, val z1: Double, val pct: Int)
+
 object EventParser {
+    /** "x0,z0,x1,z1,pct;..." -> segments; malformed entries are skipped. */
+    fun parseSurfaces(s: String): List<WallSeg> = s.split(';').mapNotNull { part ->
+        val f = part.split(',')
+        if (f.size != 5) return@mapNotNull null
+        val v = f.map { it.trim().toDoubleOrNull() ?: return@mapNotNull null }
+        WallSeg(v[0], v[1], v[2], v[3], v[4].toInt())
+    }
+
     private fun str(line: String, key: String): String? =
         Regex("\"$key\":\"((?:[^\"\\\\]|\\\\.)*)\"").find(line)?.groupValues?.get(1)
 
@@ -41,6 +60,15 @@ object EventParser {
                 (num(line, "id") ?: return null).toInt(), str(line, "instruction") ?: "", str(line, "speak_text") ?: "",
                 str(line, "long_text") ?: "", (num(line, "priority") ?: 2.0).toInt(), str(line, "haptic") ?: "none",
                 str(line, "overlay_hint") ?: "",
+            )
+            "overlay" -> CoreEvent.Overlay(
+                num(line, "completeness") ?: 0.0, num(line, "seen") ?: 0.0, (num(line, "tracking") ?: 0.0).toInt(),
+                str(line, "mode") ?: "",
+                line.contains("\"wall_found\":true"), line.contains("\"floor_found\":true"), line.contains("\"ceiling_found\":true"),
+                (num(line, "walls") ?: 0.0).toInt(),
+                num(line, "user_x") ?: 0.0, num(line, "user_z") ?: 0.0, num(line, "user_yaw_deg") ?: 0.0,
+                line.contains("\"has_target\":true"), num(line, "target_x") ?: 0.0, num(line, "target_z") ?: 0.0,
+                str(line, "why_id") ?: "", str(line, "why_text") ?: "", parseSurfaces(str(line, "surfaces") ?: ""),
             )
             "ingest_drop" -> CoreEvent.IngestDrop(
                 listOf("pose", "gyro", "accel", "intrinsics", "frame", "points", "plane", "platform")

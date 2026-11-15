@@ -46,6 +46,29 @@ not json
     }
 
     @Test
+    fun overlayEvent() {
+        val e = EventParser.parseLine(
+            """{"ceiling_found":false,"completeness":0.35,"floor_found":true,"has_target":true,"mode":"target","seen":0.8627,"surfaces":"1.25,4.00,3.65,4.00,86;-0.5,0.00,-0.5,3.20,12","t_ns":4999999950,"target_x":2.55,"target_z":3.05,"tracking":1,"type":"overlay","user_x":2.47,"user_yaw_deg":-2,"user_z":3.05,"wall_found":true,"walls":2,"why_id":"why.left","why_text":"Left wall not scanned yet"}""",
+        ) as CoreEvent.Overlay
+        assertEquals(0.35, e.completeness, 1e-9); assertEquals(0.8627, e.seen, 1e-9)
+        assertEquals(1, e.tracking); assertEquals("target", e.mode)
+        assertTrue(e.wallFound && e.floorFound && !e.ceilingFound); assertEquals(2, e.walls)
+        assertEquals(2.47, e.userX, 1e-9); assertEquals(3.05, e.userZ, 1e-9); assertEquals(-2.0, e.userYawDeg, 1e-9)
+        assertTrue(e.hasTarget); assertEquals(2.55, e.targetX, 1e-9); assertEquals(3.05, e.targetZ, 1e-9)
+        assertEquals("why.left", e.whyId); assertEquals("Left wall not scanned yet", e.whyText)
+        assertEquals(listOf(WallSeg(1.25, 4.0, 3.65, 4.0, 86), WallSeg(-0.5, 0.0, -0.5, 3.2, 12)), e.surfaces)
+    }
+
+    @Test
+    fun overlayEmptySurfacesAndMalformed() {
+        val e = EventParser.parseLine(
+            """{"ceiling_found":false,"completeness":0,"floor_found":false,"has_target":false,"mode":"sweep","seen":0,"surfaces":"","t_ns":0,"target_x":0,"target_z":0,"tracking":1,"type":"overlay","user_x":2.5,"user_yaw_deg":0,"user_z":2,"wall_found":false,"walls":0,"why_id":"why.sweep","why_text":"Looking for walls: sweep slowly"}""",
+        ) as CoreEvent.Overlay
+        assertTrue(e.surfaces.isEmpty()); assertTrue(!e.hasTarget); assertEquals("sweep", e.mode)
+        assertEquals(listOf(WallSeg(1.0, 2.0, 3.0, 4.0, 5)), EventParser.parseSurfaces("1,2,3,4,5;bad;1,2,3;x,y,z,w,v;"))
+    }
+
+    @Test
     fun policyDecode() {
         val p = Policy.from(doubleArrayOf(3.0, 0.5, 0.25, 1.0, 0.0, 0.0, 0.0))
         assertEquals("LOWER_RESOLUTION", p.levelName)

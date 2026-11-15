@@ -25,8 +25,8 @@ class SensorBridge(
         val t = HandlerThread("ck-sensors").also { it.start() }
         thread = t
         val h = Handler(t.looper)
-        sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, h) }
-        sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, h) }
+        sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)?.let { sm.registerListener(this, it, IMU_PERIOD_US, h) }
+        sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { sm.registerListener(this, it, IMU_PERIOD_US, h) }
     }
 
     fun stop() {
@@ -45,4 +45,9 @@ class SensorBridge(
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+
+    private companion object {
+        /** 200 Hz: the cap without HIGH_SAMPLING_RATE_SENSORS (targetSdk 31+). Spec needs >=100 Hz. */
+        const val IMU_PERIOD_US = 5000
+    }
 }

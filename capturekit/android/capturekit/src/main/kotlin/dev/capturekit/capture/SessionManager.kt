@@ -54,6 +54,7 @@ class SessionManager(
     private var pollHandler: Handler? = null
     @Volatile private var polling = false
     val droppedAtEdge = AtomicInteger(0)
+    val stats = IngestStats()
     private val db = CaptureDb.get(context).sessions()
 
     private fun mono() = SystemClock.elapsedRealtimeNanos() + clockOffsetNs
@@ -89,7 +90,7 @@ class SessionManager(
         if (text.isEmpty()) return
         for (e in EventParser.parse(text)) {
             when (e) {
-                is CoreEvent.KeyframeRequest -> encoder.execute { encodeKeyframe(e.frameId, e.file) }
+                is CoreEvent.KeyframeRequest -> { stats.keyframes.incrementAndGet(); encoder.execute { encodeKeyframe(e.frameId, e.file) } }
                 is CoreEvent.StateChange -> listener?.onState(N.state(handle))
                 else -> {}
             }
@@ -119,16 +120,21 @@ class SessionManager(
     /** Called by ARAdapter for every ARCore frame; forwards every Nth as a quality candidate. */
     fun onFrame(frame: Frame, t: Long) {
         if (handle == 0L || ++frameCounter % frameEveryN != 0) return
-        val img = try { frame.acquireCameraImage() } catch (e: Exception) { return }
+        stats.frameCalls.incrementAndGet()
+        val img = try { frame.acquireCameraImage() } catch (e: Exception) { stats.acquireFailed(e); return }
         img.use {
             val w = it.width; val h = it.height
             val yp = it.planes[0]; val up = it.planes[1]
             val ys = yp.buffer; val ysz = ys.remaining()
+            val need = IngestStats.lumaCapacity(ysz, yp.rowStride, h)
+            if (need > ysz) stats.lumaShort.incrementAndGet()   // old sizing would have returned CK_ERR_ARG
             var buf = lumaBuf
-            if (buf == null || buf.capacity() < ysz) { buf = ByteBuffer.allocateDirect(ysz); lumaBuf = buf }
+            if (buf == null || buf.capacity() < need) { buf = ByteBuffer.allocateDirect(need); lumaBuf = buf }
             buf!!.clear(); buf.put(ys.duplicate()); buf.flip()
             val id = frameId.getAndIncrement()
             val st = N.ingestFrame(handle, t, id, 0L, buf, w, h, yp.rowStride)
+            stats.ingestStatus(st)
+            if (st == Status.OK) stats.framesIngested.incrementAndGet()
             note(st, "frame")
             if (st != Status.OK) return
             // Keep the planes for a possible keyframe request (bounded ring; oldest evicted).

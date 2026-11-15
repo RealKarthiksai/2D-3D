@@ -1,5 +1,6 @@
 package dev.capturekit.capture
 
+import android.util.Log
 import com.google.ar.core.Frame
 import com.google.ar.core.Plane
 import com.google.ar.core.TrackingFailureReason
@@ -11,10 +12,20 @@ import com.google.ar.core.TrackingState
  * Camera.getPose() (never getDisplayOrientedPose, conventions.md); the core converts the GL camera
  * axes to OpenCV once. ARCore quaternions are x,y,z,w: reordered to w,x,y,z here.
  */
-class ARAdapter(private val session: SessionManager, private val clockOffsetNs: Long = 0L) {
+class ARAdapter(
+    private val session: SessionManager,
+    private val clockOffsetNs: Long = 0L,
+    /** ARCore session for getAllTrackables (planes sampled at 1 Hz, not only when updated). */
+    private val arSession: () -> com.google.ar.core.Session? = { null },
+) {
     private var lastIntrinsics: List<Float>? = null
-    private var lastPointsNs = Long.MIN_VALUE
-    private var lastPlaneNs = Long.MIN_VALUE
+    // Start one period in the past: `t - Long.MIN_VALUE` overflows negative, which silently disabled
+    // points, planes and the log forever (the original "ar_points=0, ar_planes=0" bug).
+    private var lastPointsNs = -POINTS_PERIOD_NS
+    private var lastPlaneNs = -PLANE_PERIOD_NS
+    private var lastLogNs = -LOG_PERIOD_NS
+    private val planeIds = HashMap<Plane, String>()   // Plane equals/hashCode follow the native trackable
+    private var nextPlane = 0
 
     fun onFrame(frame: Frame) {
         val t = frame.timestamp + clockOffsetNs
@@ -23,6 +34,10 @@ class ARAdapter(private val session: SessionManager, private val clockOffsetNs: 
         val p = cam.pose
         session.onPose(t, p.tx().toDouble(), p.ty().toDouble(), p.tz().toDouble(),
             p.qw().toDouble(), p.qx().toDouble(), p.qy().toDouble(), p.qz().toDouble(), state, reason)
+        val stats = session.stats
+        stats.arFrames.incrementAndGet()
+        stats.pose(cam.trackingState == TrackingState.TRACKING, cam.trackingFailureReason.name)
+        if (t - lastLogNs >= LOG_PERIOD_NS) { lastLogNs = t; Log.i("CK/Ingest", stats.logLine()); stats.endInterval() }
 
         val k = cam.imageIntrinsics
         val d = k.imageDimensions
@@ -33,7 +48,10 @@ class ARAdapter(private val session: SessionManager, private val clockOffsetNs: 
             lastIntrinsics = sig
             session.onIntrinsics(t, d[0], d[1], f[0].toDouble(), f[1].toDouble(), c[0].toDouble(), c[1].toDouble())
         }
-        session.onFrame(frame, t)
+        // Own try/catch: a frame-copy failure must not also starve points and planes.
+        try { session.onFrame(frame, t) } catch (e: Throwable) {
+            stats.onFrameThrows.incrementAndGet(); stats.lastError = "${e.javaClass.simpleName}: ${e.message}"
+        }
 
         if (cam.trackingState != TrackingState.TRACKING) return
         if (t - lastPointsNs >= POINTS_PERIOD_NS) {
@@ -45,21 +63,28 @@ class ARAdapter(private val session: SessionManager, private val clockOffsetNs: 
                     val xyz = FloatArray(n * 3)
                     for (i in 0 until n) { xyz[3 * i] = b.get(); xyz[3 * i + 1] = b.get(); xyz[3 * i + 2] = b.get(); b.get() }
                     session.onPoints(t, xyz, n)
+                    stats.pointsIngested.addAndGet(n.toLong())
                 }
             }
         }
         if (t - lastPlaneNs >= PLANE_PERIOD_NS) {
             lastPlaneNs = t
-            for (plane in frame.getUpdatedTrackables(Plane::class.java)) {
+            val ars = arSession()
+            val planes = ars?.getAllTrackables(Plane::class.java) ?: frame.getUpdatedTrackables(Plane::class.java)
+            // Only the full set (getAllTrackables) may prune ids; the updated-only fallback is partial.
+            if (ars != null) planeIds.keys.retainAll(planes.toSet())
+            for (plane in planes) {
                 if (plane.trackingState != TrackingState.TRACKING || plane.subsumedBy != null) continue
+                val pid = planeIds.getOrPut(plane) { "p${nextPlane++}" }
                 val cp = plane.centerPose
                 val n = cp.yAxis
                 val u = cp.xAxis
-                session.onPlane(t, System.identityHashCode(plane).toString(), planeKind(plane.type),
+                session.onPlane(t, pid, planeKind(plane.type),
                     doubleArrayOf(cp.tx().toDouble(), cp.ty().toDouble(), cp.tz().toDouble(),
                         n[0].toDouble(), n[1].toDouble(), n[2].toDouble(),
                         u[0].toDouble(), u[1].toDouble(), u[2].toDouble(),
                         plane.extentX.toDouble(), plane.extentZ.toDouble()))
+                stats.planesIngested.incrementAndGet()
             }
         }
     }
@@ -67,6 +92,7 @@ class ARAdapter(private val session: SessionManager, private val clockOffsetNs: 
     companion object {
         private const val POINTS_PERIOD_NS = 200_000_000L
         private const val PLANE_PERIOD_NS = 1_000_000_000L
+        private const val LOG_PERIOD_NS = 2_000_000_000L
 
         /** conventions.md: tracking_state 1 NORMAL, 2 LIMITED, 3 NOT_AVAILABLE; reasons per ADR/conventions. */
         fun mapTracking(s: TrackingState, r: TrackingFailureReason): Pair<Int, Int> {
