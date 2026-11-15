@@ -26,6 +26,8 @@ class ARAdapter(
     private var lastLogNs = -LOG_PERIOD_NS
     private val planeIds = HashMap<Plane, String>()   // Plane equals/hashCode follow the native trackable
     private var nextPlane = 0
+    private var lastFrameNs = Long.MIN_VALUE
+    private var lastArSession: com.google.ar.core.Session? = null   // planeIds belong to one Session instance
 
     fun onFrame(frame: Frame) {
         val t = frame.timestamp + clockOffsetNs
@@ -35,6 +37,8 @@ class ARAdapter(
         session.onPose(t, p.tx().toDouble(), p.ty().toDouble(), p.tz().toDouble(),
             p.qw().toDouble(), p.qx().toDouble(), p.qy().toDouble(), p.qz().toDouble(), state, reason)
         val stats = session.stats
+        if (t == lastFrameNs) stats.arDupFrames.incrementAndGet()
+        lastFrameNs = t
         stats.arFrames.incrementAndGet()
         stats.pose(cam.trackingState == TrackingState.TRACKING, cam.trackingFailureReason.name)
         if (t - lastLogNs >= LOG_PERIOD_NS) { lastLogNs = t; Log.i("CK/Ingest", stats.logLine()); stats.endInterval() }
@@ -70,6 +74,7 @@ class ARAdapter(
         if (t - lastPlaneNs >= PLANE_PERIOD_NS) {
             lastPlaneNs = t
             val ars = arSession()
+            if (ars !== lastArSession) { planeIds.clear(); lastArSession = ars }   // never hold Planes of a dead Session
             val planes = ars?.getAllTrackables(Plane::class.java) ?: frame.getUpdatedTrackables(Plane::class.java)
             // Only the full set (getAllTrackables) may prune ids; the updated-only fallback is partial.
             if (ars != null) planeIds.keys.retainAll(planes.toSet())

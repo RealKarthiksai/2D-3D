@@ -36,6 +36,17 @@ class IngestStatsTest {
         assertTrue(!s.logLine().contains("lastErr"))
     }
 
+    @Test fun glCountersAndRateFormat() {
+        val s = IngestStats()
+        repeat(240) { s.glDraws.incrementAndGet() }
+        repeat(120) { s.arDupFrames.incrementAndGet() }
+        repeat(7) { s.glSkippedDup.incrementAndGet() }
+        assertEquals("gl 240 (120.0/s) dup 120 skipped 7", s.glLine(2000, 240))
+        assertEquals("0.0", IngestStats.perSecond(5, 0))
+        assertEquals("29.9", IngestStats.perSecond(598, 20_000))
+        assertTrue(s.logLine().contains("gl 240 dup 120"))
+    }
+
     @Test fun lumaCapacityCoversStrideTimesHeight() {
         // Y plane buffers end at stride*(h-1)+w; the core requires stride*h.
         assertEquals(1280 * 720 + 0, IngestStats.lumaCapacity(1280 * 719 + 1270, 1280, 720))
