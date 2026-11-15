@@ -1,5 +1,6 @@
 #include "capturekit/guide/engine.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 #include "capturekit/util/json.hpp"
@@ -185,11 +186,14 @@ OverlayModel GuideEngine::overlay(int64_t t) const {
     if (d.norm() < 1e-6) continue;
     d.normalize();
     double half = 0.5 * (std::fabs(pl.u.dot(d)) * pl.eu + std::fabs(pl.v.dot(d)) * pl.ev);
+    if (m.wall_list.size() >= OverlayModel::kMaxWalls) continue;  // no per-wall stats for walls that are not kept
     OverlayWall w;
     w.x0 = pl.c.x() - d.x() * half, w.z0 = pl.c.z() - d.z() * half;
     w.x1 = pl.c.x() + d.x() * half, w.z1 = pl.c.z() + d.z() * half;
-    w.seen_pct = int(std::lround(100.0 * cov_.stats(id).seen_fraction()));
-    if (m.wall_list.size() < OverlayModel::kMaxWalls) m.wall_list.push_back(w);
+    if (!std::isfinite(w.x0 + w.z0 + w.x1 + w.z1)) continue;      // never emit NaN/inf coordinates
+    const double sf = cov_.stats(id).seen_fraction();
+    w.seen_pct = std::isfinite(sf) ? int(std::lround(std::clamp(100.0 * sf, 0.0, 100.0))) : 0;
+    m.wall_list.push_back(w);
   }
   m.wall_found = m.walls > 0;
 

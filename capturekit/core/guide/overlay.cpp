@@ -1,5 +1,6 @@
 #include "capturekit/guide/overlay.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <map>
@@ -46,8 +47,9 @@ std::vector<std::string> why_ids() {
 std::string OverlayModel::to_json() const {
   std::string ws;
   for (auto& w : wall_list) {
+    if (!std::isfinite(w.x0 + w.z0 + w.x1 + w.z1)) continue;  // defence in depth: JSON has no NaN/inf
     char b[96];
-    std::snprintf(b, sizeof b, "%.2f,%.2f,%.2f,%.2f,%d", r2(w.x0), r2(w.z0), r2(w.x1), r2(w.z1), w.seen_pct);
+    std::snprintf(b, sizeof b, "%.2f,%.2f,%.2f,%.2f,%d", r2(w.x0), r2(w.z0), r2(w.x1), r2(w.z1), std::clamp(w.seen_pct, 0, 100));
     if (!ws.empty()) ws += ";";
     ws += b;
   }
