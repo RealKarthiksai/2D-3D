@@ -347,7 +347,7 @@ def guide_eval_cmd(
             typer.echo(
                 f"{r['bundle']:<16} tier={r['tier']} coverage={r['coverage_completeness']} "
                 f"instructions={r['instructions']} repetition={r['repetition_rate']} "
-                f"unsafe={r['unsafe_targets']}"
+                f"demand/min={r['instruction_demand_per_min']} unsafe={r['unsafe_targets']}"
             )
     else:
         rep = simulate_matrix(
@@ -363,3 +363,56 @@ def guide_eval_cmd(
     if json_out:
         json_out.parent.mkdir(parents=True, exist_ok=True)
         json_out.write_text(json.dumps(rep, indent=2, sort_keys=True) + "\n")
+
+
+@app.command("e2e")
+def e2e_cmd(
+    bundle: Path,
+    research: Annotated[
+        Path | None, typer.Option(help="Research log (default: <bundle>.research.json beside it).")
+    ] = None,
+    out: Annotated[
+        Path | None, typer.Option(help="Output dir for <bundle>.e2e.json/.html (default: beside).")
+    ] = None,
+    no_sfm: Annotated[bool, typer.Option("--no-sfm", help="Skip pycolmap.")] = False,
+    no_guide: Annotated[bool, typer.Option("--no-guide", help="Skip guidance replay.")] = False,
+) -> None:
+    """End-to-end scan report: verdict, guidance, pycolmap registration/reprojection, research."""
+    from ckit.e2e import e2e, write
+
+    rep = e2e(bundle, research, sfm=not no_sfm, guide=not no_guide)
+    j, h = write(rep, out or bundle.parent)
+    v, s, g = rep["verdict"], rep["sfm"], rep["guidance"]
+    typer.echo(
+        f"{rep['bundle']} verdict={v.get('verdict', v.get('error'))} "
+        f"duration_s={rep['basics'].get('duration_s')} instructions={g.get('instructions')} "
+        f"registered_ratio={s.get('registered_ratio')} reproj_mean_px={s.get('reproj_mean_px')}"
+    )
+    typer.echo(f"{j}\n{h}")
+
+
+@app.command("trial-report")
+def trial_report_cmd(
+    root: Path,
+    json_out: Annotated[Path | None, typer.Option("--json", help="Write JSON report here.")] = None,
+    html_out: Annotated[Path | None, typer.Option("--html", help="Write HTML tables here.")] = None,
+) -> None:
+    """Aggregate *.e2e.json under ROOT by participant/device/room/arm (medians, tables)."""
+    import json
+
+    from ckit.trial_report import aggregate, load_reports, to_html, to_markdown
+
+    skipped: list[str] = []
+    reports = load_reports(root, skipped)
+    for s in skipped:
+        typer.echo(f"skipped {s}", err=True)
+    if not reports:
+        typer.echo(f"no *.e2e.json under {root}")
+        raise typer.Exit(1)
+    rep = aggregate(reports)
+    for p, text in ((json_out, json.dumps(rep, indent=2, sort_keys=True) + "\n"),
+                    (html_out, to_html(rep) if html_out else "")):  # fmt: skip
+        if p:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+    typer.echo(to_markdown(rep), nl=False)
