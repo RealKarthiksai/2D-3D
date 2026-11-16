@@ -73,6 +73,11 @@ void GuideEngine::on_points(const bundle::PointCloudRecord& r) {
     Vec3 q(r.xyz[i], r.xyz[i + 1], r.xyz[i + 2]);
     nav_.add_point(q);
     if (have_pose_ && tracking_ == 1) nav_.carve(user_.pos, q);  // the sight ray to a seen point is free space
+    if (p_.understanding != 0) pts_.add(q);
+  }
+  if (p_.understanding != 0 && (last_open_t_ < 0 || r.t_ns - last_open_t_ >= 1'000'000'000)) {
+    last_open_t_ = r.t_ns;
+    openings_ = opener_.detect(map_, pts_);
   }
 }
 

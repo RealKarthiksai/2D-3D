@@ -17,8 +17,17 @@ struct Box {
   double x0, z0, x1, z1, h;
 };
 
+/// A door or window cut into wall `wall` (edge poly[wall] -> poly[wall+1]): u0..u1 along that edge (m from
+/// its start), y0..y1 above the floor. The wall has no points there; things behind it show through.
+struct OpeningSpec {
+  int wall = 0;
+  int kind = 0;  // OpeningKind: 0 door, 1 window
+  double u0 = 0, u1 = 0, y0 = 0, y1 = 0;
+};
+
 struct Room {
   std::string name;
+  std::vector<OpeningSpec> openings;                              // Phase 9: doors / windows (empty = none)
   std::vector<std::pair<double, double>> poly;                    // CCW footprint in (x, z)
   std::vector<std::array<double, 4>> rects;                       // disjoint rectangles whose union is the footprint
   double height = 2.5;
@@ -26,7 +35,8 @@ struct Room {
   double start_x = 1, start_z = 1, start_yaw = 0;
 };
 
-/// "box", "L", "furniture".
+/// "box", "L", "furniture", "door_window" (the box room with a 0.9 x 2.0 m door and a 1.2 x 1.0 m window,
+/// sill 0.9 m). With guide.understanding on, the report gains "openings" (what the engine detected).
 Room make_room(const std::string& name);
 
 struct Human {

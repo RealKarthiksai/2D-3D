@@ -1,7 +1,9 @@
-// Phase 9 room understanding: stage-by-stage tests (step 1: types + SurfaceClassifier).
+// Phase 9 room understanding: stage-by-stage tests (step 1: types + SurfaceClassifier; step 2: SparsePointStore +
+// OpeningDetector).
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <map>
@@ -11,9 +13,12 @@
 #include "capturekit/guide/coverage.hpp"
 #include "capturekit/guide/engine.hpp"
 #include "capturekit/guide/live_map.hpp"
+#include "capturekit/guide/opening_detector.hpp"
+#include "capturekit/guide/point_store.hpp"
 #include "capturekit/guide/sim.hpp"
 #include "capturekit/guide/surface_classifier.hpp"
 #include "capturekit/guide/understanding.hpp"
+#include "capturekit/util/json.hpp"
 
 using namespace capturekit;
 using namespace capturekit::guide;
@@ -301,4 +306,248 @@ TEST(Understanding, SimWithUnderstandingIsDeterministicAndLabelsTops) {
   std::string a = sim::simulate(c), b = sim::simulate(c);
   EXPECT_EQ(a, b);
   EXPECT_FALSE(a.empty());
+}
+
+// ======================= step 2: SparsePointStore + OpeningDetector =======================
+namespace {
+
+std::vector<Vec3> store_dump(const SparsePointStore& s) {
+  std::vector<Vec3> v;
+  s.for_each([&](const SparsePointStore::Voxel& x) { v.push_back(x.mean()); });
+  return v;
+}
+
+/// Wall z = 0, x 0..5, y 0..2.5, facing +z (into the room).
+Plane test_wall() {
+  Plane w;
+  w.id = "w", w.kind = "wall", w.src_kind = "wall";
+  w.c = {2.5, 1.25, 0}, w.n = {0, 0, 1}, w.u = {1, 0, 0}, w.v = w.n.cross(w.u);
+  w.eu = 5, w.ev = 2.5;
+  return w;
+}
+
+using Rect = std::array<double, 4>;  // {x0, x1, y0, y1} on the test wall
+
+void fill_wall(SparsePointStore& s, double step, double drop, uint64_t seed, const std::vector<Rect>& holes, bool through) {
+  Rng rng(seed);
+  for (double y = step / 2; y < 2.5; y += step)
+    for (double x = step / 2; x < 5.0; x += step) {
+      bool hole = false;
+      for (auto& h : holes) hole |= x > h[0] && x < h[1] && y > h[2] && y < h[3];
+      const double r = rng.uniform();
+      if (hole) {
+        if (through && r < 0.3) s.add({x, y, -0.6});  // the corridor behind the opening
+        continue;
+      }
+      if (r < drop) continue;
+      s.add({x + 0.01 * rng.normal(), y + 0.01 * rng.normal(), 0.01 * rng.normal()});
+    }
+}
+
+bool near_opening(const Opening& o, OpeningKind k, Rect t, double z, double tol) {
+  double a = std::min(o.x0, o.x1), b = std::max(o.x0, o.x1);
+  return o.kind == k && std::fabs(a - t[0]) <= tol && std::fabs(b - t[1]) <= tol && std::fabs(o.z0 - z) <= tol &&
+         std::fabs(o.z1 - z) <= tol && std::fabs(o.y0 - t[2]) <= tol && std::fabs(o.y1 - t[3]) <= tol;
+}
+
+struct SimOpening {
+  std::string kind;
+  double x0, z0, x1, z1, y0, y1, conf;
+};
+
+/// Reads the "openings" array of a sim report (flat objects only).
+std::vector<SimOpening> sim_openings(const std::string& report, bool* present = nullptr) {
+  std::vector<SimOpening> out;
+  auto at = report.find("\"openings\":[");
+  if (present) *present = at != std::string::npos;
+  if (at == std::string::npos) return out;
+  auto end = report.find(']', at);
+  size_t p = at;
+  while ((p = report.find('{', p)) != std::string::npos && p < end) {
+    size_t q = report.find('}', p);
+    auto obj = json::parse_flat(std::string_view(report).substr(p, q - p + 1));
+    EXPECT_TRUE(obj.has_value());
+    if (obj) {
+      auto d = [&](const char* k) { return std::get<double>(obj->at(k)); };
+      out.push_back({std::get<std::string>(obj->at("kind")), d("x0"), d("z0"), d("x1"), d("z1"), d("y0"), d("y1"), d("conf")});
+    }
+    p = q;
+  }
+  return out;
+}
+
+/// Matches a reported opening against a room's OpeningSpec (world endpoints of the wall segment).
+bool sim_match(const SimOpening& o, const sim::Room& room, const sim::OpeningSpec& sp, double tol) {
+  auto [x0, z0] = room.poly[size_t(sp.wall)];
+  auto [x1, z1] = room.poly[(size_t(sp.wall) + 1) % room.poly.size()];
+  double L = std::hypot(x1 - x0, z1 - z0), ux = (x1 - x0) / L, uz = (z1 - z0) / L;
+  double ax = x0 + ux * sp.u0, az = z0 + uz * sp.u0, bx = x0 + ux * sp.u1, bz = z0 + uz * sp.u1;
+  auto ok = [&](double px, double pz, double qx, double qz) {
+    return std::hypot(px - ax, pz - az) <= tol && std::hypot(qx - bx, qz - bz) <= tol;
+  };
+  const char* kind = sp.kind == 0 ? "door" : "window";
+  return o.kind == kind && (ok(o.x0, o.z0, o.x1, o.z1) || ok(o.x1, o.z1, o.x0, o.z0)) && std::fabs(o.y0 - sp.y0) <= tol &&
+         std::fabs(o.y1 - sp.y1) <= tol;
+}
+
+}  // namespace
+
+// ---- SparsePointStore ----
+TEST(Understanding, PointStoreVoxelsAndMeans) {
+  SparsePointStore s(0.05, 100);
+  EXPECT_TRUE(s.add({0.01, 0.01, 0.01}));
+  EXPECT_TRUE(s.add({0.03, 0.03, 0.03}));  // same 5 cm voxel
+  EXPECT_TRUE(s.add({0.07, 0.01, 0.01}));  // next voxel along x
+  EXPECT_FALSE(s.add({std::nan(""), 0, 0}));
+  ASSERT_EQ(s.size(), 2u);
+  auto v = store_dump(s);
+  EXPECT_NEAR(v[0].x(), 0.02, 1e-12);
+  EXPECT_NEAR(v[1].x(), 0.07, 1e-12);
+  EXPECT_EQ(s.version(), 3u);
+  s.add({-0.01, 0.01, 0.01});  // negative coordinates do not alias with positive ones
+  EXPECT_EQ(s.size(), 3u);
+}
+
+TEST(Understanding, PointStoreBoundedLruEviction) {
+  SparsePointStore s(0.05, 3);
+  s.add({0.0, 0, 0}), s.add({1.0, 0, 0}), s.add({2.0, 0, 0});
+  s.add({0.01, 0, 0});  // touches voxel 0: now voxel 1 is the oldest
+  s.add({3.0, 0, 0});   // evicts voxel 1
+  EXPECT_EQ(s.size(), 3u);
+  EXPECT_EQ(s.evicted(), 1u);
+  std::vector<double> xs;
+  for (auto& p : store_dump(s)) xs.push_back(std::round(p.x()));
+  EXPECT_EQ(xs, (std::vector<double>{0, 2, 3}));
+  // Deterministic: the same input sequence gives the same content, whatever the hash layout.
+  SparsePointStore a(0.05, 500), b(0.05, 500);
+  Rng r1(7), r2(7);
+  for (int i = 0; i < 5000; ++i) {
+    a.add({r1.uniform(0, 3), r1.uniform(0, 3), r1.uniform(0, 3)});
+    b.add({r2.uniform(0, 3), r2.uniform(0, 3), r2.uniform(0, 3)});
+  }
+  EXPECT_EQ(a.size(), 500u);
+  auto da = store_dump(a), db = store_dump(b);
+  ASSERT_EQ(da.size(), db.size());
+  for (size_t i = 0; i < da.size(); ++i) EXPECT_EQ(da[i], db[i]);
+}
+
+// ---- OpeningDetector on a synthetic wall ----
+TEST(Understanding, OpeningDetectorDoorAndWindow) {
+  const Rect door{1.0, 1.9, 0.0, 2.0}, win{3.0, 4.2, 0.9, 1.9};
+  const Vec3 room(2.5, 1.4, 2.0);
+  OpeningDetector det;
+  struct Row {
+    const char* what;
+    double step, drop;
+    bool through;
+  };
+  for (const Row& r : {Row{"dense 5 cm", 0.05, 0.0, false}, Row{"10 cm, 15% dropped", 0.10, 0.15, false},
+                       Row{"10 cm + through-points", 0.10, 0.0, true}})
+    for (uint64_t seed : {1u, 2u, 3u}) {
+      SparsePointStore s;
+      fill_wall(s, r.step, r.drop, seed, {door, win}, r.through);
+      auto ops = det.detect_wall(test_wall(), true, 0.0, room, s);
+      ASSERT_EQ(ops.size(), 2u) << r.what << " seed " << seed;
+      int nd = 0, nw = 0;
+      for (auto& o : ops) {
+        nd += near_opening(o, OpeningKind::Door, door, 0.0, 0.15);
+        nw += near_opening(o, OpeningKind::Window, win, 0.0, 0.15);
+        EXPECT_GE(o.conf, det.params().min_conf);
+        EXPECT_LE(o.conf, 1.0);
+        EXPECT_TRUE(o.wall.empty());  // the shell attaches wall ids (step 6)
+      }
+      EXPECT_EQ(nd, 1) << r.what << " seed " << seed;
+      EXPECT_EQ(nw, 1) << r.what << " seed " << seed;
+    }
+  // Through-points raise the confidence of the same opening.
+  SparsePointStore plain, thr;
+  fill_wall(plain, 0.1, 0.0, 1, {door}, false);
+  fill_wall(thr, 0.1, 0.0, 1, {door}, true);
+  auto a = det.detect_wall(test_wall(), true, 0.0, room, plain), b = det.detect_wall(test_wall(), true, 0.0, room, thr);
+  ASSERT_EQ(a.size(), 1u);
+  ASSERT_EQ(b.size(), 1u);
+  EXPECT_GT(b[0].conf, a[0].conf);
+}
+
+TEST(Understanding, OpeningDetectorRejects) {
+  const Vec3 room(2.5, 1.4, 2.0);
+  OpeningDetector det;
+  auto run = [&](std::vector<Rect> holes, bool has_floor = true) {
+    SparsePointStore s;
+    fill_wall(s, 0.1, 0.1, 4, holes, false);
+    return det.detect_wall(test_wall(), has_floor, 0.0, room, s);
+  };
+  EXPECT_TRUE(run({}).empty());                              // plain wall
+  EXPECT_TRUE(run({{1.0, 3.0, 0.0, 2.0}}).empty());          // floor-touching but 2 m wide (wardrobe shadow, open plan)
+  EXPECT_TRUE(run({{1.0, 1.9, 0.0, 1.2}}).empty());          // floor-touching but low (furniture shadow)
+  EXPECT_TRUE(run({{1.0, 1.9, 1.5, 2.6}}).empty());          // reaches the top of the observed wall: unknown
+  EXPECT_TRUE(run({{0.0, 0.9, 0.0, 2.0}}).empty());          // at the edge of the observed wall
+  EXPECT_TRUE(run({{3.0, 4.2, 0.2, 1.0}}).empty());          // sill 0.2 m: not a window
+  EXPECT_TRUE(run({{1.0, 1.9, 0.0, 2.0}}, false).empty());   // no floor known: no door
+  EXPECT_TRUE(run({{2.0, 2.2, 1.0, 1.2}}).empty());          // tiny hole
+  LiveMap m;  // empty store, no cameras: nothing
+  EXPECT_TRUE(OpeningDetector().detect(m, SparsePointStore()).empty());
+}
+
+TEST(Understanding, OpeningDetectorIsOrientationFree) {
+  const Rect door{1.0, 1.9, 0.0, 2.0};
+  SparsePointStore s;
+  fill_wall(s, 0.1, 0.1, 9, {door}, true);
+  OpeningDetector det;
+  Plane w = test_wall();
+  auto a = det.detect_wall(w, true, 0.0, {2.5, 1.4, 2.0}, s);
+  // Same wall with the platform normal pointing out of the room and flipped in-plane axes.
+  w.n = -w.n, w.u = -w.u, w.v = w.n.cross(w.u);
+  auto b = det.detect_wall(w, true, 0.0, {2.5, 1.4, 2.0}, s);
+  ASSERT_EQ(a.size(), 1u);
+  ASSERT_EQ(b.size(), 1u);
+  EXPECT_TRUE(near_opening(b[0], OpeningKind::Door, door, 0.0, 0.15));
+  EXPECT_NEAR(a[0].conf, b[0].conf, 1e-9);
+}
+
+// ---- sim: the door_window scene recovers both openings; plain walls stay clean ----
+TEST(Understanding, SimRecoversDoorAndWindow) {
+  const auto room = sim::make_room("door_window");
+  ASSERT_EQ(room.openings.size(), 2u);
+  std::cout << "\n  Understanding.SimRecoversDoorAndWindow (synthetic points, tolerance 0.25 m)\n";
+  for (uint64_t seed : {1u, 2u, 3u}) {
+    sim::Config c;
+    c.room = "door_window", c.seed = seed;
+    c.guide.understanding = 1;
+    auto rep = sim::simulate(c);
+    auto ops = sim_openings(rep);
+    int found = 0;
+    for (auto& sp : room.openings) {
+      int m = 0;
+      for (auto& o : ops) m += sim_match(o, room, sp, 0.25);
+      EXPECT_EQ(m, 1) << "seed " << seed << " opening kind " << sp.kind;
+      found += m == 1;
+    }
+    EXPECT_EQ(ops.size(), room.openings.size()) << "seed " << seed << " (false openings)";
+    auto ps = rep.find("\"points_stored\":");
+    std::cout << "  seed " << seed << ": " << found << "/2 recovered, " << ops.size() << " reported, "
+              << rep.substr(ps, rep.find_first_of(",}", ps) - ps) << "\n";
+    for (auto& o : ops)
+      std::cout << "    " << o.kind << " (" << o.x0 << "," << o.z0 << ")-(" << o.x1 << "," << o.z1 << ") y " << o.y0 << ".."
+                << o.y1 << " conf " << o.conf << "\n";
+  }
+}
+
+TEST(Understanding, SimNoFalseOpeningsOnPlainWalls) {
+  for (const char* name : {"box", "L"})
+    for (uint64_t seed : {1u, 2u, 3u}) {
+      sim::Config c;
+      c.room = name, c.seed = seed;
+      c.guide.understanding = 1;
+      bool present = false;
+      auto ops = sim_openings(sim::simulate(c), &present);
+      EXPECT_TRUE(present) << name;
+      EXPECT_TRUE(ops.empty()) << name << " seed " << seed << ": " << ops.size() << " false openings";
+    }
+  // Flag off: the report has no openings key at all (Phase 8 reports unchanged).
+  sim::Config off;
+  off.room = "door_window", off.seed = 1, off.max_s = 30;
+  bool present = true;
+  sim_openings(sim::simulate(off), &present);
+  EXPECT_FALSE(present);
 }

@@ -27,6 +27,7 @@ Room make_room(const std::string& name) {
       r.boxes = {{0.3, 0.0, 2.1, 0.9, 0.8}, {2.3, 1.6, 3.5, 2.4, 0.75}, {4.4, 0.3, 5.0, 2.3, 2.0}};
       r.start_x = 1.0, r.start_z = 2.8;
     }
+    if (name == "door_window") r.openings = {{0, 0, 1.0, 1.9, 0.0, 2.0}, {1, 1, 1.4, 2.6, 0.9, 1.9}};
   }
   return r;
 }
@@ -98,6 +99,7 @@ struct World {
   double cell;
   std::vector<Surf> surfs;   // coverage targets: walls, floor, ceiling
   std::vector<Face> faces;   // point sources only (furniture sides)
+  std::vector<Face> through;  // point sources seen only through an opening (0.5 m behind it), one per opening
   std::vector<double> weights;
 
   World(const Room& r, double c) : room(r), cell(c) {
@@ -114,6 +116,16 @@ struct World {
       s.n = {-(z1 - z0) / L, 0, (x1 - x0) / L};  // inward for a CCW polygon
       s.su = L, s.sv = r.height;
       add(std::move(s));
+      Surf& ws = surfs.back();
+      for (auto& op : r.openings) {  // no wall (and no coverage target) inside a door / window
+        if (op.wall != int(i)) continue;
+        for (int j = 0; j < ws.nv; ++j)
+          for (int k = 0; k < ws.nu; ++k) {
+            double cu = (k + 0.5) * cell, cv = (j + 0.5) * cell;
+            if (cu > op.u0 && cu < op.u1 && cv > op.y0 && cv < op.y1) ws.valid[size_t(j) * size_t(ws.nu) + size_t(k)] = 0;
+          }
+        through.push_back({ws.o + ws.u * op.u0 - ws.n * 0.5 + Vec3(0, op.y0, 0), ws.u, {0, 1, 0}, ws.n, op.u1 - op.u0, op.y1 - op.y0});
+      }
     }
     for (auto& rc : r.rects) {
       for (int ceil = 0; ceil < 2; ++ceil) {
@@ -136,6 +148,20 @@ struct World {
     }
     for (auto& s : surfs) weights.push_back(s.su * s.sv);
     for (auto& f : faces) weights.push_back(f.su * f.sv);
+    for (auto& f : through) weights.push_back(f.su * f.sv);
+  }
+
+  /// A point behind opening `k` is visible from `a` when the sight ray passes through that opening.
+  bool through_visible(const Vec3& a, const Vec3& p, size_t k) const {
+    const Face& f = through[k];
+    const Vec3 wo = f.o + f.n * 0.5;  // the opening's corner on the wall plane
+    const double den = (p - a).dot(f.n);
+    if (std::fabs(den) < 1e-9) return false;
+    const double t = (wo - a).dot(f.n) / den;
+    if (t <= 0 || t >= 1) return false;
+    const Vec3 hit = a + (p - a) * t;
+    const double hu = (hit - wo).dot(f.u), hv = hit.y() - wo.y();
+    return hu > 0 && hu < f.su && hv > 0 && hv < f.sv && los(a, hit);
   }
 
   void add(Surf s) {
@@ -379,10 +405,19 @@ std::string simulate(const Config& cfg) {
           if (!sf->valid[size_t(j) * size_t(sf->nu) + size_t(i)]) continue;
           p = sf->center(i, j, w.cell);
           n = sf->n;
-        } else {
+        } else if (idx < w.surfs.size() + w.faces.size()) {
           const Face& f = w.faces[idx - w.surfs.size()];
           p = f.o + f.u * (a * f.su) + f.v * (b * f.sv);
           n = f.n;
+        } else {  // seen through a door / window (only rooms with openings have these)
+          const size_t k = idx - w.surfs.size() - w.faces.size();
+          const Face& f = w.through[k];
+          p = f.o + f.u * (a * f.su) + f.v * (b * f.sv);
+          VisResult vr = view_cell(vc, p, f.n, gp.view_margin_px);
+          if (!vr.in_image || vr.range > 6.0 || vr.cos_inc < 0.1 || !w.through_visible(vc.pos, p, k)) continue;
+          Vec3 q = p + Vec3(rng.normal(), rng.normal(), rng.normal()) * 0.01;
+          pc.xyz.push_back(float(q.x())), pc.xyz.push_back(float(q.y())), pc.xyz.push_back(float(q.z()));
+          continue;
         }
         VisResult vr = view_cell(vc, p, n, gp.view_margin_px);
         if (!vr.in_image || vr.range > 6.0 || vr.cos_inc < 0.1 || !w.los(vc.pos, p)) continue;
@@ -719,6 +754,18 @@ std::string simulate(const Config& cfg) {
     if (cfg.overlay_every_s > 0) o.raw("overlay_samples", json::array(overlay_samples.begin(), overlay_samples.end())).set("overlay_max_bytes", uint64_t(overlay_max_bytes));
     o.set("instructions_received", me.received).set("instructions_followed", me.followed);
     o.raw("guide", engine.report_json());
+    if (gp.understanding != 0) {  // Phase 9: detected doors / windows (absent with the flag off)
+      std::vector<std::string> ops;
+      for (auto& op : engine.openings()) {
+        json::Object d;
+        d.set("kind", std::string(op.kind == OpeningKind::Door ? "door" : "window"));
+        d.set("x0", r3(op.x0)).set("z0", r3(op.z0)).set("x1", r3(op.x1)).set("z1", r3(op.z1));
+        d.set("y0", r3(op.y0)).set("y1", r3(op.y1)).set("conf", r3(op.conf));
+        ops.push_back(d.dump());
+      }
+      o.raw("openings", json::array(ops.begin(), ops.end()));
+      o.set("points_stored", uint64_t(engine.points().size()));
+    }
     double mins = std::max(dur / 60.0, 1e-9);
     o.set("flap_per_min", r3(engine.planner().switches() / mins));
   }

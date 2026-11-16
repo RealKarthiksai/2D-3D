@@ -12,8 +12,10 @@
 #include "capturekit/guide/instruction.hpp"
 #include "capturekit/guide/live_map.hpp"
 #include "capturekit/guide/nav_grid.hpp"
+#include "capturekit/guide/opening_detector.hpp"
 #include "capturekit/guide/overlay.hpp"
 #include "capturekit/guide/planner.hpp"
+#include "capturekit/guide/point_store.hpp"
 
 namespace capturekit::guide {
 
@@ -55,6 +57,10 @@ class GuideEngine {
   std::string report_json() const;
   /// Glanceable snapshot of what the engine understands at event time t_ns (see overlay.hpp). Pure: no state change.
   OverlayModel overlay(int64_t t_ns) const;
+  /// Phase 9 (understanding on only; empty otherwise): accumulated sparse points and the doors/windows found
+  /// in them, re-detected at most once per second of event time.
+  const SparsePointStore& points() const { return pts_; }
+  const std::vector<Opening>& openings() const { return openings_; }
 
  private:
   void refresh_levels();
@@ -79,6 +85,10 @@ class GuideEngine {
   int map_version_ = -1;
   std::vector<Instruction> scratch_;
   std::vector<LifeEvent> life_;
+  SparsePointStore pts_;
+  OpeningDetector opener_;
+  std::vector<Opening> openings_;
+  int64_t last_open_t_ = -1;
 };
 
 }  // namespace capturekit::guide
