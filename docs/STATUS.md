@@ -4,30 +4,30 @@ The program now has two parts (see [program-spec/README.md](program-spec/README.
 
 See also [NEXT_SESSION.md](NEXT_SESSION.md) for the copy-paste start kit for a new conversation.
 
-Updated 2026-11-14 · branch `part1-phases` · last Phase 2 commit `bd78bcd`
+Updated 2026-11-16 · branch `main` · last commit `21ce79a` (history was rewritten; hashes in older notes no longer exist)
 
 ## 1. Overall progress
 
-Eight of the thirteen phases (0–7, minus device acceptance) are done in software. Phases 9–11 were added when the program became two parts, to cover room understanding (furniture, openings, missing areas), the voice assistant, and the overlay/review/privacy UI. Roughly **55 % of Part 1** is built. Every phase has acceptance items that need real phones, a Mac, or people (section 3). Those items stay open even after the software is written.
+Nine of the thirteen phases (0–8, minus device acceptance) are done in software; Phase 9 is about 10 % done and Phases 10–11 are partly built on Android only. Phases 9–11 were added when the program became two parts, to cover room understanding (furniture, openings, missing areas), the voice assistant, and the overlay/review/privacy UI. Ordered plan of every open item: `.claude/agent-memory/planner/briefs/remaining-work-audit.md`. Every phase has acceptance items that need real phones, a Mac, or people (section 3). Those items stay open even after the software is written.
 
 | Phase | Software on this machine | Acceptance status |
 |---|---|---|
 | 0 Conventions + raw recording | **Done**: conventions.md, recording protocol, clock-notes template, Android RawRecorder + clock check (APK builds), iOS RawRecorder + SampleApp sources, `ckit inspect-raw`, `ckit synth` | **Blocked on you**: 8 real golden sessions, per-device clock offsets, iOS build |
 | 1 Scan Bundle spec + serialization | **Done**: proto + JSON Schemas + SPEC.md, C++ MCAP writer/reader, codec, sha256, manifest/camera finalize, nanobind `_ckcore`, `ckit validate`, `ckit import-raw` | **Met on synthetic data** (8/8 golden stand-ins validate with 0 ERROR; 12 broken fixtures give their codes; round trip and truncation fuzz pass). Must be re-run on real recordings |
-| 2 Geometry core | **Done** (`bd78bcd`): frame-named poses, ARKit/ARCore/COLMAP/OpenGL adapters, rotate/scale/crop, interpolation, `ckit export-colmap`, `ckit reprojection-report` | **Met on synthetic data** (28 C++ / 28 Py tests; mean reprojection 0.59–1.01 px). ADR 0003 check needs your checkerboard recordings (ADR 0005) |
-| 3 Replay harness | **Done** (`fb59838`): ReplaySink, `ckit replay` with faults, golden replay CI | **Met on synthetic data** |
-| 4 Quality + keyframe selector | **Done** (`7943988`): metrics, selector, quality sink, quality-report | **Met on synthetic data** (1.43 ms/frame); thresholds need tuning on real recordings |
-| 5 Thermal/battery governor | **Done** (`310d205`): ladder, hysteresis, governor sink, Android + iOS adapters | Timeline and replay tests met; 10-minute soak needs phones (docs/soak-test.md) |
-| 6 Native capture pipelines | **Done** (`69eaf41`): C API, Session, recovery, JNI + Android capture, iOS source | Core met incl. SIGKILL recovery and ASAN/UBSAN/TSAN; devices needed (docs/capture-test-protocol.md); iOS uncompiled |
-| 7 Finalize + upload | **Done** (see PROGRESS): on-device validator, verdict table, verifier, tus clients (Android compiled, iOS source), docker failure matrix | Server matrix met (8/8); phone cases in docs/upload-test-protocol.md |
-| 8 Guidance core (GuideMind) | Not started; can be done here with synthetic rooms | Manual coverage labels on real sessions need you |
-| 9 Room understanding | Not started; geometry parts + synthetic tests can be done here | Detector choice/latency per device tier, missing-area labels need you |
-| 10 Voice assistant | Not started; scheduler, intents, Android TTS/STT can be done here | Latency on phones, user tuning of speech budget |
-| 11 Overlay, review, consent, privacy | Not started; core overlay model, Android UI, redaction pipeline can be done here | iOS UI build, redaction set labelling, consent text owner |
+| 2 Geometry core | **Done** (`2e55389`): frame-named poses, ARKit/ARCore/COLMAP/OpenGL adapters, rotate/scale/crop, interpolation, `ckit export-colmap`, `ckit reprojection-report` | **Met on synthetic data** (28 C++ / 28 Py tests; mean reprojection 0.59–1.01 px). ADR 0003 check needs your checkerboard recordings (ADR 0005) |
+| 3 Replay harness | **Done** (`d0c03ec`): ReplaySink, `ckit replay` with faults, golden replay CI | **Met on synthetic data** |
+| 4 Quality + keyframe selector | **Done** (`8b00160`): metrics, selector, quality sink, quality-report | **Met on synthetic data** (1.43 ms/frame); thresholds need tuning on real recordings |
+| 5 Thermal/battery governor | **Done** (`ae5ede6`): ladder, hysteresis, governor sink, Android + iOS adapters | Timeline and replay tests met; 10-minute soak needs phones (docs/soak-test.md) |
+| 6 Native capture pipelines | **Done** (`09cfcba`): C API, Session, recovery, JNI + Android capture, iOS source | Core met incl. SIGKILL recovery and ASAN/UBSAN/TSAN; devices needed (docs/capture-test-protocol.md); iOS uncompiled |
+| 7 Finalize + upload | **Done** (`fe73262`): on-device validator, verdict table, verifier, tus clients (Android compiled, iOS source), docker failure matrix | Server matrix met (8/8); phone cases in docs/upload-test-protocol.md |
+| 8 Guidance core (GuideMind) | **Done** (`606e618`): LiveMap, coverage, NavGrid, planner, instructions, simulator, guide sink; OverlayModel event (`5fd4887`, ADR 0013) | Manual coverage labels on real sessions need you |
+| 9 Room understanding | **Partial** (`0a4a67d`): types + SurfaceClassifier behind `understanding=0`. Openings, objects, shell, gaps, detections contract not started | Detector choice/latency per device tier, missing-area labels need you |
+| 10 Voice assistant | **Partial, Android only**: Kotlin SpeechScheduler (`ac76a25`, ADR 0014), TTS renderer (`21ce79a`). No intents/STT, no core scheduler | Latency on phones, user tuning of speech budget |
+| 11 Overlay, review, consent, privacy | **Partial**: core overlay (`5fd4887`), Android HUD, UnderstandingView, ReviewActivity verdict only (`21ce79a`). No consent, redaction or upload UI | iOS UI build, redaction set labelling, consent text owner |
 | 12 Integration + field trials | Not started; `ckit e2e`/`trial-report` can be done here | Trials need participants and your target thresholds |
 
 **Verified on this machine:** C++ core `ctest` 68/68 (+ ASAN/UBSAN/TSAN) · Python `pytest` 79 + 8 docker-matrix + ruff clean · docker upload stack · Android `assembleDebug testDebugUnitTest` passes (with the NDK-built core).
-**Not verified:** anything iOS/Swift (no macOS here), and GitHub CI (branch not pushed).
+**Not verified:** anything iOS/Swift (no macOS here); CI runs on `main` but the macOS job has never been seen green.
 
 ## 2. What I set up on this machine
 - Android SDK at `~/Android/Sdk` (cmdline-tools, platform 37, build-tools, CMake 4.1.2, NDK through Gradle). Installing it meant accepting the Android SDK licenses. Delete the folder if you don't want it.
@@ -72,9 +72,7 @@ Eight of the thirteen phases (0–7, minus device acceptance) are done in softwa
 3. **Privacy and consent:** Part 1 builds the consent screens and on-device redaction (Phase 11); the consent text and the server-side retention policy (Part 2) need an owner. Tell me who.
 4. **Production endpoints and keys:** tus upload URL, Sentry DSN. Never commit them; they go in `config/*.local.json` or CI secrets.
 5. **Repo housekeeping:**
-   - The superseded nine-project docs are now in `docs/program-spec/legacy-nine-projects/` (still untracked). Commit them as archive, or delete?
-   - Your staged deletion of `reconstruction/` and the edits to `README.md` were left as they were and not committed.
-   - The branch `part1-phases` has not been pushed. Push it and open a PR so CI, including the macOS job, can run.
+   - Done: `reconstruction/` removed (`fab4a0d`); the legacy nine-project docs are no longer in the tree; work is on `main` (pushed). Check the GitHub Actions page for the macOS job.
 6. Whether **synthetic sessions may stand in** for some device acceptance items in CI (ADR 0002 currently says no).
 
 ## 4. Commands that work today
@@ -90,7 +88,7 @@ cd android && ANDROID_HOME=~/Android/Sdk ./gradlew assembleDebug testDebugUnitTe
 ```
 
 ## 5. Next step on my side
-Phase 8 (guidance core) needs no hardware.
+M1 Android stability finish (in progress), then M2 Phase 9 openings. Neither needs hardware.
 
 ## 6. Gate 0: real-device track (from the Phase 8-12 research plan; start now, needs you)
 Phase 8 thresholds were tuned on synthetic rooms and a simulated person, so they are hypotheses until real data exists:

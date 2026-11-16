@@ -3,22 +3,19 @@
 ## 1. Paste this as the first message of the new conversation
 
 ```
-Do Phase 3 (replay harness) on branch part1-phases.
-Read AGENTS.md, docs/phases/03-replay-harness.md and PROGRESS.md only. Then continue
-through the next phases in order (4, 5, then the C++/C-API/server/Android parts of 6–12)
-using the repo rules in AGENTS.md. Skip anything that needs phones, a Mac or people and
-list it under "blocked" in docs/STATUS.md instead. Tests first for Phases 4, 5, 9, 10. Run
-each phase's acceptance checks for real before reporting. Commit only your own paths
-(`git commit -- <paths>`): the user's staged reconstruction/ deletions and README.md
-edits must stay out of every commit. Do not push.
+Continue Part 1 on branch main. Read AGENTS.md, PROGRESS.md and the brief named in its Next
+section (under .claude/agent-memory/planner/briefs/) only. Work one milestone of
+remaining-work-audit.md at a time, using the repo rules in AGENTS.md. Skip anything that
+needs phones, a Mac or people and list it under "blocked" in docs/STATUS.md. Run each
+acceptance check for real before reporting. Commit only when asked. Do not push.
 ```
 
-To work on a different phase, change the first line to "Do Phase N" and read `docs/phases/NN-*.md`.
+To work on a specific phase instead, say "Do Phase N" and read `docs/phases/NN-*.md`.
 
 ## 2. State at hand-off
 - The program is two parts (docs/program-spec/README.md). This whole repository is Part 1 only; Part 2 is the separate repo `roomscan-recon`.
-- Branch `part1-phases`: `93f20d6` (Phase 0 + 1), `bd78bcd` (Phase 2).
-- Done: Phases 0–2 in software (verified on synthetic data). Phases 3–12 not started.
+- Branch `main` at `21ce79a`. Phase hashes are in PROGRESS.md (older hashes such as `93f20d6`/`bd78bcd` no longer exist).
+- Done: Phases 0–8 in software (verified on synthetic data). Phase 9 ~10 %; Phases 10–11 partly on Android only; Phase 12 not started. Next: M1 Android stability finish, then M2 Phase 9 openings.
 - Full status and the list of things only the user can do: `docs/STATUS.md`.
 - Gotchas and working commands: `PROGRESS.md`.
 
@@ -48,7 +45,7 @@ If a test hangs, run it under `ulimit -v 3000000` and `timeout`; see Gotchas in 
 - Core never reads the system clock; time comes from `t_ns`.
 - No bare 4x4 matrices in public APIs; use frame-named types.
 - Quaternions on disk are `[w,x,y,z]`; Eigen `coeffs()` is `[x,y,z,w]`.
-- Record assumptions as 3–6 line ADRs in `capturekit/docs/decisions/` (next number: 0005).
+- Record assumptions as 3–6 line ADRs in `capturekit/docs/decisions/` (next number: 0015; index in README.md).
 - End each phase by updating `PROGRESS.md` and `docs/STATUS.md`.
 - Final report is at most 25 lines.
 - Real device recordings go in `capturekit/bench/golden/` (Git LFS). They replace the synthetic sessions and the Phase 1 and 2 checks must then be re-run on them.
