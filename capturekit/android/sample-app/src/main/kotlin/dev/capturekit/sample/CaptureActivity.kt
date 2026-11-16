@@ -101,7 +101,8 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val dir = File(getExternalFilesDir("bundles"), "scan_$stamp")
         val s = SessionManager(this, dir, listener = this)
-        if (!s.start()) {
+        // 8 core frame slots (default 4): absorbs ~800 ms worker stalls at 10 candidates/s before ErrFull.
+        if (!s.start(mapOf("frame_slots" to 8))) {
             hud.setBanner("Could not start the capture session. Check free storage and try again.", UiKit.Kind.ERROR)
             return
         }

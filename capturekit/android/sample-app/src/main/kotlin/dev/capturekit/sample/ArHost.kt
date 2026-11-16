@@ -63,6 +63,10 @@ class ArHost(private val activity: Activity, private val onFrame: (Frame) -> Uni
     private val legacy = prop("debug.ck.legacy") == "1"
     /** Step 3b: delay session.pause() by this long after the GL thread stopped, so ARCore workers can drain. 0 = off. */
     private val drainMs = prop("debug.ck.drain").toLongOrNull() ?: 0L
+    /** Step 5 A/B: debug.ck.blocking 1 = UpdateMode.BLOCKING (paces GL to the camera); default LATEST_CAMERA_IMAGE + dedupe. */
+    private val blocking = prop("debug.ck.blocking") == "1"
+    /** Step 8 spike: debug.ck.offmain 1 = view.onPause/session.pause/close run on the shared "ck-ar" thread (ARCore does not document this). */
+    private val offMain = prop("debug.ck.offmain") == "1"
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var pendingPause: Runnable? = null
     private var pendingDeadline = 0L
@@ -97,6 +101,12 @@ class ArHost(private val activity: Activity, private val onFrame: (Frame) -> Uni
 
     fun resume() {
         if (resumed) return
+        if (!awaitArQueue()) {
+            // No failNow(): it would resume the GL view while ck-ar may still be pausing it. Retry calls resume() again.
+            state = ArState.ERROR; message = "The camera is still shutting down. Wait a moment and retry."
+            onError(message)
+            return
+        }
         flushPause()
         closing = false
         if (activity.checkSelfPermission(android.Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
@@ -120,7 +130,7 @@ class ArHost(private val activity: Activity, private val onFrame: (Frame) -> Uni
                     s.configure(Config(s).apply {
                         focusMode = Config.FocusMode.AUTO
                         planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
-                        updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
+                        updateMode = if (blocking) Config.UpdateMode.BLOCKING else Config.UpdateMode.LATEST_CAMERA_IMAGE
                         // Features we never use: off, so ARCore does no work for them.
                         if (!legacy) lightEstimationMode = Config.LightEstimationMode.DISABLED
                         if (!legacy) instantPlacementMode = Config.InstantPlacementMode.DISABLED
@@ -220,6 +230,23 @@ class ArHost(private val activity: Activity, private val onFrame: (Frame) -> Uni
 
     fun pause() {
         closing = true
+        if (offMain) {
+            // Snapshot the main-thread flags, then let the shared ck-ar thread do the slow part; resume()/a new ArHost wait for it.
+            val v = viewResumed; val r = resumed; val s = session   // s captured: pause runs before close even if main nulls session
+            viewResumed = false; resumed = false
+            AR_QUEUE.execute {
+                var viewMs = -1L; var sessMs = -1L
+                if (v) { val t0 = SystemClock.elapsedRealtime(); view.onPause(); viewMs = SystemClock.elapsedRealtime() - t0 }
+                if (r) {
+                    if (drainMs > 0) SystemClock.sleep(drainMs)
+                    val t0 = SystemClock.elapsedRealtime()
+                    try { s?.pause() } catch (t: Throwable) { Log.w(TAG, "pause failed", t) }
+                    sessMs = SystemClock.elapsedRealtime() - t0
+                }
+                Log.i(TAG, "timing (ck-ar) view.onPause=${viewMs}ms session.pause=${sessMs}ms drain=${drainMs}ms")
+            }
+            return
+        }
         var viewMs = -1L; var sessMs = -1L
         if (viewResumed) { val t0 = SystemClock.elapsedRealtime(); view.onPause(); viewResumed = false; viewMs = SystemClock.elapsedRealtime() - t0 }
         if (resumed) {
@@ -252,9 +279,33 @@ class ArHost(private val activity: Activity, private val onFrame: (Frame) -> Uni
         sessionPause()
     }
 
+    /**
+     * Main thread: waits (bounded) until every pause/close queued on ck-ar (by this or an earlier ArHost) has finished.
+     * False on timeout/failure: the caller must not touch ARCore then.
+     */
+    private fun awaitArQueue(): Boolean {
+        if (!offMain) return true
+        val t0 = SystemClock.elapsedRealtime()
+        val ok = try { AR_QUEUE.submit {}.get(AR_QUEUE_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS); true }
+        catch (t: java.util.concurrent.TimeoutException) { Log.e(TAG, "ck-ar still busy after ${AR_QUEUE_TIMEOUT_MS}ms (pause/close stuck): not resuming"); false }
+        catch (t: Throwable) { Log.e(TAG, "ck-ar barrier failed: not resuming", t); false }
+        val ms = SystemClock.elapsedRealtime() - t0
+        if (ms > 0) Log.i(TAG, "timing resume waited ${ms}ms for ck-ar")
+        return ok
+    }
+
     fun close() {
         flushPause()
         closing = true
+        if (offMain) {
+            val s = session; session = null
+            AR_QUEUE.execute {
+                val t0 = SystemClock.elapsedRealtime()
+                try { s?.close() } catch (t: Throwable) { Log.w(TAG, "close failed", t) }
+                Log.i(TAG, "timing (ck-ar) session.close=${SystemClock.elapsedRealtime() - t0}ms")
+            }
+            return
+        }
         val t0 = SystemClock.elapsedRealtime()
         try { session?.close() } catch (t: Throwable) { Log.w(TAG, "close failed", t) }
         session = null
@@ -267,7 +318,7 @@ class ArHost(private val activity: Activity, private val onFrame: (Frame) -> Uni
         try {
             val hz = activity.windowManager.defaultDisplay.refreshRate
             val cur = s.cameraConfig
-            Log.i(TAG, "display ${hz}Hz; current cameraConfig cpu=${cur.imageSize} gpu=${cur.textureSize} fps=${cur.fpsRange} depth=${cur.depthSensorUsage} stereo=${cur.stereoCameraUsage} facing=${cur.facingDirection}")
+            Log.i(TAG, "display ${hz}Hz; updateMode=${if (blocking) "BLOCKING" else "LATEST_CAMERA_IMAGE"} offMain=$offMain; current cameraConfig cpu=${cur.imageSize} gpu=${cur.textureSize} fps=${cur.fpsRange} depth=${cur.depthSensorUsage} stereo=${cur.stereoCameraUsage} facing=${cur.facingDirection}")
             for (c in s.getSupportedCameraConfigs(CameraConfigFilter(s))) {
                 Log.i(TAG, "  supported cpu=${c.imageSize} gpu=${c.textureSize} fps=${c.fpsRange} depth=${c.depthSensorUsage} stereo=${c.stereoCameraUsage} id=${c.cameraId}")
             }
@@ -344,5 +395,11 @@ class ArHost(private val activity: Activity, private val onFrame: (Frame) -> Uni
         fail(s, msg, t)
     }
 
-    private companion object { const val TAG = "CKArHost" }
+    private companion object {
+        const val TAG = "CKArHost"
+        const val AR_QUEUE_TIMEOUT_MS = 3000L   // below the 5 s input-dispatch ANR limit
+        /** One process-wide thread so pause/close of one Session always finish before the next resume (R7: relaunch). */
+        val AR_QUEUE: java.util.concurrent.ExecutorService =
+            java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "ck-ar").apply { isDaemon = true } }
+    }
 }

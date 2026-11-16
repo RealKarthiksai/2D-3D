@@ -1,7 +1,12 @@
 package dev.capturekit.sample
 
 import android.app.Activity
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.content.Intent
+import android.os.Build
+import android.util.Log
+import dev.capturekit.capture.SessionManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
@@ -29,10 +34,60 @@ class MainActivity : Activity() {
     private val ui = Handler(Looper.getMainLooper())
     private val prefs by lazy { getSharedPreferences("ck_prefs", MODE_PRIVATE) }
 
+    private var recoveryLine: TextView? = null
+    @Volatile private var recoveryNote: String? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.decorView.setBackgroundColor(0xFF101418.toInt())
         if (prefs.getBoolean(KEY_ONBOARDED, false)) showHome() else showOnboarding(0)
+        if (savedInstanceState == null) checkLastExit()
+    }
+
+    /**
+     * Launch: read why the previous process ended (API 30+; kept in prefs as the last reason) and recover any
+     * scan the DB still marks "recording". A recovered scan gets one calm line on Home.
+     */
+    private fun checkLastExit() {
+        Thread {
+            val reason = lastExitReason()
+            val recovered = try { SessionManager.recoverInterrupted(this) } catch (t: Throwable) { Log.w(TAG, "recovery failed", t); emptyList() }
+            if (reason != null) Log.i(TAG, "last process exit: $reason; recovered ${recovered.size} scan(s)")
+            if (recovered.isEmpty()) return@Thread
+            runOnUiThread { recoveryNote = "Last scan ended unexpectedly and was recovered"; paintRecovery() }
+        }.start()
+    }
+
+    /** Newest exit record not seen before, as "REASON (description)"; also stored in prefs. Null below API 30 or if nothing new. */
+    private fun lastExitReason(): String? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        return try {
+            val am = getSystemService(ActivityManager::class.java) ?: return null
+            val info = am.getHistoricalProcessExitReasons(packageName, 0, 1).firstOrNull() ?: return null
+            if (info.timestamp <= prefs.getLong(KEY_EXIT_TS, 0L)) return null
+            val text = "${exitName(info.reason)} status=${info.status} (${info.description ?: "-"})"
+            prefs.edit().putLong(KEY_EXIT_TS, info.timestamp).putString(KEY_EXIT_REASON, text).apply()
+            text
+        } catch (t: Throwable) { Log.w(TAG, "exit reasons unavailable", t); null }
+    }
+
+    private fun exitName(r: Int) = when (r) {
+        ApplicationExitInfo.REASON_CRASH_NATIVE -> "CRASH_NATIVE"
+        ApplicationExitInfo.REASON_CRASH -> "CRASH"
+        ApplicationExitInfo.REASON_ANR -> "ANR"
+        ApplicationExitInfo.REASON_SIGNALED -> "SIGNALED"
+        ApplicationExitInfo.REASON_LOW_MEMORY -> "LOW_MEMORY"
+        ApplicationExitInfo.REASON_EXIT_SELF -> "EXIT_SELF"
+        ApplicationExitInfo.REASON_USER_REQUESTED -> "USER_REQUESTED"
+        ApplicationExitInfo.REASON_USER_STOPPED -> "USER_STOPPED"
+        else -> "REASON_$r"
+    }
+
+    private fun paintRecovery() {
+        val l = recoveryLine ?: return
+        val n = recoveryNote
+        l.visibility = if (n == null) View.GONE else View.VISIBLE
+        if (n != null) UiKit.setChip(l, n, UiKit.GREEN)
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -54,7 +109,7 @@ class MainActivity : Activity() {
 
     // ---- onboarding (3 pages) ----
     private fun showOnboarding(page: Int) {
-        home = false; permLine = null; arLine = null; grant = null
+        home = false; permLine = null; arLine = null; grant = null; recoveryLine = null
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val last = 2
         when (page) {
@@ -99,6 +154,8 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(title("CaptureKit"), lp(4))
         root.addView(body("Guided room scan  v$version").apply { textSize = 15f }, lp(16))
+        recoveryLine = UiKit.statusText(this).also { root.addView(it, lp(8)) }
+        paintRecovery()
         permLine = UiKit.statusText(this).also { root.addView(it, lp(8)) }
         arLine = UiKit.statusText(this).also { root.addView(it, lp(8)) }
         grant = UiKit.bigButton(this, "Allow camera", UiKit.AMBER).apply {
@@ -163,5 +220,10 @@ class MainActivity : Activity() {
 
     override fun onPause() { ui.removeCallbacksAndMessages(null); super.onPause() }
 
-    private companion object { const val KEY_ONBOARDED = "onboarded" }
+    private companion object {
+        const val KEY_ONBOARDED = "onboarded"
+        const val KEY_EXIT_TS = "last_exit_ts"
+        const val KEY_EXIT_REASON = "last_exit_reason"
+        const val TAG = "CKMain"
+    }
 }
