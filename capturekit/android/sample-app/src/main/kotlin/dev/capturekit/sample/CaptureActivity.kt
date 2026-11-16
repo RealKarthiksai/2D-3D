@@ -41,7 +41,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
     private var thermal: ThermalAdapter? = null
     private val ui = Handler(Looper.getMainLooper())
     @Volatile private var lastQuality = -1.0
-    @Volatile private var lastReasons = ""
+    @Volatile private var lastReasons: List<String> = emptyList()
     @Volatile private var lastPolicy: Policy? = null
     @Volatile private var keyframes = 0
     @Volatile private var lastGovernor = "-"
@@ -56,8 +56,8 @@ class CaptureActivity : Activity(), SessionManager.Listener {
     private var pausedTotalMs = 0L
     private var recording = false
     private var finishing = false
+    private var reviewDialog: android.app.Dialog? = null
     private var arMessage: String? = null
-    private var detailCleared = false
     private var recovering = true
     private var recoveredNote: String? = null
 
@@ -112,12 +112,12 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         adapter = ARAdapter(s, 0L) { ar.session }
         sensors = SensorBridge(this, s).also { it.start() }
         thermal = ThermalAdapter(this) { p -> pushPlatform(s, p) }.also { it.start() }
-        keyframes = 0; instruction = ""; instructionLong = ""; overlay = null; detailCleared = false; lastQuality = -1.0; lastReasons = ""
+        keyframes = 0; instruction = ""; instructionLong = ""; overlay = null; lastQuality = -1.0; lastReasons = emptyList()
         corePaused = false; pausedTotalMs = 0; pausedAtMs = 0
         recStartMs = SystemClock.elapsedRealtime(); recording = true
         hud.setResult(null)
         hud.setRecording(true)
-        hud.setDetail("Recording to ${dir.name}")
+        hud.setDetail(null)
         hud.setCoaching("Move slowly and keep the camera steady")
         hud.haptic(false)
     }
@@ -141,7 +141,37 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         }
     }
 
+    /**
+     * Finish pressed: when a wall is weak, pause the core and show [ReviewSheet] before finalize ("Scan the gaps"
+     * resumes the same bundle, "Finish anyway" finalizes); otherwise finish straight away.
+     */
     private fun stop() {
+        val s = session ?: return
+        if (finishing || reviewDialog != null) return
+        val room = overlay
+        if (!recording || room == null || !ReviewSheet.needed(room)) { finishScan(); return }
+        if (!corePaused) {
+            if (s.pause() != Status.OK) {
+                hud.setBanner("Could not pause the scan to review it. Press Finish again.", UiKit.Kind.WARN)
+                return
+            }
+            corePaused = true   // synchronously, so onPause does not pause a second time
+            pausedAtMs = SystemClock.elapsedRealtime()
+        }
+        speech.stopNow()
+        hud.haptic(false)
+        reviewDialog = ReviewSheet.show(this, room,
+            onGaps = {
+                if (reviewDialog == null) return@show   // one-shot: resume runs once
+                reviewDialog = null
+                val st = s.resume()
+                if (st == Status.OK) hud.setCoaching("Move slowly and keep the camera steady")
+                else hud.setBanner("Cannot resume yet: the phone needs to cool down or charge (status ${UiKit.statusName(st)}). Press Resume when it is ready.", UiKit.Kind.WARN)
+            },
+            onFinish = { reviewDialog = null; finishScan() })
+    }
+
+    private fun finishScan() {
         val s = session ?: return
         if (finishing) return
         finishing = true
@@ -158,6 +188,9 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         hud.setCoaching("Saving. Keep the app open")
         hud.haptic(true)
         val kf = keyframes
+        // Last room snapshot for the Review screen (Intent extras only; no bundle schema change).
+        val room = overlay
+        val roomSurfaces = room?.let { RoomView.encodeSurfaces(it.surfaces) }
         Thread {
             val st = s.finish()
             runOnUiThread {
@@ -166,7 +199,15 @@ class CaptureActivity : Activity(), SessionManager.Listener {
                     .putExtra(ReviewActivity.EXTRA_DIR, s.dir.absolutePath)
                     .putExtra(ReviewActivity.EXTRA_STATUS, st)
                     .putExtra(ReviewActivity.EXTRA_ELAPSED_MS, elapsed)
-                    .putExtra(ReviewActivity.EXTRA_KEYFRAMES, kf))
+                    .putExtra(ReviewActivity.EXTRA_KEYFRAMES, kf)
+                    .apply {
+                        if (room != null) {
+                            putExtra(ReviewActivity.EXTRA_SURFACES, roomSurfaces)
+                            putExtra(ReviewActivity.EXTRA_FLOOR, room.floorFound)
+                            putExtra(ReviewActivity.EXTRA_CEILING, room.ceilingFound)
+                            putExtra(ReviewActivity.EXTRA_WALLS_FOUND, room.walls)
+                        }
+                    })
                 finish()
             }
         }.start()
@@ -187,26 +228,19 @@ class CaptureActivity : Activity(), SessionManager.Listener {
     }
 
     private fun refresh() {
-        hud.setTracking(trackState, trackFailure, ar.live() || ar.lastFrameMs == 0L || ar.state != ArState.READY)
-        session?.let { hud.setDebug(it.stats.hudLine()) }
-        if (lastQuality >= 0) hud.setQuality(lastQuality, lastReasons)
-        val ov = if (recording) overlay else null
-        // The "Recording to <dir>" detail line collides with the taller bottom stack (coaching + why) once snapshots flow.
-        if (ov != null && !detailCleared) { detailCleared = true; hud.setDetail(null) }
-        hud.setUnderstanding(ov)
+        val p = lastPolicy
+        // One pill: tracking + latest frame-quality reasons + thermal level (warming/hot no longer use the banner).
+        hud.setStatus(trackState, trackFailure, if (recording && !corePaused && lastQuality >= 0) lastReasons else emptyList(),
+            if (recording && p != null) p.level else 0, ar.live() || ar.lastFrameMs == 0L || ar.state != ArState.READY)
+        if (hud.debugOn) session?.let { hud.setDebug(it.stats.hudLine()) }
+        hud.setUnderstanding(if (recording) overlay else null)
         if (recording) {
             hud.setPaused(corePaused)
-            hud.setRecInfo(elapsedMs(), "keyframes $keyframes")
+            hud.setRecInfo(elapsedMs())
             if (!corePaused && instruction.isNotEmpty()) hud.setCoaching(instruction, instructionLong)
         }
-        val p = lastPolicy
-        val thermalMsg = when {
-            !recording || p == null -> null
-            p.mustPause -> "Capture paused: the phone is too hot or the battery is low. Let it rest."
-            p.level >= 4 -> "The phone is hot. Consider a short break."
-            p.level >= 1 -> "The phone is warming up, so capture eases off a little."
-            else -> null
-        }
+        // Banner is for errors only: a forced thermal/battery pause blocks capture, so it stays here.
+        val thermalMsg = if (recording && p != null && p.mustPause) "Capture paused: the phone is too hot or the battery is low. Let it rest." else null
         val am = arMessage
         when {
             am != null && ar.state == ArState.NO_PERMISSION ->
@@ -222,7 +256,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
     // Core event thread (not the AR thread).
     override fun onEvent(e: CoreEvent) {
         when (e) {
-            is CoreEvent.FrameQuality -> { lastQuality = e.quality; lastReasons = e.reasons.joinToString(", ") }
+            is CoreEvent.FrameQuality -> { lastQuality = e.quality; lastReasons = e.reasons }
             is CoreEvent.KeyframeRequest -> keyframes++
             is CoreEvent.Instruction -> {
                 instruction = e.speakText; instructionLong = e.longText
@@ -283,6 +317,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         // Destroyed mid-scan (Back, swipe-away, system): finish the session so the work is kept as a bundle and
         // nothing leaks (native handle, ck-events thread, sensor/thermal listeners). finish() writes a complete
         // bundle; if the process dies before it ends, the DB still says "recording" and next launch recovers it.
+        reviewDialog?.dismiss(); reviewDialog = null
         val s = session
         if (s != null && !finishing) {
             finishing = true

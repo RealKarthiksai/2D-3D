@@ -1,103 +1,158 @@
 package dev.capturekit.sample
 
 import android.content.Context
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.RectF
-import android.graphics.Typeface
 import android.os.SystemClock
-import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
 import dev.capturekit.capture.CoreEvent
+import kotlin.math.max
 
 /**
- * "What the app understands": a completeness ring with %, three chips (walls found, floor, ceiling) and, under the
- * coaching line, the core's one-line reason. All sentences come from the core (why_text); only fixed labels live
- * here. Two views so the HUD can place them in separate zones: [card] (top-left column, under the chips) and [why]
- * (bottom stack under the coaching line). Tap the card to collapse it to the ring only. Updates are throttled to
- * 4 Hz and must be called on the UI thread; the mini map is a later step.
+ * Parts checklist: "Floor", "Walls: 2 done, 1 scanning", "Ceiling" plus an optional small percentage caption.
+ * Walls are counted among the FOUND walls (never "x of 4": there is no room shell yet). Thresholds are guesses
+ * until Gate 0 data. Fixed labels only; the rows are summarised by [description] (parts, never a percentage).
+ */
+class ChecklistView(ctx: Context) : LinearLayout(ctx) {
+    private val d = ctx.resources.displayMetrics.density
+    private fun row() = TextView(context).apply { textSize = UiKit.TEXT_S; maxLines = 1 }
+    private val floorRow = row()
+    private val wallsRow = row()
+    private val ceilingRow = row()
+    private val pctRow = row().apply { setTextColor(DIM); textSize = SMALL }
+
+    /** Plain-language summary for TalkBack; parts only, no percentage. */
+    var description = ""
+        private set
+
+    init {
+        orientation = VERTICAL
+        addView(floorRow); addView(wallsRow); addView(ceilingRow)
+        addView(pctRow, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { topMargin = (2 * d).toInt() })
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+    }
+
+    /** [found] walls seen so far, [done] of them at or above [RoomView.DONE_PCT], [scanning] in the scanning band. [pct] < 0 hides the caption. */
+    fun set(floor: Boolean, ceiling: Boolean, found: Int, done: Int, scanning: Int, pct: Int) {
+        mark(floorRow, floor, "Floor")
+        mark(ceilingRow, ceiling, "Ceiling")
+        val walls = wallsText(found, done, scanning)
+        wallsRow.text = walls
+        wallsRow.setTextColor(if (found > 0 && done == found) OK else if (found > 0) PROGRESS else DIM)
+        setPct(pct)
+        description = "Floor ${if (floor) "found" else "not found yet"}. $walls. Ceiling ${if (ceiling) "found" else "not found yet"}."
+    }
+
+    /** Updates only the small percentage caption ([pct] < 0 hides it). */
+    fun setPct(pct: Int) {
+        if (pct < 0) pctRow.visibility = GONE
+        else { pctRow.text = "Scanned $pct%"; pctRow.visibility = VISIBLE }
+    }
+
+    private fun mark(v: TextView, on: Boolean, label: String) {
+        v.text = (if (on) "✓ " else "○ ") + label
+        v.setTextColor(if (on) OK else DIM)
+    }
+
+    companion object {
+        const val SCANNING_PCT = 20           // scanning band 20-79, done >= RoomView.DONE_PCT (guesses)
+        const val SMALL = 11f
+        private const val OK = 0xFF81C784.toInt()
+        private const val PROGRESS = 0xFF4FC3F7.toInt()
+        private const val DIM = 0xFFB0BEC5.toInt()
+
+        /** "Walls: 2 done, 1 scanning"; walls below the scanning band count as "just found". */
+        fun wallsText(found: Int, done: Int, scanning: Int): String {
+            if (found <= 0) return "Walls: none yet"
+            val sb = StringBuilder("Walls: ")
+            var first = true
+            fun part(n: Int, label: String) { if (n > 0) { if (!first) sb.append(", "); sb.append(n).append(' ').append(label); first = false } }
+            part(done, "done"); part(scanning, "scanning"); part(found - done - scanning, "just found")
+            return sb.toString()
+        }
+    }
+}
+
+/**
+ * "What the app understands" card for the capture HUD's left-centre zone: the live mini room ([RoomView]), the
+ * parts checklist under it and a small caption with the core's reason line (why_text, else the core's
+ * long_text). All sentences come from the core; only fixed labels live here. Tap the card to collapse it to the
+ * map only. Updates are throttled to 4 Hz and must be called on the UI thread.
+ * Feedback: a haptic tick when another wall reaches the done threshold; a short green glow plus a confirm
+ * haptic when the core reports mode "finish" (the core speaks "Scan complete" itself).
  */
 class UnderstandingView(private val ctx: Context) {
     private val d = ctx.resources.displayMetrics.density
     private fun dp(v: Int) = (v * d).toInt()
 
-    private class Ring(ctx: Context) : View(ctx) {
-        private val d = ctx.resources.displayMetrics.density
-        private val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = UiKit.PANEL }
-        private val track = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 5 * d; color = 0x44FFFFFF }
-        private val arc = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 5 * d; strokeCap = Paint.Cap.ROUND }
-        private val label = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE; textAlign = Paint.Align.CENTER; textSize = 15 * d; typeface = Typeface.DEFAULT_BOLD
-        }
-        private val box = RectF()
-        var fraction = 0f
-        var color = UiKit.GREEN
-        var text = "0%"
-
-        override fun onDraw(c: Canvas) {
-            val w = width.toFloat(); val h = height.toFloat()
-            val inset = arc.strokeWidth
-            c.drawCircle(w / 2, h / 2, minOf(w, h) / 2, bg)
-            box.set(inset, inset, w - inset, h - inset)
-            c.drawOval(box, track)
-            arc.color = color
-            c.drawArc(box, -90f, 360f * fraction.coerceIn(0f, 1f), false, arc)
-            c.drawText(text, w / 2, h / 2 - (label.descent() + label.ascent()) / 2, label)
-        }
+    private val room = RoomView(ctx)
+    private val checklist = ChecklistView(ctx)
+    private val caption = TextView(ctx).apply {
+        textSize = UiKit.TEXT_S; setTextColor(0xFFE3F2FD.toInt()); maxLines = 2
+        ellipsize = android.text.TextUtils.TruncateAt.END; visibility = View.GONE
     }
+    private val glassBg = UiKit.glass(ctx)
+    private val glowBg = UiKit.rounded(GLOW, dp(UiKit.RADIUS_DP).toFloat())
+    private val unglow = Runnable { card.background = glassBg }
 
-    private val ring = Ring(ctx)
-    private val walls = UiKit.chip(ctx).apply { textSize = 13f; setPadding(dp(10), dp(3), dp(10), dp(3)) }
-    private val floor = UiKit.chip(ctx).apply { textSize = 13f; setPadding(dp(10), dp(3), dp(10), dp(3)) }
-    private val ceiling = UiKit.chip(ctx).apply { textSize = 13f; setPadding(dp(10), dp(3), dp(10), dp(3)) }
-    private val chips = LinearLayout(ctx).apply {
-        orientation = LinearLayout.VERTICAL
-        addView(walls, chipLp()); addView(floor, chipLp()); addView(ceiling, chipLp())
-    }
-
-    /** Top-left zone (inside the HUD's left column, below the tracking/quality chips). Hidden until the first snapshot. */
+    /** Left-centre zone card. Hidden until the first snapshot. */
     val card = LinearLayout(ctx).apply {
         orientation = LinearLayout.VERTICAL
         visibility = View.GONE
         isClickable = true
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-        setPadding(0, dp(6), 0, 0)
-        addView(ring, LinearLayout.LayoutParams(dp(64), dp(64)).apply { bottomMargin = dp(4) })
-        addView(chips, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        background = glassBg
+        setPadding(dp(6), dp(6), dp(6), dp(6))
+        addView(room, LinearLayout.LayoutParams(dp(MAP_W_DP), dp(MAP_H_DP)))
+        addView(checklist, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
+        addView(caption, LinearLayout.LayoutParams(dp(MAP_W_DP), LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(2) })
         setOnClickListener { collapsed = !collapsed; render() }
-    }
-
-    /** The core's reason line, placed under the coaching line. Hidden when empty or collapsed. */
-    val why: TextView = UiKit.statusText(ctx, 16f).apply {
-        gravity = Gravity.CENTER; maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END; visibility = View.GONE
-        setTextColor(0xFFE3F2FD.toInt())
     }
 
     private var collapsed = false
     private var last: CoreEvent.Overlay? = null
     private var shown: CoreEvent.Overlay? = null
     private var lastRenderMs = 0L
+    private var longText = ""
+    private var finishSeen = false
+    private var shownFound = -1
+    private var shownDone = -1
+    private var maxDone = -1
+    private var shownScanning = -1
+    private var shownFloor = false
+    private var shownCeiling = false
+    private var shownPct = -1
+    private var shownCollapsed = false
 
     init {
         // Children are summarised by the card's contentDescription; keep TalkBack from reading them again.
-        card.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-        chips.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-        ring.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        caption.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
     }
 
-    fun setMaxWidth(px: Int) { why.maxWidth = px }
+    /** The core's long_text for the current instruction; shown as the caption when the core gives no why_text. */
+    fun setLongText(t: String) {
+        if (t == longText) return
+        longText = t
+        if (last != null) render()
+    }
 
     /** Newest snapshot (null = not scanning: hide everything). Renders at most every 250 ms (4 Hz). */
     fun update(o: CoreEvent.Overlay?, nowMs: Long = SystemClock.elapsedRealtime()) {
         if (o == null) {
-            last = null; shown = null
-            card.visibility = View.GONE; why.visibility = View.GONE
+            if (last != null || shown != null) room.reset()
+            last = null; shown = null; shownFound = -1; shownDone = -1; maxDone = -1; finishSeen = false
+            card.removeCallbacks(unglow); card.background = glassBg
+            card.visibility = View.GONE
             return
         }
         last = o
+        if (o.mode != "finish") finishSeen = false
+        else if (!finishSeen) {
+            // Glow only: the core's Finish instruction already plays the "success" haptic.
+            finishSeen = true
+            card.background = glowBg
+            card.removeCallbacks(unglow); card.postDelayed(unglow, GLOW_MS)
+        }
         if (o === shown || nowMs - lastRenderMs < 250) return
         lastRenderMs = nowMs
         render()
@@ -105,28 +160,43 @@ class UnderstandingView(private val ctx: Context) {
 
     private fun render() {
         val o = last ?: return
+        if (o !== shown) room.setData(o)
         shown = o
         val pct = Math.round((o.completeness * 100).coerceIn(0.0, 100.0)).toInt()
-        ring.fraction = (o.completeness).toFloat()
-        ring.color = if (o.tracking == 1) UiKit.GREEN else UiKit.AMBER
-        ring.text = "$pct%"
-        ring.invalidate()
-        UiKit.setChip(walls, "Walls ${o.walls} found", if (o.walls > 0) UiKit.GREEN else OFF)
-        UiKit.setChip(floor, (if (o.floorFound) "✓ " else "○ ") + "Floor", if (o.floorFound) UiKit.GREEN else OFF)
-        UiKit.setChip(ceiling, (if (o.ceilingFound) "✓ " else "○ ") + "Ceiling", if (o.ceilingFound) UiKit.GREEN else OFF)
-        chips.visibility = if (collapsed) View.GONE else View.VISIBLE
+        var done = 0; var scanning = 0
+        val segs = o.surfaces
+        for (i in 0 until segs.size) {
+            val p = segs[i].pct
+            if (p >= RoomView.DONE_PCT) done++ else if (p >= ChecklistView.SCANNING_PCT) scanning++
+        }
+        val found = max(o.walls, segs.size)
+        // Text is rebuilt only when what it says changes (not on every 4 Hz render).
+        val textChanged = found != shownFound || done != shownDone || scanning != shownScanning ||
+            o.floorFound != shownFloor || o.ceilingFound != shownCeiling
+        if (textChanged) {
+            checklist.set(o.floorFound, o.ceilingFound, found, done, scanning, pct)
+            // Haptic tick only when the done count reaches a new maximum (not on the first snapshot, not on flicker).
+            if (maxDone >= 0 && done > maxDone) UiKit.haptic(card, false)
+            if (done > maxDone) maxDone = done
+        } else if (pct != shownPct) checklist.setPct(pct)
+        if (textChanged || collapsed != shownCollapsed) {
+            // Parts, never a percentage (the percentage is a small caption, hidden from TalkBack).
+            card.contentDescription = "Room parts. ${checklist.description} " +
+                if (collapsed) "Details hidden. Tap to show." else "Tap to hide details."
+        }
+        checklist.visibility = if (collapsed) View.GONE else View.VISIBLE
         card.visibility = View.VISIBLE
-        card.contentDescription = "Room understanding $pct percent complete. " +
-            "${o.walls} walls found. Floor ${if (o.floorFound) "found" else "not found yet"}. " +
-            "Ceiling ${if (o.ceilingFound) "found" else "not found yet"}. " +
-            if (collapsed) "Details hidden. Tap to show." else "Tap to hide details."
-        val t = o.whyText
-        if (t.isEmpty() || collapsed) why.visibility = View.GONE
-        else { if (why.text.toString() != t) why.text = t; why.visibility = View.VISIBLE }
+        shownFound = found; shownDone = done; shownScanning = scanning
+        shownFloor = o.floorFound; shownCeiling = o.ceilingFound; shownPct = pct; shownCollapsed = collapsed
+        val t = o.whyText.ifEmpty { longText }
+        if (t.isEmpty() || collapsed) caption.visibility = View.GONE
+        else { if (caption.text.toString() != t) caption.text = t; caption.visibility = View.VISIBLE }
     }
 
-    private fun chipLp() = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        .apply { bottomMargin = dp(4) }
-
-    private companion object { const val OFF = 0xFF546E7A.toInt() }
+    private companion object {
+        const val MAP_W_DP = 170
+        const val MAP_H_DP = 130
+        const val GLOW = 0xCC2E7D32.toInt()
+        const val GLOW_MS = 1200L
+    }
 }

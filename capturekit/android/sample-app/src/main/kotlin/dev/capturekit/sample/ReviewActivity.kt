@@ -6,7 +6,10 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
+import dev.capturekit.capture.EventParser
+import kotlin.math.max
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -53,6 +56,27 @@ class ReviewActivity : Activity() {
             setPadding(dp(24), dp(20), dp(24), dp(20))
             addView(left, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(24) })
             addView(right, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        }
+        // Final room: the last live snapshot (walls inked, floor/ceiling) and the parts checklist, from Intent extras.
+        if (intent.hasExtra(EXTRA_SURFACES)) {
+            val segs = EventParser.parseSurfaces(intent.getStringExtra(EXTRA_SURFACES) ?: "")
+            val floor = intent.getBooleanExtra(EXTRA_FLOOR, false)
+            val ceiling = intent.getBooleanExtra(EXTRA_CEILING, false)
+            var done = 0; var scanning = 0
+            for (w in segs) if (w.pct >= RoomView.DONE_PCT) done++ else if (w.pct >= ChecklistView.SCANNING_PCT) scanning++
+            val checklist = ChecklistView(this).apply {
+                set(floor, ceiling, max(intent.getIntExtra(EXTRA_WALLS_FOUND, 0), segs.size), done, scanning, -1)
+            }
+            val mid = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+                contentDescription = "Room parts. ${checklist.description}"
+                background = UiKit.glass(this@ReviewActivity)
+                setPadding(dp(6), dp(6), dp(6), dp(6))
+                if (segs.isNotEmpty()) addView(RoomView(this@ReviewActivity).also { it.setSnapshot(segs, floor, ceiling) }, LinearLayout.LayoutParams(dp(170), dp(130)))
+                addView(checklist, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
+            }
+            card.addView(mid, 1, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(24); gravity = Gravity.CENTER_VERTICAL })
         }
         left.addView(TextView(this).apply {
             text = if (ok) "Scan saved" else "Save failed"
@@ -128,6 +152,11 @@ class ReviewActivity : Activity() {
         const val EXTRA_STATUS = "status"
         const val EXTRA_ELAPSED_MS = "elapsed_ms"
         const val EXTRA_KEYFRAMES = "keyframes"
+        /** Last overlay snapshot from the scan: surfaces string ("x0,z0,x1,z1,pct;...") + flags. Absent when no overlay arrived. */
+        const val EXTRA_SURFACES = "room_surfaces"
+        const val EXTRA_FLOOR = "room_floor"
+        const val EXTRA_CEILING = "room_ceiling"
+        const val EXTRA_WALLS_FOUND = "room_walls_found"
 
         /** manifest.json: validation.verdict, counts.keyframes and WARN/ERROR messages from validation.issues (INFO hidden). */
         fun parseManifest(text: String): Parsed = try {

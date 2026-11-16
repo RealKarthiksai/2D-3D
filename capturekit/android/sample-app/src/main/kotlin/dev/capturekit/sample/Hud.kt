@@ -11,44 +11,44 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import dev.capturekit.guidance.StatusPill
 
 /**
- * Shared capture HUD drawn over the camera preview, in non-overlapping zones:
- *  - top bar: tracking/quality chips (left), REC pill and voice switch (right)
- *  - stack under the top bar: banner, detail line, result card (never over the bar)
- *  - row under the top bar: understanding card (left) beside the banner/detail/result stack (completeness ring + Walls/Floor/Ceiling chips)
- *  - bottom centre: coaching line, core "why" line, subtitle, Pause + Start/Finish buttons
- * Everything is clamped by system bar / cutout insets.
+ * Shared capture HUD over the camera preview. One vertical column, so zones can shrink but never overlap:
+ *  - top bar: ONE status pill (tracking + quality + thermal, [StatusPill]) left; REC time + voice toggle right
+ *  - banner (errors only), full width under the top bar
+ *  - middle row (takes the remaining height, clips rather than overlaps): room card left-centre
+ *    ([UnderstandingView]: mini room, checklist, core caption); result / debug messages centred beside it
+ *  - bottom: ONE coaching sentence (core speak_text), then the bottom bar (Pause, Start/Finish)
+ * Long-press the status pill to toggle the ingest debug line. Everything is clamped by system bar / cutout insets.
  */
 class Hud(private val ctx: Activity) {
     private val d = ctx.resources.displayMetrics.density
     private fun dp(v: Int) = (v * d).toInt()
 
-    private val tracking = UiKit.chip(ctx).also { UiKit.setChip(it, "Tracking: starting...", UiKit.AMBER) }
-    private val quality = UiKit.chip(ctx).apply { visibility = View.GONE }
+    private val pill = UiKit.chip(ctx).apply { textSize = UiKit.TEXT_M }
     private val understanding = UnderstandingView(ctx)
-    private val detail = UiKit.statusText(ctx, 15f).apply { visibility = View.GONE }
-    /** Ingest counters line (trk/frm/kf/pts/pl); hidden until the tracking chip is long-pressed. */
-    private val debug = UiKit.statusText(ctx, 12f).apply { visibility = View.GONE; typeface = Typeface.MONOSPACE }
-    private var debugOn = false
-    private val result = UiKit.statusText(ctx, 16f).apply { visibility = View.GONE; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE; maxLines = 4 }
-    private val recDot = View(ctx).apply { background = UiKit.rounded(Color.RED, dp(8).toFloat()) }
-    private val recText = UiKit.statusText(ctx, 17f).apply { typeface = Typeface.DEFAULT_BOLD; setPadding(dp(10), dp(6), dp(12), dp(6)) }
+    private val detail = glassText(UiKit.TEXT_M).apply { visibility = View.GONE }
+    /** Ingest counters line (trk/frm/kf/pts/pl); hidden until the status pill is long-pressed. */
+    private val debug = glassText(UiKit.TEXT_S).apply { visibility = View.GONE; typeface = Typeface.MONOSPACE }
+    var debugOn = false
+        private set
+    private val result = glassText(UiKit.TEXT_M).apply { visibility = View.GONE; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE; maxLines = 4 }
+    private val recDot = View(ctx).apply { background = UiKit.rounded(Color.RED, dp(6).toFloat()) }
+    private val recText = TextView(ctx).apply { textSize = UiKit.TEXT_M; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD }
     private val recRow = LinearLayout(ctx).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         visibility = View.GONE
-        addView(recDot, LinearLayout.LayoutParams(dp(14), dp(14)).apply { rightMargin = dp(8) })
+        background = UiKit.glass(ctx)
+        setPadding(dp(10), dp(5), dp(12), dp(5))
+        addView(recDot, LinearLayout.LayoutParams(dp(12), dp(12)).apply { rightMargin = dp(8) })
         addView(recText)
     }
-    private val voice = UiKit.chip(ctx).apply { visibility = View.GONE }
-    private val coaching = UiKit.statusText(ctx, 22f).apply { gravity = Gravity.CENTER; typeface = Typeface.DEFAULT_BOLD; maxLines = 2 }
-    private val subtitle = TextView(ctx).apply {
-        textSize = 15f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; maxLines = 2
-        background = UiKit.rounded(UiKit.PANEL, dp(8).toFloat()); setPadding(dp(12), dp(4), dp(12), dp(4)); visibility = View.GONE
-    }
+    private val voice = UiKit.chip(ctx).apply { visibility = View.GONE; textSize = UiKit.TEXT_S }
+    private val coaching = glassText(UiKit.TEXT_L).apply { gravity = Gravity.CENTER; typeface = Typeface.DEFAULT_BOLD; maxLines = 2 }
     private val bannerText = TextView(ctx)
-    private val bannerButton = UiKit.bigButton(ctx, "Retry", 0x33FFFFFF).apply { textSize = 16f; minimumHeight = 0; minHeight = 0 }
+    private val bannerButton = UiKit.bigButton(ctx, "Retry", 0x33FFFFFF).apply { textSize = UiKit.TEXT_M; minimumHeight = 0; minHeight = 0 }
     private val bannerRow = LinearLayout(ctx).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
@@ -56,33 +56,45 @@ class Hud(private val ctx: Activity) {
         addView(bannerText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         addView(bannerButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(12) })
     }
-    val button: Button = UiKit.bigButton(ctx, "Start")
-    val pauseButton: Button = UiKit.secondaryButton(ctx, "Pause").apply { visibility = View.GONE }
+    val button: Button = barButton(UiKit.bigButton(ctx, "Start"))
+    val pauseButton: Button = barButton(UiKit.secondaryButton(ctx, "Pause")).apply { visibility = View.GONE }
 
     private val pulse = ObjectAnimator.ofFloat(recDot, View.ALPHA, 1f, 0.2f).apply {
         duration = 600; repeatMode = ObjectAnimator.REVERSE; repeatCount = ObjectAnimator.INFINITE
     }
     private var coachText = ""
-    private var subText = ""
     private var bannerKey: String? = null
     private var paused = false
+    private var recSec = -1L
+    private var recPaused = false
+    private var recCounter = ""
+    private var everTracked = false   // "Starting..." only until the camera first tracks
 
     private val longSide = maxOf(ctx.resources.displayMetrics.widthPixels, ctx.resources.displayMetrics.heightPixels)
     init {
-        tracking.maxWidth = (longSide * 0.34).toInt(); quality.maxWidth = (longSide * 0.34).toInt()
+        pill.maxWidth = (longSide * 0.34).toInt()
         val mid = (longSide * 0.55).toInt()
-        coaching.maxWidth = mid; subtitle.maxWidth = mid; bannerText.maxWidth = mid; detail.maxWidth = mid; result.maxWidth = mid
+        coaching.maxWidth = (longSide * 0.6).toInt(); detail.maxWidth = mid; result.maxWidth = mid; debug.maxWidth = mid
         voice.setOnClickListener { onVoiceToggle() }
-        debug.maxWidth = mid
-        understanding.setMaxWidth(mid)
-        tracking.setOnLongClickListener { debugOn = !debugOn; if (!debugOn) debug.visibility = View.GONE; true }
+        pill.setOnLongClickListener { debugOn = !debugOn; if (!debugOn) debug.visibility = View.GONE; true }
+        UiKit.setChip(pill, StatusPill.STARTING.text, StatusPill.STARTING.tone.argb)
     }
 
-    /** No-op while the debug line is toggled off (long-press the tracking chip to show it). */
+    private fun glassText(size: Float) = TextView(ctx).apply {
+        textSize = size; setTextColor(Color.WHITE); background = UiKit.glass(ctx)
+        setPadding(dp(12), dp(6), dp(12), dp(6))
+    }
+
+    private fun barButton(b: Button) = b.apply {
+        textSize = UiKit.TEXT_M; minimumHeight = dp(52); minHeight = dp(52)
+        setPadding(dp(20), dp(8), dp(20), dp(8))
+    }
+
+    /** No-op while the debug line is toggled off (long-press the status pill to show it). */
     fun setDebug(text: String) {
         if (!debugOn) return
         debug.visibility = View.VISIBLE
-        debug.text = text
+        if (debug.text.toString() != text) debug.text = text
     }
 
     /** Set to handle taps on the voice chip. */
@@ -90,10 +102,7 @@ class Hud(private val ctx: Activity) {
 
     val root = FrameLayout(ctx).apply {
         val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
-        val left = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(tracking, lp(bottom = 6)); addView(quality)
-        }
+        val match = ViewGroup.LayoutParams.MATCH_PARENT
         val right = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
@@ -102,58 +111,54 @@ class Hud(private val ctx: Activity) {
         }
         val topBar = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
-            addView(left, LinearLayout.LayoutParams(0, wrap, 1f))
+            gravity = Gravity.CENTER_VERTICAL
+            addView(pill, LinearLayout.LayoutParams(wrap, wrap))
+            addView(View(ctx), LinearLayout.LayoutParams(0, 0, 1f))
             addView(right, LinearLayout.LayoutParams(wrap, wrap))
         }
-        val top = LinearLayout(ctx).apply {
+        val msgs = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            addView(topBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, wrap).apply { bottomMargin = dp(8) })
-            // Second row: understanding card on the left, status messages beside it (so neither pushes the other).
-            val msgs = LinearLayout(ctx).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER_HORIZONTAL
-                addView(bannerRow, lp(bottom = 8)); addView(detail, lp(bottom = 8)); addView(debug, lp(bottom = 8)); addView(result)
-            }
-            val row2 = LinearLayout(ctx).apply {
-                orientation = LinearLayout.HORIZONTAL
-                addView(understanding.card, LinearLayout.LayoutParams(wrap, wrap))
-                addView(msgs, LinearLayout.LayoutParams(0, wrap, 1f))
-            }
-            addView(row2, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, wrap))
+            addView(detail, lp(bottom = 6)); addView(debug, lp(bottom = 6)); addView(result)
         }
-        addView(top, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, wrap, Gravity.TOP))
+        val middle = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(understanding.card, LinearLayout.LayoutParams(wrap, wrap).apply { gravity = Gravity.CENTER_VERTICAL })
+            addView(msgs, LinearLayout.LayoutParams(0, wrap, 1f).apply { leftMargin = dp(8) })
+        }
         val buttons = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            addView(pauseButton, LinearLayout.LayoutParams(dp(150), wrap).apply { rightMargin = dp(12) })
-            addView(button, LinearLayout.LayoutParams(dp(230), wrap))
+            addView(pauseButton, LinearLayout.LayoutParams(dp(140), wrap).apply { rightMargin = dp(12) })
+            addView(button, LinearLayout.LayoutParams(dp(200), wrap))
         }
-        val bottom = LinearLayout(ctx).apply {
+        val column = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            addView(coaching, lp(bottom = 6)); addView(understanding.why, lp(bottom = 6)); addView(subtitle, lp(bottom = 10)); addView(buttons)
+            addView(topBar, LinearLayout.LayoutParams(match, wrap))
+            addView(bannerRow, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(6) })
+            addView(middle, LinearLayout.LayoutParams(match, 0, 1f).apply { topMargin = dp(6); bottomMargin = dp(6) })
+            addView(coaching, LinearLayout.LayoutParams(wrap, wrap).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(8) })
+            addView(buttons, LinearLayout.LayoutParams(match, wrap))
         }
-        addView(bottom, FrameLayout.LayoutParams(wrap, wrap, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
+        addView(column, FrameLayout.LayoutParams(match, match))
         UiKit.applyInsets(this)
     }
 
     private fun lp(bottom: Int) = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(bottom) }
 
-    /** [live] false = no camera frame recently (paused/stalled): show a neutral chip, never a tracking verdict. */
-    fun setTracking(state: String, failure: String, live: Boolean = true) {
-        if (!live) { UiKit.setChip(tracking, "Camera paused", 0xFF455A64.toInt()); return }
-        val (t, c) = UiKit.trackingChip(state, failure)
-        UiKit.setChip(tracking, t, c)
+    /**
+     * The single status pill. [reasons] are the latest core frame-quality reason codes, [thermalLevel] the governor
+     * policy level. [live] false = no camera frame recently (paused/stalled): neutral pill, never a tracking verdict.
+     */
+    fun setStatus(state: String, failure: String, reasons: List<String>, thermalLevel: Int, live: Boolean = true) {
+        if (!live) { UiKit.setChip(pill, "Camera paused", StatusPill.Tone.NEUTRAL.argb); return }
+        if (state == "TRACKING") everTracked = true
+        val p = StatusPill.statusPill(state, failure, reasons, thermalLevel, everTracked)
+        UiKit.setChip(pill, p.text, p.tone.argb)
     }
 
-    fun setQuality(q: Double, reasons: String) {
-        val (label, color) = when { q >= 0.7 -> "Good" to UiKit.GREEN; q >= 0.4 -> "Fair" to UiKit.AMBER; else -> "Poor" to UiKit.RED }
-        quality.visibility = View.VISIBLE
-        UiKit.setChip(quality, "Image quality: $label" + if (reasons.isEmpty()) "" else " ($reasons)", color)
-    }
-
-    fun hideQuality() { quality.visibility = View.GONE }
+    /** Tracking-only pill (screens without core quality/thermal, e.g. the raw recorder). */
+    fun setTracking(state: String, failure: String, live: Boolean = true) = setStatus(state, failure, emptyList(), 0, live)
 
     /** Latest core overlay snapshot (null hides it). Rendered at most 4 Hz; UI thread only. */
     fun setUnderstanding(o: dev.capturekit.capture.CoreEvent.Overlay?) = understanding.update(o)
@@ -163,13 +168,9 @@ class Hud(private val ctx: Activity) {
         if (text != null) detail.text = text
     }
 
-    /** Fades from the old coaching line to the new one; [sub] is the longer explanation under it. No-op when unchanged. */
+    /** Fades to the new coaching sentence; [sub] (core long_text) goes to the room card caption. No-op when unchanged. */
     fun setCoaching(text: String, sub: String = "") {
-        if (sub != subText) {
-            subText = sub
-            subtitle.text = sub
-            subtitle.visibility = if (sub.isEmpty()) View.GONE else View.VISIBLE
-        }
+        understanding.setLongText(sub)
         if (text == coachText) return
         coachText = text
         coaching.animate().cancel()
@@ -186,27 +187,35 @@ class Hud(private val ctx: Activity) {
         UiKit.recolor(button, if (on) UiKit.RED else 0xFF1565C0.toInt())
         pauseButton.visibility = if (on && pauseEnabled) View.VISIBLE else View.GONE
         if (!on) pauseButton.text = "Pause"
+        recSec = -1
     }
 
     /** Pause is offered only where a screen supports it (guided scan). */
     var pauseEnabled = false
 
     fun setPaused(on: Boolean) {
+        if (on == paused) return
         paused = on
         pauseButton.text = if (on) "Resume" else "Pause"
         if (on) { pulse.cancel(); recDot.alpha = 0.3f } else if (!pulse.isStarted) pulse.start()
     }
 
-    fun setRecInfo(elapsedMs: Long, counter: String) {
-        recText.text = (if (paused) "PAUSED  " else "REC  ") + UiKit.mmss(elapsedMs) + "   " + counter
+    /** REC clock; text is rebuilt only when the shown second, pause state or [counter] changes. */
+    fun setRecInfo(elapsedMs: Long, counter: String = "") {
+        val sec = elapsedMs / 1000
+        if (sec == recSec && paused == recPaused && counter == recCounter) return
+        recSec = sec; recPaused = paused; recCounter = counter
+        recText.text = (if (paused) "PAUSED  " else "REC  ") + UiKit.mmss(elapsedMs) + if (counter.isEmpty()) "" else "   $counter"
     }
 
     fun setVoice(on: Boolean?) {   // null hides the chip
         if (on == null) { voice.visibility = View.GONE; return }
         voice.visibility = View.VISIBLE
-        UiKit.setChip(voice, if (on) "Voice: on" else "Voice: off", if (on) UiKit.GREEN else 0xFF546E7A.toInt())
+        UiKit.setChip(voice, if (on) "Voice on" else "Voice off", if (on) UiKit.GREEN else 0xFF546E7A.toInt())
+        voice.contentDescription = if (on) "Voice guidance on. Tap to turn off." else "Voice guidance off. Tap to turn on."
     }
 
+    /** Full-width strip under the top bar; reserved for errors and blocking conditions. */
     fun setBanner(msg: String?, kind: UiKit.Kind = UiKit.Kind.WARN, retryLabel: String? = null, retry: (() -> Unit)? = null) {
         if (msg == null) { bannerRow.visibility = View.GONE; bannerKey = null; return }
         if (retry != null) bannerButton.setOnClickListener { retry() }
@@ -214,8 +223,8 @@ class Hud(private val ctx: Activity) {
         if (key == bannerKey && bannerRow.visibility == View.VISIBLE) return   // unchanged: no new drawables
         bannerKey = key
         UiKit.applyBanner(bannerText, msg, kind)
-        bannerText.textSize = 16f
-        bannerRow.background = UiKit.rounded(kind.color, dp(10).toFloat())
+        bannerText.textSize = UiKit.TEXT_M
+        bannerRow.background = UiKit.rounded(kind.color, dp(UiKit.RADIUS_DP).toFloat())
         bannerText.background = null
         bannerButton.visibility = if (retry != null) View.VISIBLE else View.GONE
         if (retry != null) bannerButton.text = retryLabel ?: "Retry"
@@ -225,7 +234,7 @@ class Hud(private val ctx: Activity) {
     fun setResult(msg: String?, kind: UiKit.Kind = UiKit.Kind.OK) {
         if (msg == null) { result.visibility = View.GONE; return }
         result.text = msg
-        result.background = UiKit.rounded(kind.color, dp(8).toFloat())
+        result.background = UiKit.rounded(kind.color, dp(UiKit.RADIUS_DP).toFloat())
         result.visibility = View.VISIBLE
     }
 

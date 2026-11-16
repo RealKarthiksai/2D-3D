@@ -34,6 +34,15 @@ object UiKit {
     const val RED = 0xFFC62828.toInt()
     const val PANEL = 0xAA000000.toInt()
 
+    // Capture HUD "dark glass" style: one radius, one panel colour, three text sizes (sp).
+    const val GLASS = 0xA6101418.toInt()
+    const val RADIUS_DP = 14
+    const val TEXT_S = 13f
+    const val TEXT_M = 16f
+    const val TEXT_L = 20f
+
+    fun glass(ctx: Context): GradientDrawable = rounded(GLASS, ctx.dp(RADIUS_DP).toFloat())
+
     enum class Kind(val color: Int) { OK(GREEN), WARN(AMBER), ERROR(RED), INFO(PANEL) }
 
     fun Context.dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
@@ -160,20 +169,6 @@ object UiKit {
     fun pathText(ctx: Context, text: String, lines: Int = 2): TextView = TextView(ctx).apply {
         this.text = text; textSize = 14f; setTextColor(0xFFB0BEC5.toInt())
         maxLines = lines; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
-    }
-
-    /** Plain-language hint for an ARCore tracking state. */
-    fun trackingChip(state: String, failure: String): Pair<String, Int> = when (state) {
-        "TRACKING" -> "Tracking: good" to GREEN
-        "PAUSED" -> "Tracking: limited - " + when (failure) {
-            "INSUFFICIENT_LIGHT" -> "needs more light"
-            "EXCESSIVE_MOTION" -> "move more slowly"
-            "INSUFFICIENT_FEATURES" -> "point at textured surfaces"
-            "CAMERA_UNAVAILABLE" -> "camera busy"
-            else -> "hold steady"
-        } to AMBER
-        "STOPPED" -> "Tracking lost - go back to where you started" to RED
-        else -> "Tracking: starting..." to AMBER
     }
 }
 
