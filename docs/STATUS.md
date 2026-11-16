@@ -91,6 +91,7 @@ cd android && ANDROID_HOME=~/Android/Sdk ./gradlew assembleDebug testDebugUnitTe
 M1 Android stability finish (in progress), then M2 Phase 9 openings. Neither needs hardware.
 
 ## 6. Gate 0: real-device track (from the Phase 8-12 research plan; start now, needs you)
+Provisional answers while the user was away: see capturekit/docs/decisions/0018-delegated-decisions.md (revisit). Detector: ADR 0017; face blur: ADR 0021.
 Phase 8 thresholds were tuned on synthetic rooms and a simulated person, so they are hypotheses until real data exists:
 1. A macOS CI runner (or a Mac) to compile iOS: clears the biggest unknown (CaptureSession, ThermalAdapter, TusUploader never compiled).
 2. Run the Android capture screen and upload worker on two physical phones.

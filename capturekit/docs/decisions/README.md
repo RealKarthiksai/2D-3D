@@ -17,3 +17,8 @@ Architecture Decision Records (ADRs), one file per decision: NNNN-title.md.
 - [0012](0012-jni-handle-map-not-raw-pointer.md) JNI handle map instead of raw pointer cast
 - [0013](0013-overlay-snapshot-as-non-critical-event.md) Overlay snapshot ships as a non-critical event, not a C API accessor
 - [0014](0014-speech-scheduler-in-kotlin-for-now.md) SpeechScheduler lives in Kotlin for now, not in the C++ core
+- [0015](0015-sim-walker-hold-level-for-understanding-scenes.md) Sim walker hold_level mode for understanding scenes
+- [0017](0017-phase9-object-detector-efficientdet-lite0.md) Phase 9 object detector: EfficientDet-Lite0 (COCO), geometry-only fallback
+- [0018](0018-delegated-decisions.md) Open human decisions settled by the planner while the user was away (revisit)
+- [0021](0021-face-redaction-detector.md) Face redaction: android.media.FaceDetector now, BlazeFace gated on a licence read
+- [0024](0024-opening-detector-v1-parameters.md) OpeningDetector v1 parameters (sim-tuned hypotheses, revisit with real recordings)

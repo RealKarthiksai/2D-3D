@@ -46,7 +46,8 @@ No `capturekit.h` change. Flat JSON, sorted keys, always under 4 KB (tested), on
 | `user_x`, `user_z`, `user_yaw_deg` | user position (m) and heading (positive = left) |
 | `has_target`, `target_x`, `target_z` | current plan target (only while `mode` is `target`) |
 | `why_id`, `why_text` | one reason, rendered by the core catalog (<= 8 words, English): sweep, tracking lost / weak, moving too fast, too dark, left/right/ahead/behind wall not scanned yet, ceiling/floor not seen yet, scan complete, keep scanning |
-| `surfaces` | wall segments, ONE string `x0,z0,x1,z1,pct;...` (world metres, pct = % of the wall's cells seen), at most 12 walls |
+| `surfaces` | wall segments, ONE string `x0,z0,x1,z1,pct,id;...` (world metres, pct = % of the wall's cells seen, id = stable 1-based wall number in first-seen order, never renumbered), at most 12 walls. v1 had 5 fields (no id); parsers accept 5 or 6 |
+| `yaw_mask` | integer 0..4095 (overlay v2, ADR 0022): bit i set = a keyframe looked along heading [30i, 30i+30) deg (yaw positive = left, 0 = world +z). Keyframes looking within 20 deg of straight up/down are ignored. Moves with zero planes; absent in v1 |
 
 Golden: `core/tests/golden/overlay_box_seed1.jsonl` (sim `box`, seed 1, 60 s, one snapshot per 5 s). Regenerate with
 `CK_UPDATE_GOLDEN=1 capturekit_core_tests --gtest_filter='Overlay.Golden*'` and review the diff.

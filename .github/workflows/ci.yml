@@ -80,7 +80,7 @@ jobs:
         run: scripts/replay_golden.sh
 
   upload:
-    name: upload (docker: smoke + failure matrix)
+    name: "upload (docker: smoke + failure matrix)"
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -116,9 +116,46 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v6
-      - name: Assemble + unit tests
+      - name: Assemble (library + standard and field flavours) + unit tests
         # AGP downloads the pinned NDK/CMake into the runner's SDK if missing.
-        run: ./gradlew assembleDebug testDebugUnitTest --console=plain
+        run: >
+          ./gradlew :capturekit:assembleDebug
+          :sample-app:assembleStandardDebug :sample-app:assembleFieldDebug
+          :capturekit:testDebugUnitTest :sample-app:testStandardDebugUnitTest --console=plain
+      - name: Both flavour APKs exist
+        run: |
+          for fl in standard field; do
+            ls sample-app/build/outputs/apk/$fl/debug/*.apk >/dev/null || { echo "::error::missing $fl debug APK"; exit 1; }
+          done
+      - name: APK size per flavour (report only, limit TBD owner)
+        working-directory: capturekit
+        run: bash scripts/apk_size.sh android
+
+  schema-compat:
+    name: schema-compat (frozen 1.0.0 bundle still validates)
+    # until frozen-1.0.0 fixture lands (human later; must land before schema 1.1.0)
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: capturekit/tools
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked --extra dev
+      - name: Fixture present and unmodified
+        working-directory: capturekit/spec/scanbundle/examples/frozen-1.0.0
+        run: |
+          test -f manifest.json || { echo "::error::frozen-1.0.0 fixture missing (see its README.md)"; exit 1; }
+          sha256sum --check --strict SHA256SUMS
+          find . -type f ! -name README.md ! -name .gitattributes ! -name SHA256SUMS | sed 's|^\./||' | sort > /tmp/actual.txt
+          awk '{print $2}' SHA256SUMS | sed 's|^\*||;s|^\./||' | sort > /tmp/listed.txt
+          diff /tmp/listed.txt /tmp/actual.txt || { echo "::error::fixture files differ from SHA256SUMS"; exit 1; }
+          grep -q '"schema_version": *"1\.0\.0"' manifest.json
+      - name: Validate with current validator (pure Python, no core build needed)
+        run: uv run ckit validate ../spec/scanbundle/examples/frozen-1.0.0 --level semantic
 
   ios:
     name: ios (swift build/test)
