@@ -32,7 +32,11 @@ class SessionManager(
     private val clockOffsetNs: Long = 0L,
     private val frameEveryN: Int = 3, // ARCore ~30 fps -> core candidates ~10 fps; doubled under pressure (FrameRateControl)
     private val listener: Listener? = null,
+    private val faceDetector: FaceRegionDetector? = null,  // test seam only; redaction is on iff redaction_mode=faces
 ) {
+    private var redactor: Redactor? = null
+    /** Called on the ck-jpeg thread once per streak of consecutive detector failures. Not wired to the HUD yet. */
+    @Volatile var onRedactionFailing: (() -> Unit)? = null
     interface Listener {
         fun onEvent(e: CoreEvent) {}
         fun onPolicy(p: Policy) {}
@@ -69,6 +73,10 @@ class SessionManager(
     private fun mono() = SystemClock.elapsedRealtimeNanos() + clockOffsetNs
 
     fun start(extraConfig: Map<String, Any> = emptyMap()): Boolean {
+        redactor = if (extraConfig["redaction_mode"] == "faces") Redactor(faceDetector ?: PlatformFaceDetector(), dir, onFailing = {
+            Log.e(TAG, "face detector failed ${Redactor.FAILING_AFTER} keyframes in a row: keyframes are being dropped")
+            onRedactionFailing?.invoke()
+        }) else null
         val cfg = buildMap<String, Any> {
             put("platform", "android"); put("model", "${Build.MANUFACTURER} ${Build.MODEL}")
             put("os", "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
@@ -195,6 +203,10 @@ class SessionManager(
             val n = slot.w * slot.h * 3 / 2
             if (nv21.size != n) nv21 = ByteArray(n)
             toNv21(slot, nv21)
+            val red = redactor?.redact(nv21, slot.w, slot.h, id, rel)   // in memory, before any pixel reaches disk
+            if (red != null && red.dropped) {   // fail closed: never write a keyframe the detector could not check
+                Log.w(TAG, "keyframe $id dropped: face detector failed"); N.keyframeWritten(handle, id, false); return
+            }
             FileOutputStream(tmp).use { out ->
                 YuvImage(nv21, ImageFormat.NV21, slot.w, slot.h, null).compressToJpeg(Rect(0, 0, slot.w, slot.h), JPEG_QUALITY, out)
                 out.fd.sync()
@@ -218,7 +230,17 @@ class SessionManager(
         if (handle == 0L) return Status.STATE
         N.stop(handle, mono())
         Thread.sleep(300); drainEvents()   // final keyframe request
-        encoder.shutdown(); encoder.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS)
+        encoder.shutdown()
+        var idle = encoder.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS)
+        if (!idle) {
+            Log.e(TAG, "encoder did not drain in 10 s: shutdownNow")
+            encoder.shutdownNow(); idle = encoder.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)
+            if (!idle) Log.e(TAG, "encoder STILL busy after shutdownNow; keyframes may be missing")
+        }
+        redactor?.let {   // only once the encoder is idle; before finalize hashes files; a failure must not stop finalize
+            if (!idle) Log.e(TAG, "privacy/redaction.json NOT written: encoder busy")
+            else if (!it.writeJson(dir)) Log.e(TAG, "privacy/redaction.json not written")
+        }
         polling = false; pollThread?.quitSafely()
         val st = N.finalizeSession(handle)
         db.setStatus(dir.absolutePath, if (st == Status.OK) "complete" else "unrecoverable")

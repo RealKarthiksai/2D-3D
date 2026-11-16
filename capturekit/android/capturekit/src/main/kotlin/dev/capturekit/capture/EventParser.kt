@@ -19,21 +19,23 @@ sealed class CoreEvent {
         val userX: Double, val userZ: Double, val userYawDeg: Double,
         val hasTarget: Boolean, val targetX: Double, val targetZ: Double,
         val whyId: String, val whyText: String, val surfaces: List<WallSeg>,
+        /** Overlay v2 (ADR 0022): bit i set = a keyframe looked along heading [30i, 30i+30) deg. 0 when absent (old core). */
+        val yawMask: Int = 0,
     ) : CoreEvent()
     data class IngestDrop(val counts: Map<String, Long>) : CoreEvent()
     data class Other(val type: String, val raw: String) : CoreEvent()
 }
 
-/** One wall segment in world metres (x,z plan view) and the percentage of its cells seen. */
-data class WallSeg(val x0: Double, val z0: Double, val x1: Double, val z1: Double, val pct: Int)
+/** One wall segment in world metres (x,z plan view), the percentage of its cells seen, and the stable 1-based wall id (0 = unknown, v1 core). */
+data class WallSeg(val x0: Double, val z0: Double, val x1: Double, val z1: Double, val pct: Int, val id: Int = 0)
 
 object EventParser {
-    /** "x0,z0,x1,z1,pct;..." -> segments; malformed entries are skipped. */
+    /** "x0,z0,x1,z1,pct[,id];..." (5 fields v1, 6 fields v2) -> segments; malformed entries are skipped. */
     fun parseSurfaces(s: String): List<WallSeg> = s.split(';').mapNotNull { part ->
         val f = part.split(',')
-        if (f.size != 5) return@mapNotNull null
+        if (f.size != 5 && f.size != 6) return@mapNotNull null
         val v = f.map { it.trim().toDoubleOrNull() ?: return@mapNotNull null }
-        WallSeg(v[0], v[1], v[2], v[3], v[4].toInt())
+        WallSeg(v[0], v[1], v[2], v[3], v[4].toInt(), if (f.size == 6) v[5].toInt().coerceAtLeast(0) else 0)
     }
 
     private fun str(line: String, key: String): String? =
@@ -69,6 +71,7 @@ object EventParser {
                 num(line, "user_x") ?: 0.0, num(line, "user_z") ?: 0.0, num(line, "user_yaw_deg") ?: 0.0,
                 line.contains("\"has_target\":true"), num(line, "target_x") ?: 0.0, num(line, "target_z") ?: 0.0,
                 str(line, "why_id") ?: "", str(line, "why_text") ?: "", parseSurfaces(str(line, "surfaces") ?: ""),
+                ((num(line, "yaw_mask") ?: 0.0).toInt() and 0xFFF),
             )
             "ingest_drop" -> CoreEvent.IngestDrop(
                 listOf("pose", "gyro", "accel", "intrinsics", "frame", "points", "plane", "platform")

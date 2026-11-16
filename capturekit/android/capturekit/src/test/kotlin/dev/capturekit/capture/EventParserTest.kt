@@ -69,6 +69,29 @@ not json
     }
 
     @Test
+    fun overlayV2SixFieldSurfacesAndYawMask() {
+        val e = EventParser.parseLine(
+            """{"ceiling_found":false,"completeness":0,"floor_found":false,"has_target":false,"mode":"sweep","seen":0,"surfaces":"1.25,4.00,3.65,4.00,86,2;-0.5,0.00,-0.5,3.20,12,1","t_ns":0,"target_x":0,"target_z":0,"tracking":1,"type":"overlay","user_x":2.5,"user_yaw_deg":0,"user_z":2,"wall_found":true,"walls":2,"why_id":"why.sweep","why_text":"x","yaw_mask":2049}""",
+        ) as CoreEvent.Overlay
+        assertEquals(listOf(WallSeg(1.25, 4.0, 3.65, 4.0, 86, 2), WallSeg(-0.5, 0.0, -0.5, 3.2, 12, 1)), e.surfaces)
+        assertEquals(2049, e.yawMask)
+        // Mixed 5- and 6-field entries and a 7-field entry: 5 -> id 0, 6 -> id kept, 7 skipped.
+        assertEquals(
+            listOf(WallSeg(1.0, 2.0, 3.0, 4.0, 5, 0), WallSeg(1.0, 2.0, 3.0, 4.0, 5, 7)),
+            EventParser.parseSurfaces("1,2,3,4,5;1,2,3,4,5,7;1,2,3,4,5,7,9"),
+        )
+        // Old core: no yaw_mask key -> 0, and 5-field surfaces still parse (v1 back-compat).
+        val old = EventParser.parseLine(
+            """{"completeness":0,"mode":"sweep","surfaces":"1,2,3,4,5","tracking":1,"type":"overlay","why_id":"a","why_text":"b"}""",
+        ) as CoreEvent.Overlay
+        assertEquals(0, old.yawMask)
+        assertEquals(listOf(WallSeg(1.0, 2.0, 3.0, 4.0, 5)), old.surfaces)
+        // Out-of-range mask bits are dropped.
+        val big = EventParser.parseLine("""{"type":"overlay","surfaces":"","yaw_mask":65535}""") as CoreEvent.Overlay
+        assertEquals(0xFFF, big.yawMask)
+    }
+
+    @Test
     fun policyDecode() {
         val p = Policy.from(doubleArrayOf(3.0, 0.5, 0.25, 1.0, 0.0, 0.0, 0.0))
         assertEquals("LOWER_RESOLUTION", p.levelName)

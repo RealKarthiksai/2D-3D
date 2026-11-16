@@ -25,6 +25,8 @@ class SpeechScheduler(private val cfg: Config = Config()) {
     private class Pending(val id: Int, val text: String, val priority: Int, val atMs: Long)
 
     @Volatile var enabled = true
+    /** Called when a queued line is discarded unspoken: replaced by a newer line or past pendingTtlMs. */
+    var onStale: (() -> Unit)? = null
     private val seenIds = HashSet<Int>()
     private val lastSaid = HashMap<String, Long>()
     private val startTimes = ArrayDeque<Long>()
@@ -57,7 +59,11 @@ class SpeechScheduler(private val cfg: Config = Config()) {
         if (speakingId != null) {
             return when {
                 priority > speakingPriority -> speak(id, text, priority, nowMs, flush = true)
-                priority == speakingPriority -> { seenIds += id; pending = Pending(id, text, priority, nowMs); Action.Queued }
+                priority == speakingPriority -> {
+                    seenIds += id
+                    if (pending != null) onStale?.invoke()
+                    pending = Pending(id, text, priority, nowMs); Action.Queued
+                }
                 else -> Action.Drop("busy")
             }
         }
@@ -74,7 +80,7 @@ class SpeechScheduler(private val cfg: Config = Config()) {
         lastSaid[text] = nowMs
         startTimes.addLast(nowMs)
         speakingId = "ck-$id"; speakingPriority = priority; lastStartMs = nowMs
-        if (flush) pending = null
+        if (flush && pending != null) { pending = null; onStale?.invoke() }
         return Action.Speak("ck-$id", text, priority, flush)
     }
 
@@ -91,7 +97,8 @@ class SpeechScheduler(private val cfg: Config = Config()) {
         val p = pending ?: return null
         if (speakingId != null) return null
         pending = null
-        if (!enabled || nowMs - p.atMs > cfg.pendingTtlMs) return null
+        if (!enabled) return null
+        if (nowMs - p.atMs > cfg.pendingTtlMs) { onStale?.invoke(); return null }
         return speak(p.id, p.text, p.priority, nowMs, flush = false)
     }
 
