@@ -15,7 +15,6 @@ import dev.capturekit.nativebridge.Status
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -31,7 +30,7 @@ class SessionManager(
     private val context: Context,
     val dir: File,
     private val clockOffsetNs: Long = 0L,
-    private val frameEveryN: Int = 3, // ARCore ~30 fps -> core candidates ~10 fps
+    private val frameEveryN: Int = 3, // ARCore ~30 fps -> core candidates ~10 fps; doubled under pressure (FrameRateControl)
     private val listener: Listener? = null,
 ) {
     interface Listener {
@@ -40,15 +39,25 @@ class SessionManager(
         fun onState(state: Int) {}
     }
 
-    /** Raw planes copied on the AR thread (fast bulk copy); converted to NV21/JPEG on the worker. */
-    private class Snapshot(val w: Int, val h: Int, val y: ByteArray, val yRow: Int, val u: ByteArray, val v: ByteArray, val uvRow: Int, val uvPix: Int)
+    /**
+     * One preallocated ring slot: Y (direct, also the buffer handed to ingestFrame; the core copies it before
+     * returning) plus U/V, kept for a possible keyframe request. Buffers are reallocated only on a size change.
+     * Ownership is tracked by [slotRing]: the AR thread writes only a claimed (unpinned, id-cleared) slot, ck-jpeg
+     * reads only a pinned one; publish/pin go through the same lock, so the writes are visible to the reader.
+     */
+    private class Slot {
+        var w = 0; var h = 0; var yRow = 0; var uvRow = 0; var uvPix = 0
+        var y: ByteBuffer = ByteBuffer.allocateDirect(0)
+        var u = ByteArray(0); var v = ByteArray(0)
+    }
 
     private var handle = 0L
-    private val ring = ConcurrentHashMap<Int, Snapshot>()
-    private val ringOrder = ArrayDeque<Int>()
+    private val ring = Array(RING) { Slot() }
+    private val slotRing = SlotRing(RING)
     private val frameId = AtomicInteger(0)
-    private var frameCounter = 0
-    private var lumaBuf: ByteBuffer? = null
+    private var nv21 = ByteArray(0)          // ck-jpeg thread only
+    @Volatile private var policyLevel = 0    // written by ck-events, read on the AR thread
+    private val rate = FrameRateControl(baseStride = frameEveryN, maxStride = frameEveryN * 2)
     private val encoder = Executors.newSingleThreadExecutor { Thread(it, "ck-jpeg") }
     private var pollThread: HandlerThread? = null
     private var pollHandler: Handler? = null
@@ -66,11 +75,18 @@ class SessionManager(
             put("clock_base", "elapsedRealtimeNanos"); put("clock_offset_ns", clockOffsetNs)
             putAll(extraConfig)
         }
+        LiveSessions.add(dir.absolutePath)   // before the "recording" row exists: recovery must skip this bundle
         handle = N.create(dir.absolutePath, toJson(cfg))
-        if (handle <= 0) { Log.e(TAG, "create failed: ${-handle}"); handle = 0; return false }
+        if (handle <= 0) { Log.e(TAG, "create failed: ${-handle}"); handle = 0; LiveSessions.remove(dir.absolutePath); return false }
         encoder.execute { db.upsert(SessionRow(dir.absolutePath, System.currentTimeMillis(), "recording")) }
+        stats.candidateStride = rate.stride
         val st = N.start(handle, mono())
-        if (st != Status.OK) return false
+        if (st != Status.OK) {
+            Log.e(TAG, "start failed: $st")
+            N.destroy(handle); handle = 0
+            LiveSessions.remove(dir.absolutePath)
+            return false
+        }
         polling = true
         pollThread = HandlerThread("ck-events").also { it.start() }
         pollHandler = Handler(pollThread!!.looper).also { it.post(pollTick) }
@@ -96,7 +112,9 @@ class SessionManager(
             }
             listener?.onEvent(e)
         }
-        listener?.onPolicy(Policy.from(N.policy(handle)))
+        val p = Policy.from(N.policy(handle))
+        policyLevel = p.level
+        listener?.onPolicy(p)
     }
 
     // ---- ingest (never block) ----
@@ -117,53 +135,76 @@ class SessionManager(
         if (handle != 0L) N.ingestPlatform(handle, t, thermal, lowPower, battery, charging, frameTimeMs)
     }
 
-    /** Called by ARAdapter for every ARCore frame; forwards every Nth as a quality candidate. */
+    /**
+     * Called by ARAdapter for every new ARCore frame; forwards every [FrameRateControl.stride]-th as a quality
+     * candidate. Allocation-free in steady state: Y is copied once into a preallocated ring slot whose direct
+     * buffer is what ingestFrame reads; U/V go into the same slot for a possible keyframe request.
+     */
     fun onFrame(frame: Frame, t: Long) {
-        if (handle == 0L || ++frameCounter % frameEveryN != 0) return
+        if (handle == 0L || !rate.take()) return
         stats.frameCalls.incrementAndGet()
-        val img = try { frame.acquireCameraImage() } catch (e: Exception) { stats.acquireFailed(e); return }
+        val img = try { frame.acquireCameraImage() } catch (e: Exception) { stats.acquireFailed(e); adjustRate(t, false); return }
+        var full = false
         img.use {
             val w = it.width; val h = it.height
-            val yp = it.planes[0]; val up = it.planes[1]
+            val yp = it.planes[0]; val up = it.planes[1]; val vp = it.planes[2]
             val ys = yp.buffer; val ysz = ys.remaining()
             val need = IngestStats.lumaCapacity(ysz, yp.rowStride, h)
             if (need > ysz) stats.lumaShort.incrementAndGet()   // old sizing would have returned CK_ERR_ARG
-            var buf = lumaBuf
-            if (buf == null || buf.capacity() < need) { buf = ByteBuffer.allocateDirect(need); lumaBuf = buf }
-            buf!!.clear(); buf.put(ys.duplicate()); buf.flip()
+            val idx = slotRing.claim()
+            if (idx == null) {
+                // Every slot is being encoded: deliberate, counted, logged drop (never wait on the AR thread).
+                val n = stats.ringBusy.incrementAndGet(); if (n % 100 == 1L) Log.w(TAG, "all $RING ring slots busy encoding: frame dropped ($n)")
+                return@use
+            }
+            // Claimed: its id is cleared, so ck-jpeg cannot pin it while it is being written. Not OK -> not published,
+            // and the next claim returns this same slot.
+            val slot = ring[idx]
+            if (slot.y.capacity() < need) slot.y = ByteBuffer.allocateDirect(need)
+            slot.y.clear(); slot.y.put(ys.duplicate()); slot.y.flip()
             val id = frameId.getAndIncrement()
-            val st = N.ingestFrame(handle, t, id, 0L, buf, w, h, yp.rowStride)
+            val st = N.ingestFrame(handle, t, id, 0L, slot.y, w, h, yp.rowStride)   // the core copies Y before returning
             stats.ingestStatus(st)
             if (st == Status.OK) stats.framesIngested.incrementAndGet()
             note(st, "frame")
-            if (st != Status.OK) return
-            // Keep the planes for a possible keyframe request (bounded ring; oldest evicted).
-            val ub = up.buffer.duplicate(); val vb = it.planes[2].buffer.duplicate()
-            val ua = ByteArray(ub.remaining()).also { a -> ub.get(a) }
-            val va = ByteArray(vb.remaining()).also { a -> vb.get(a) }
-            val yb = ByteArray(ysz); ys.duplicate().get(yb)
-            synchronized(ringOrder) {
-                ring[id] = Snapshot(w, h, yb, yp.rowStride, ua, va, up.rowStride, up.pixelStride)
-                ringOrder.addLast(id)
-                while (ringOrder.size > RING) ring.remove(ringOrder.removeFirst())
-            }
+            full = st == Status.FULL
+            if (st != Status.OK) return@use
+            val ub = up.buffer.duplicate(); val vb = vp.buffer.duplicate()
+            if (slot.u.size != ub.remaining()) slot.u = ByteArray(ub.remaining())
+            if (slot.v.size != vb.remaining()) slot.v = ByteArray(vb.remaining())
+            ub.get(slot.u); vb.get(slot.v)
+            slot.w = w; slot.h = h; slot.yRow = yp.rowStride; slot.uvRow = up.rowStride; slot.uvPix = up.pixelStride
+            slotRing.publish(idx, id)   // ck-jpeg may now pin it
         }
+        adjustRate(t, full)
+    }
+
+    private fun adjustRate(t: Long, full: Boolean) {
+        val changed = rate.update(t, full, policyLevel) ?: return
+        stats.candidateStride = changed
+        Log.i(TAG, "candidate stride -> every $changed frames (full=$full policy=$policyLevel)")
     }
 
     private fun encodeKeyframe(id: Int, rel: String) {
-        val snap = synchronized(ringOrder) { ring[id] }
-        if (snap == null) { N.keyframeWritten(handle, id, false); Log.w(TAG, "keyframe $id evicted before encoding"); return }
+        val idx = slotRing.pin(id)
+        if (idx == null) { N.keyframeWritten(handle, id, false); Log.w(TAG, "keyframe $id evicted before encoding"); return }
+        val slot = ring[idx]
         try {
             val target = File(dir, rel); target.parentFile?.mkdirs()
             val tmp = File(dir, "$rel.tmp")
+            val n = slot.w * slot.h * 3 / 2
+            if (nv21.size != n) nv21 = ByteArray(n)
+            toNv21(slot, nv21)
             FileOutputStream(tmp).use { out ->
-                YuvImage(toNv21(snap), ImageFormat.NV21, snap.w, snap.h, null).compressToJpeg(Rect(0, 0, snap.w, snap.h), JPEG_QUALITY, out)
+                YuvImage(nv21, ImageFormat.NV21, slot.w, slot.h, null).compressToJpeg(Rect(0, 0, slot.w, slot.h), JPEG_QUALITY, out)
                 out.fd.sync()
             }
             val ok = tmp.renameTo(target)
             N.keyframeWritten(handle, id, ok)
         } catch (t: Throwable) {
             Log.e(TAG, "keyframe encode failed", t); N.keyframeWritten(handle, id, false)
+        } finally {
+            slotRing.unpin(idx)
         }
     }
 
@@ -182,11 +223,16 @@ class SessionManager(
         val st = N.finalizeSession(handle)
         db.setStatus(dir.absolutePath, if (st == Status.OK) "complete" else "unrecoverable")
         N.destroy(handle); handle = 0
+        LiveSessions.remove(dir.absolutePath)   // only after the final status is written
         return st
     }
 
     /** Abandons the session without finalizing (simulates a kill; recovery picks it up on next launch). */
-    fun abandon() { polling = false; if (handle != 0L) { N.destroy(handle); handle = 0 } }
+    fun abandon() {
+        polling = false
+        if (handle != 0L) { N.destroy(handle); handle = 0 }
+        LiveSessions.remove(dir.absolutePath)
+    }
 
     companion object {
         private const val TAG = "CKSession"
@@ -197,19 +243,29 @@ class SessionManager(
             "\"$k\":" + if (v is Number || v is Boolean) v.toString() else "\"" + v.toString().replace("\\", "\\\\").replace("\"", "\\\"") + "\""
         }
 
-        /** App start: every session still marked "recording" was interrupted; recover it in the core. */
+        /**
+         * App start: every session still marked "recording" and not owned by a live SessionManager in this process
+         * was interrupted; recover it in the core.
+         */
+        @Synchronized   // Main and Capture both call this at launch: never recover the same bundle twice at once
         fun recoverInterrupted(context: Context): List<Pair<String, String>> {
             val dao = CaptureDb.get(context).sessions()
-            return dao.interrupted().map { row ->
-                val rep = N.recover(row.dir)
-                dao.setStatus(row.dir, if (rep.contains("\"ok\":true")) "recovered" else "unrecoverable")
-                row.dir to rep
+            val candidates = LiveSessions.recoverable(dao.interrupted().map { it.dir })
+            return candidates.filter { dir ->
+                // finish() removes its dir only after writing the final status: a dir that is not live (any more)
+                // and still "recording" now was really interrupted.
+                !LiveSessions.contains(dir) && dao.interrupted().any { it.dir == dir }
+            }.map { dir ->
+                val rep = N.recover(dir)
+                dao.setStatus(dir, if (rep.contains("\"ok\":true")) "recovered" else "unrecoverable")
+                dir to rep
             }
         }
 
-        private fun toNv21(s: Snapshot): ByteArray {
-            val out = ByteArray(s.w * s.h * 3 / 2)
-            for (r in 0 until s.h) System.arraycopy(s.y, r * s.yRow, out, r * s.w, s.w)
+        /** Slot planes -> NV21 in [out] (w*h*3/2 bytes); reads the slot's Y via a duplicate so its position is untouched. */
+        private fun toNv21(s: Slot, out: ByteArray) {
+            val y = s.y.duplicate()
+            for (r in 0 until s.h) { y.position(r * s.yRow); y.get(out, r * s.w, s.w) }
             var o = s.w * s.h
             val cw = s.w / 2; val ch = s.h / 2
             for (r in 0 until ch) for (c in 0 until cw) {
@@ -217,7 +273,6 @@ class SessionManager(
                 out[o++] = s.v[i]  // NV21 = Y plane, then interleaved V,U
                 out[o++] = s.u[i]
             }
-            return out
         }
     }
 }

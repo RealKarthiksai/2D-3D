@@ -21,6 +21,8 @@ class IngestStats {
     val glDraws = AtomicLong()           // GL onDrawFrame calls (written by the AR host)
     val arDupFrames = AtomicLong()       // duplicate timestamps that REACHED the adapter/core (must stay 0 after dedupe)
     val glSkippedDup = AtomicLong()      // draws whose Frame.timestamp repeated and were kept away from the core
+    val ringBusy = AtomicLong()          // candidates dropped because every ring slot was pinned by the JPEG encoder
+    @Volatile var candidateStride = 3    // current FrameRateControl stride (every Nth AR frame becomes a candidate)
     @Volatile var lastReason = "NONE"
     @Volatile var lastError = ""
     private val acquireFail = ConcurrentHashMap<String, AtomicLong>()
@@ -50,7 +52,7 @@ class IngestStats {
     fun logLine(): String {
         val af = acquireFail.entries.joinToString(",") { "${it.key}=${it.value.get()}" }.ifEmpty { "-" }
         val st = status.entries.sortedBy { it.key }.joinToString(",") { "${it.key}=${it.value.get()}" }.ifEmpty { "-" }
-        return "${hudLine()} | other ${otherPoses.get()} reason $lastReason | frameCalls ${frameCalls.get()} acqFail $af ingestSt $st throws ${onFrameThrows.get()} lumaShort ${lumaShort.get()} gl ${glDraws.get()} dup ${arDupFrames.get()}" +
+        return "${hudLine()} | other ${otherPoses.get()} reason $lastReason | frameCalls ${frameCalls.get()} acqFail $af ingestSt $st throws ${onFrameThrows.get()} lumaShort ${lumaShort.get()} gl ${glDraws.get()} dup ${arDupFrames.get()} stride $candidateStride ringBusy ${ringBusy.get()}" +
             if (lastError.isEmpty()) "" else " lastErr $lastError"
     }
 
