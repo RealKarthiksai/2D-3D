@@ -87,6 +87,9 @@ class Coverage {
 
   CoverageStats stats() const;
   CoverageStats stats(const std::string& plane_id) const;
+  /// Phase 9 free-space evidence: CellStat::views of the cell of plane `plane_id` containing world point `p`
+  /// (0 if the plane has no grid, the point is outside it or not finite).
+  int views_at(const std::string& plane_id, const Vec3& p) const;
   std::vector<std::string> plane_ids() const;
   ViewEval eval_view(const geometry::PoseWC& T_wc, const geometry::Intrinsics& K, const Occluder* los,
                      bool want_overlap = true) const;

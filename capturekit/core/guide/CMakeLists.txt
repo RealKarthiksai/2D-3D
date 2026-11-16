@@ -4,6 +4,7 @@ target_sources(capturekit_core PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/live_map.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/point_store.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/opening_detector.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/object_lifter.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/coverage.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/nav_grid.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/planner.cpp

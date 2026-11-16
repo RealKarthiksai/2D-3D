@@ -7,6 +7,7 @@
 
 #include "capturekit/guide/coverage.hpp"
 #include "capturekit/guide/engine.hpp"
+#include "capturekit/guide/object_lifter.hpp"
 #include "capturekit/quality/quality.hpp"
 #include "capturekit/util/json.hpp"
 
@@ -26,6 +27,14 @@ Room make_room(const std::string& name) {
     if (name == "furniture") {
       r.boxes = {{0.3, 0.0, 2.1, 0.9, 0.8}, {2.3, 1.6, 3.5, 2.4, 0.75}, {4.4, 0.3, 5.0, 2.3, 2.0}};
       r.start_x = 1.0, r.start_z = 2.8;
+    }
+    if (name == "objects") {  // Phase 9 step 3: classed furniture for the detector oracle
+      using C = ObjectClass;
+      r.boxes = {{0.3, 0.1, 2.1, 0.7, 0.8, int(C::Couch)},
+                 {3.3, 1.7, 4.5, 2.5, 0.75, int(C::DiningTable)},
+                 {1.0, 3.0, 1.5, 3.5, 0.9, int(C::Chair)},
+                 {4.4, 0.3, 4.8, 0.7, 0.7, int(C::PottedPlant)}};
+      r.start_x = 2.0, r.start_z = 2.0;
     }
     if (name == "door_window") r.openings = {{0, 0, 1.0, 1.9, 0.0, 2.0}, {1, 1, 1.4, 2.6, 0.9, 1.9}};
   }
@@ -164,6 +173,51 @@ struct World {
     return hu > 0 && hu < f.su && hv > 0 && hv < f.sv && los(a, hit);
   }
 
+  /// Nearest hit of the ray a + t * dir (dir unit) over every point source. Wall cells with valid == 0 (doors,
+  /// windows) let the ray pass; occlusion is the nearest-hit rule itself.
+  struct Hit {
+    double t = 1e18;
+    Vec3 p, n;
+    int surf = -1, face = -1;  // face >= 0: furniture face index; both < 0 with ok: a through face
+    bool ok = false;
+  };
+  Hit raycast(const Vec3& a, const Vec3& dir) const {
+    Hit h;
+    auto rect = [&](const Vec3& o, const Vec3& u, const Vec3& v, const Vec3& n, double su, double sv, double& du,
+                    double& dv) -> double {  // ray parameter of the hit inside the rectangle, or -1
+      const double den = dir.dot(n);
+      if (std::fabs(den) < 1e-12) return -1;
+      const double t = (o - a).dot(n) / den;
+      if (t <= 1e-6 || t >= h.t) return -1;
+      const Vec3 q = a + dir * t - o;
+      du = q.dot(u), dv = q.dot(v);
+      return (du >= 0 && du <= su && dv >= 0 && dv <= sv) ? t : -1;
+    };
+    double du = 0, dv = 0;
+    for (size_t i = 0; i < surfs.size(); ++i) {
+      const Surf& s = surfs[i];
+      const double t = rect(s.o, s.u, s.v, s.n, s.su, s.sv, du, dv);
+      if (t < 0) continue;
+      if (s.kind == "wall") {
+        const int ci = std::min(s.nu - 1, int(du / cell)), cj = std::min(s.nv - 1, int(dv / cell));
+        if (!s.valid[size_t(cj) * size_t(s.nu) + size_t(ci)]) continue;  // through a door / window
+      }
+      h.t = t, h.p = a + dir * t, h.n = s.n, h.surf = int(i), h.face = -1, h.ok = true;
+    }
+    for (size_t i = 0; i < faces.size(); ++i) {
+      const Face& f = faces[i];
+      const double t = rect(f.o, f.u, f.v, f.n, f.su, f.sv, du, dv);
+      if (t < 0) continue;
+      h.t = t, h.p = a + dir * t, h.n = f.n, h.surf = -1, h.face = int(i), h.ok = true;
+    }
+    for (const Face& f : through) {
+      const double t = rect(f.o, f.u, f.v, f.n, f.su, f.sv, du, dv);
+      if (t < 0) continue;
+      h.t = t, h.p = a + dir * t, h.n = f.n, h.surf = -1, h.face = -1, h.ok = true;
+    }
+    return h;
+  }
+
   void add(Surf s) {
     s.nu = std::max(1, int(std::ceil(s.su / cell)));
     s.nv = std::max(1, int(std::ceil(s.sv / cell)));
@@ -254,6 +308,7 @@ struct Walker {
   };
   std::deque<Pending> pending;
   double path = 0, yaw_rate = 0, pitch_rate = 0, speed = 0;
+  double level_at = -1;  // Human::hold_level: relax pitch to level from this time (< 0: not pending)
   int blocked = 0, received = 0, followed = 0;
 };
 
@@ -278,6 +333,13 @@ std::string simulate(const Config& cfg) {
   quality::KeyframeSelector selector(qc);
   GuideEngine engine(gp);
   const bool use_engine = cfg.policy == "planner";
+  // Detector oracle (Phase 9 step 3): own RNG, never feeds the engine: guidance output is unchanged. Any policy. The lifter
+  // sees the TRUE shell planes (isolates lifting from plane detection, which steps 1-2 test).
+  const bool oracle = cfg.detector_oracle;
+  ObjectLifter lifter;
+  SparsePointStore lift_pts;
+  Rng orng(cfg.seed * 7919 + 17);
+  int or_dets = 0, or_false = 0;
 
   Walker me{room.start_x, room.start_z, room.start_yaw};
   const double dtr = deg2rad(1.0);
@@ -386,6 +448,35 @@ std::string simulate(const Config& cfg) {
     if (step % 6 == 0 && state != 3) {
       bundle::PointCloudRecord pc;
       pc.t_ns = t_ns;
+      if (cfg.view_points) {  // ADR 0015: points come from what this frame views (ray casts through a pixel grid)
+        const Eigen::Matrix3d R_wc = vc.R_cw.transpose();
+        for (int gy = 0; gy < 10; ++gy)
+          for (int gx = 0; gx < 12; ++gx) {
+            const double px = (gx + rng.uniform()) * K.width / 12.0, py = (gy + rng.uniform()) * K.height / 10.0;
+            const Vec3 dir = (R_wc * Vec3((px - K.cx) / K.fx, (py - K.cy) / K.fy, 1.0)).normalized();
+            const World::Hit hit = w.raycast(vc.pos, dir);
+            if (!hit.ok) continue;
+            const double range = hit.t, cos_inc = std::fabs(hit.n.dot(dir));
+            const double keep = std::clamp((5.0 - range) / (5.0 - 1.5), 0.0, 1.0);
+            if (range < gp.range_min_m || cos_inc < 0.1 || rng.uniform() >= keep) continue;
+            const double sigma = 0.01 + 0.005 * std::max(0.0, range - 2.0);
+            const double nx = rng.normal(), ny = rng.normal(), nz = rng.normal();  // fixed draw order
+            const Vec3 q = hit.p + Vec3(nx, ny, nz) * sigma;
+            pc.xyz.push_back(float(q.x())), pc.xyz.push_back(float(q.y())), pc.xyz.push_back(float(q.z()));
+            if (hit.surf >= 0) {
+              Surf& sf = w.surfs[size_t(hit.surf)];
+              const double du = (hit.p - sf.o).dot(sf.u), dv = (hit.p - sf.o).dot(sf.v);
+              sf.umin = std::min(sf.umin, du), sf.umax = std::max(sf.umax, du);
+              sf.vmin = std::min(sf.vmin, dv), sf.vmax = std::max(sf.vmax, dv);
+              ++sf.npts;
+            } else if (hit.face >= 0 && hit.n.y() > 0.5) {  // a furniture top face
+              Top& tp = tops[size_t(hit.face) / 5];
+              tp.xmin = std::min(tp.xmin, hit.p.x()), tp.xmax = std::max(tp.xmax, hit.p.x());
+              tp.zmin = std::min(tp.zmin, hit.p.z()), tp.zmax = std::max(tp.zmax, hit.p.z());
+              ++tp.npts;
+            }
+          }
+      } else {
       double total_w = 0;
       for (double x : w.weights) total_w += x;
       for (int tries = 0; tries < 160 && pc.xyz.size() < 3 * 40; ++tries) {
@@ -436,6 +527,9 @@ std::string simulate(const Config& cfg) {
           ++sf->npts;
         }
       }
+      }  // !cfg.view_points
+      if (oracle)
+        for (size_t i = 0; i + 2 < pc.xyz.size(); i += 3) lift_pts.add({pc.xyz[i], pc.xyz[i + 1], pc.xyz[i + 2]});
       if (use_engine && !pc.xyz.empty()) engine.on_points(pc);
     }
     // planes (1 Hz): rectangles that grow as more is seen
@@ -496,6 +590,68 @@ std::string simulate(const Config& cfg) {
         if (d.keyframe) {
           ++n_keyframes;
           if (use_engine) engine.on_keyframe(d.frame_id, it->second.t, it->second.sharp);
+          if (oracle) {
+            const geometry::PoseWC& Tk = it->second.pose;
+            const ViewCam kc = ViewCam::make(Tk, K);
+            const Eigen::Matrix3d Rwc = kc.R_cw.transpose();
+            LiftContext lc;
+            lc.T_world_from_camera = Tk, lc.K = K, lc.has_floor = true, lc.floor_y = 0.0;
+            for (const Surf& sf : w.surfs) {
+              PlaneGeom g;
+              g.c = sf.o + sf.u * (0.5 * sf.su) + sf.v * (0.5 * sf.sv), g.n = sf.n;
+              lc.surfaces.push_back(g);
+            }
+            auto feed = [&](ObjectClass cls, double x0, double y0, double x1, double y1, double score) {
+              Detection dd;
+              dd.t_ns = it->second.t, dd.frame_id = d.frame_id, dd.cls = cls, dd.score = float(score);
+              dd.x0 = float(x0), dd.y0 = float(y0), dd.x1 = float(x1), dd.y1 = float(y1);
+              lifter.on_detection(dd, lc, lift_pts);
+            };
+            for (size_t bi = 0; bi < room.boxes.size(); ++bi) {
+              const Box& b = room.boxes[bi];
+              if (!b.cls) continue;
+              double umin = 1e9, umax = -1e9, vmin = 1e9, vmax = -1e9;
+              bool front = true;
+              for (int c = 0; c < 8 && front; ++c) {
+                const Vec3 cp(c & 1 ? b.x1 : b.x0, c & 2 ? b.h : 0.0, c & 4 ? b.z1 : b.z0);
+                const Vec3 q = kc.R_cw * (cp - kc.pos);
+                if (q.z() < 0.1) front = false;
+                else {
+                  const double u = K.fx * q.x() / q.z() + K.cx, v = K.fy * q.y() / q.z() + K.cy;
+                  umin = std::min(umin, u), umax = std::max(umax, u), vmin = std::min(vmin, v), vmax = std::max(vmax, v);
+                }
+              }
+              if (!front) continue;
+              const double u0 = std::max(0.0, umin), u1 = std::min(double(K.width), umax);
+              const double v0 = std::max(0.0, vmin), v1 = std::min(double(K.height), vmax);
+              if (u1 <= u0 || v1 <= v0) continue;
+              const double area = (u1 - u0) * (v1 - v0);
+              if (area < 400 || area < 0.25 * (umax - umin) * (vmax - vmin)) continue;
+              int vis = 0;  // 5 x 5 rays through the clipped box: how much of it is really this box (occlusion)
+              for (int gy = 0; gy < 5; ++gy)
+                for (int gx = 0; gx < 5; ++gx) {
+                  const double px = u0 + (gx + 0.5) / 5 * (u1 - u0), py = v0 + (gy + 0.5) / 5 * (v1 - v0);
+                  const Vec3 dir = (Rwc * Vec3((px - K.cx) / K.fx, (py - K.cy) / K.fy, 1.0)).normalized();
+                  const World::Hit h = w.raycast(kc.pos, dir);
+                  vis += h.ok && h.face >= 0 && size_t(h.face) / 5 == bi && h.t <= 6.0;
+                }
+              if (vis < 8) continue;
+              const double miss = orng.uniform(), n0 = orng.normal(), n1 = orng.normal(), n2 = orng.normal(), n3 = orng.normal();
+              const double score = 0.55 + 0.4 * orng.uniform();
+              if (miss < cfg.oracle_miss) continue;
+              const double bw = u1 - u0, bh = v1 - v0;
+              ++or_dets;
+              feed(ObjectClass(b.cls), u0 + 0.03 * bw * n0, v0 + 0.03 * bh * n1, u1 + 0.03 * bw * n2, v1 + 0.03 * bh * n3, score);
+            }
+            if (orng.uniform() < cfg.oracle_false) {  // a detection with no object behind it
+              static const ObjectClass fc[3] = {ObjectClass::Chair, ObjectClass::Couch, ObjectClass::PottedPlant};
+              const ObjectClass cls = fc[orng.index(3)];
+              const double fw = orng.uniform(60, 160), fh = orng.uniform(60, 160);
+              const double fx0 = orng.uniform(0, K.width - fw), fy0 = orng.uniform(0, K.height - fh);
+              ++or_false;
+              feed(cls, fx0, fy0, fx0 + fw, fy0 + fh, orng.uniform(0.3, 0.6));
+            }
+          }
           // ground truth with the same rule + true occlusion
           ViewCam gc = ViewCam::make(it->second.pose, K);
           for (auto& s : w.surfs)
@@ -593,6 +749,7 @@ std::string simulate(const Config& cfg) {
           default: g.active = false; break;
         }
         if (g.active) me.goal = g;
+        if (H.hold_level && g.active && (g.type == InstrType::TiltUp || g.type == InstrType::TiltDown)) me.level_at = -1;
         it = me.pending.erase(it);
       }
       if (t < me.frozen_until) me.goal.active = false;
@@ -607,7 +764,7 @@ std::string simulate(const Config& cfg) {
           double toward = std::atan2(dx, dz);
           double wall_yaw = toward + kPi / 2;  // CCW loop: the wall is on the left
           turn_toward(me.yaw, wall_yaw, deg2rad(H.turn_dps), dt, yr);
-          me.pitch = deg2rad(22) * std::sin(t * 0.35 + (way_i >= script.size() / 2 ? kPi : 0.0));
+          me.pitch = deg2rad(H.hold_level ? 6 : 22) * std::sin(t * 0.35 + (way_i >= script.size() / 2 ? kPi : 0.0));
           pr = 0;
           v_cmd = H.speed * 0.8;
           // walk toward waypoint regardless of facing direction (side-stepping while looking at the wall)
@@ -634,7 +791,7 @@ std::string simulate(const Config& cfg) {
         else wander_turn = 0, wander_t = rng.uniform(3, 6);
       }
       if (wander_turn != 0) me.yaw = wrap_pi(me.yaw + wander_turn * deg2rad(25) * dt), yr = wander_turn * deg2rad(25);
-      me.pitch = deg2rad(15) * std::sin(t * 0.3 + 1.0);
+      me.pitch = deg2rad(H.hold_level ? 6 : 15) * std::sin(t * 0.3 + 1.0);
       v_cmd = H.speed * 0.7;
       double nx = me.x + std::sin(me.yaw) * v_cmd * dt, nz = me.z + std::cos(me.yaw) * v_cmd * dt;
       if (w.walkable(nx, nz, 0.25)) me.x = nx, me.z = nz;
@@ -665,7 +822,10 @@ std::string simulate(const Config& cfg) {
         }
         case InstrType::TiltUp: case InstrType::TiltDown:
           turn_toward(me.pitch, g.pitch_target, deg2rad(H.pitch_dps), dt, pr);
-          if (std::fabs(g.pitch_target - me.pitch) < deg2rad(2)) g.active = false;
+          if (std::fabs(g.pitch_target - me.pitch) < deg2rad(2)) {
+            g.active = false;
+            if (H.hold_level) me.level_at = t + gp.dwell_s + 0.5;  // hold the look past the planner dwell, then back to level
+          }
           break;
         case InstrType::StepBack: {
           double step_d = 0.5 * dt;
@@ -685,6 +845,13 @@ std::string simulate(const Config& cfg) {
         }
         default: g.active = false; break;
       }
+    }
+
+    // hold_level: relax pitch toward level after a completed tilt (no RNG draw; off = unchanged code path)
+    if (H.hold_level && me.level_at >= 0 && t >= me.level_at && t >= me.frozen_until &&
+        !(me.goal.active && (me.goal.type == InstrType::TiltUp || me.goal.type == InstrType::TiltDown))) {
+      turn_toward(me.pitch, 0.0, deg2rad(H.pitch_dps), dt, pr);
+      if (std::fabs(me.pitch) < deg2rad(1)) me.level_at = -1;
     }
 
     // bookkeeping for the next step
@@ -768,6 +935,27 @@ std::string simulate(const Config& cfg) {
     }
     double mins = std::max(dur / 60.0, 1e-9);
     o.set("flap_per_min", r3(engine.planner().switches() / mins));
+  }
+  if (oracle) {
+    std::vector<std::string> lo, tr;
+    for (const Object& ob : lifter.objects()) {
+      json::Object d;
+      d.set("cls", std::string(object_class_name(ob.cls))).set("x", r3(ob.centre.x())).set("y", r3(ob.centre.y())).set("z", r3(ob.centre.z()));
+      d.set("w", r3(ob.size.x())).set("h", r3(ob.size.y())).set("d", r3(ob.size.z())).set("yaw", r3(ob.yaw));
+      d.set("conf", r3(ob.conf)).set("n_obs", ob.n_obs);
+      lo.push_back(d.dump());
+    }
+    for (const Box& b : room.boxes) {
+      if (!b.cls) continue;
+      json::Object d;
+      d.set("cls", std::string(object_class_name(ObjectClass(b.cls)))).set("x", r3(0.5 * (b.x0 + b.x1))).set("y", r3(0.5 * b.h));
+      d.set("z", r3(0.5 * (b.z0 + b.z1))).set("w", r3(b.x1 - b.x0)).set("h", r3(b.h)).set("d", r3(b.z1 - b.z0));
+      tr.push_back(d.dump());
+    }
+    json::Object od;
+    od.raw("objects", json::array(lo.begin(), lo.end())).raw("truth", json::array(tr.begin(), tr.end()));
+    od.set("detections", or_dets).set("false_detections", or_false).set("tracks", uint64_t(lifter.tracks()));
+    o.raw("oracle", od.dump());
   }
   return o.dump();
 }

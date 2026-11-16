@@ -11,6 +11,7 @@
 #include "capturekit/guide/coverage.hpp"
 #include "capturekit/guide/params.hpp"
 #include "capturekit/guide/types.hpp"
+#include "capturekit/guide/understanding.hpp"
 
 namespace capturekit::guide {
 
@@ -20,6 +21,10 @@ class NavGrid : public Occluder {
 
   void set_floor_y(double y) { floor_y_ = y; }
   void add_point(const Vec3& p);
+  /// Phase 9: marks the footprint of a lifted object (oriented box standing on the floor) as obstacle, regardless of
+  /// points. Cells whose centre is within half a cell of the rotated rectangle are set. Wall-mounted classes (TV)
+  /// and objects whose top is below obstacle_min_h are ignored. Returns whether any cell was set.
+  bool add_object_box(const Object& o);
   void mark_traversed(const Vec3& p);  // camera position (disc of traverse_radius_m)
   void mark_open(const Vec3& p);       // a seen floor cell
   /// Free-space carving: the XZ segment camera -> observed point is open (stops 0.15 m short of the point).

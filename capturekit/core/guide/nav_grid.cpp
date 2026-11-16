@@ -44,6 +44,32 @@ void NavGrid::add_point(const Vec3& p) {
   have_clearance_ = false;
 }
 
+bool NavGrid::add_object_box(const Object& o) {
+  if (object_class_wall_mounted(o.cls) || !(o.size.x() > 0) || !(o.size.z() > 0)) return false;
+  const double top = o.centre.y() + 0.5 * o.size.y() - floor_y_;
+  if (top < p_.obstacle_min_h) return false;
+  const double ca = std::cos(o.yaw), sa = std::sin(o.yaw);  // depth axis (sin yaw, cos yaw), width axis (cos yaw, -sin yaw)
+  const double hw = 0.5 * o.size.x() + 0.5 * c_, hd = 0.5 * o.size.z() + 0.5 * c_;
+  const double r = std::hypot(hw, hd);
+  int ix0, iz0, ix1, iz1;
+  to_cell({o.centre.x() - r, 0, o.centre.z() - r}, ix0, iz0);
+  to_cell({o.centre.x() + r, 0, o.centre.z() + r}, ix1, iz1);
+  ensure(ix0, iz0);
+  ensure(ix1, iz1);
+  bool any = false;
+  for (int iz = iz0; iz <= iz1; ++iz)
+    for (int ix = ix0; ix <= ix1; ++ix) {
+      const double dx = (ix + 0.5) * c_ - o.centre.x(), dz = (iz + 0.5) * c_ - o.centre.z();
+      if (std::fabs(dx * ca - dz * sa) > hw || std::fabs(dx * sa + dz * ca) > hd) continue;
+      Cell& c = cells_[index(ix, iz)];
+      c.hits = std::max(c.hits, uint8_t(p_.obstacle_hits));
+      c.max_h = std::max(c.max_h, float(top));
+      any = true;
+    }
+  have_clearance_ = false;
+  return any;
+}
+
 void NavGrid::mark_traversed(const Vec3& p) {
   int cx, cz;
   to_cell(p, cx, cz);

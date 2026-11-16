@@ -163,6 +163,19 @@ CoverageStats Coverage::stats() const {
   return s;
 }
 
+int Coverage::views_at(const std::string& id, const Vec3& p) const {
+  const Grid* g = find(id);
+  if (!g || g->cells.empty() || g->valid.size() != g->cells.size() || !p.allFinite()) return 0;
+  const double c2 = p_.cell_m * p_.cell_m;  // grid axes are cell-sized
+  const Vec3 q = p - g->o;
+  const double fi = std::floor(q.dot(g->u) / c2), fj = std::floor(q.dot(g->v) / c2);
+  if (!std::isfinite(fi) || !std::isfinite(fj)) return 0;
+  const int i = int(fi) - g->i0, j = int(fj) - g->j0;
+  if (i < 0 || i >= g->nx || j < 0 || j >= g->ny) return 0;
+  const size_t k = size_t(j) * size_t(g->nx) + size_t(i);
+  return g->valid[k] ? int(g->cells[k].views) : 0;
+}
+
 CoverageStats Coverage::stats(const std::string& id) const {
   CoverageStats s;
   if (auto* g = find(id))

@@ -62,9 +62,15 @@ void GuideEngine::refresh_levels() {
   cov_.sync(map_);
 }
 
+void GuideEngine::assign_wall_ids() {
+  for (auto& [id, pl] : map_.planes())
+    if (pl.kind == "wall" && !wall_ids_.count(id)) wall_ids_[id] = next_wall_id_++;
+}
+
 void GuideEngine::on_plane(const bundle::PlaneRecord& r) {
   map_.add_plane(r);
   refresh_levels();
+  assign_wall_ids();
 }
 
 void GuideEngine::on_points(const bundle::PointCloudRecord& r) {
@@ -77,7 +83,7 @@ void GuideEngine::on_points(const bundle::PointCloudRecord& r) {
   }
   if (p_.understanding != 0 && (last_open_t_ < 0 || r.t_ns - last_open_t_ >= 1'000'000'000)) {
     last_open_t_ = r.t_ns;
-    openings_ = opener_.detect(map_, pts_);
+    openings_ = opener_.detect(map_, pts_, [this](const std::string& id, const Vec3& p) { return cov_.views_at(id, p); });
   }
 }
 
@@ -87,9 +93,18 @@ void GuideEngine::on_frame(const FrameObs& f) {
 }
 
 void GuideEngine::on_keyframe(uint32_t, int64_t t, double sharp) {
-  if (!have_K_ || track_.size() == 0) return;
+  if (track_.size() == 0) return;
   auto T = track_.interpolate_at(t, 100'000'000);
   if (!T) return;
+  // Overlay v2: record the heading of this keyframe (needs only a pose, not intrinsics or planes). Looking nearly
+  // straight up or down makes yaw meaningless, so those views do not count.
+  if (std::fabs(pitch_of(*T)) < deg2rad(70)) {
+    double deg = std::fmod(rad2deg(yaw_of(*T)), 360.0);
+    if (deg < 0) deg += 360.0;
+    int sector = std::min(int(deg / 30.0), OverlayModel::kYawSectors - 1);
+    yaw_mask_ |= 1u << sector;
+  }
+  if (!have_K_) return;
   std::vector<Vec3> floor_seen;
   Obs o{*T, K_, t, sharp, true};
   cov_.observe(o, &nav_, &floor_seen);
@@ -200,8 +215,11 @@ OverlayModel GuideEngine::overlay(int64_t t) const {
     if (!std::isfinite(w.x0 + w.z0 + w.x1 + w.z1)) continue;      // never emit NaN/inf coordinates
     const double sf = cov_.stats(id).seen_fraction();
     w.seen_pct = std::isfinite(sf) ? int(std::lround(std::clamp(100.0 * sf, 0.0, 100.0))) : 0;
+    auto wi = wall_ids_.find(id);
+    w.id = wi == wall_ids_.end() ? 0 : wi->second;
     m.wall_list.push_back(w);
   }
+  m.yaw_mask = yaw_mask_;
   m.wall_found = m.walls > 0;
 
   // The one most useful reason right now, chosen in priority order.

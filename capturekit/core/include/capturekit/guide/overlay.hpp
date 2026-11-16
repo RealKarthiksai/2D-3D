@@ -12,6 +12,7 @@ namespace capturekit::guide {
 struct OverlayWall {
   double x0 = 0, z0 = 0, x1 = 0, z1 = 0;  // horizontal footprint endpoints, world metres
   int seen_pct = 0;                       // 0-100, fraction of the wall's coverage cells seen
+  int id = 0;                             // stable 1-based wall number, first-seen order (0 = unknown); UI says "Wall N"
 };
 
 struct OverlayModel {
@@ -26,9 +27,11 @@ struct OverlayModel {
   double target_x = 0, target_z = 0;
   std::string why_id, why_text;
   std::vector<OverlayWall> wall_list;    // at most kMaxWalls, sorted by plane id
+  uint32_t yaw_mask = 0;                 // bit i = a keyframe looked along heading [30i, 30i+30) deg (positive yaw = left)
 
   static constexpr size_t kMaxWalls = 12;
-  /// Flat JSON, sorted keys, fixed rounding. Walls are ONE delimited string "x0,z0,x1,z1,pct;..." (no nesting).
+  static constexpr int kYawSectors = 12;
+  /// Flat JSON, sorted keys, fixed rounding. Walls are ONE delimited string "x0,z0,x1,z1,pct,id;..." (no nesting).
   std::string to_json() const;
 };
 

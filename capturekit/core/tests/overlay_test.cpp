@@ -159,7 +159,71 @@ TEST(Overlay, NonFiniteWallIsSkippedAndJsonStaysValid) {
   h.wall_list = {{nan, 0, 1, 1, 50}, {0, 0, 1, 1, 250}};
   auto hj = h.to_json();
   EXPECT_EQ(hj.find("nan"), std::string::npos) << hj;
-  EXPECT_NE(hj.find("\"surfaces\":\"0.00,0.00,1.00,1.00,100\""), std::string::npos) << hj;
+  EXPECT_NE(hj.find("\"surfaces\":\"0.00,0.00,1.00,1.00,100,0\""), std::string::npos) << hj;
+}
+
+// ADR 0022: yaw_mask = 12 x 30 degree heading sectors (bit 0 = [0,30), yaw positive to the left) that hold a keyframe,
+// so room progress moves with zero planes.
+TEST(Overlay, YawMaskFollowsKeyframeHeadingsWithoutPlanes) {
+  GuideEngine e;
+  bundle::IntrinsicsSample k;
+  k.width = 640, k.height = 480, k.fx = k.fy = 500, k.cx = 319.5, k.cy = 239.5;
+  e.on_intrinsics(k);
+  EXPECT_EQ(e.overlay(0).yaw_mask, 0u);
+  const double d2r = kPi / 180;
+  const double yaws[] = {10 * d2r, 100 * d2r, -80 * d2r};  // sectors 0, 3, 9
+  int64_t t = 1'000'000'000;
+  for (double yaw : yaws) {
+    for (int i = 0; i < 4; ++i) e.on_pose(pose_at(t + i * 100'000'000, 2, 1, yaw));
+    e.on_keyframe(1, t + 150'000'000, 0.8);
+    t += 1'000'000'000;
+  }
+  auto m = e.overlay(t);
+  EXPECT_EQ(m.wall_list.size(), 0u);
+  EXPECT_EQ(m.yaw_mask, (1u << 0) | (1u << 3) | (1u << 9));
+  EXPECT_NE(m.to_json().find("\"yaw_mask\":" + std::to_string(m.yaw_mask)), std::string::npos) << m.to_json();
+  // A pose without a keyframe adds nothing; the same heading again changes nothing.
+  e.on_pose(pose_at(t, 2, 1, 200 * d2r));
+  e.on_keyframe(2, t - 50'000'000, 0.8);  // interpolated at the previous heading (-80 deg)
+  EXPECT_EQ(e.overlay(t).yaw_mask, m.yaw_mask);
+  OverlayModel h;
+  h.yaw_mask = 0x801;
+  EXPECT_NE(h.to_json().find("\"yaw_mask\":2049"), std::string::npos) << h.to_json();
+}
+
+// ADR 0022: the wall id is the 6th surfaces field, 1-based in first-seen order, and never changes afterwards.
+TEST(Overlay, WallIdsAreStableInFirstSeenOrder) {
+  GuideEngine e;
+  bundle::IntrinsicsSample k;
+  k.width = 640, k.height = 480, k.fx = k.fy = 500, k.cx = 319.5, k.cy = 239.5;
+  e.on_intrinsics(k);
+  e.on_plane(wall("b", {2, 1.25, 4}, {0, 0, -1}, {1, 0, 0}, 4, 2.5));
+  e.on_plane(wall("a", {-3, 1.25, 0}, {1, 0, 0}, {0, 0, 1}, 4, 2.5));
+  e.on_pose(pose_at(1'000'000'000, 0, 0, 0));
+  auto m1 = e.overlay(1'000'000'000);
+  ASSERT_EQ(m1.wall_list.size(), 2u);
+  EXPECT_EQ(m1.wall_list[0].id, 2);  // list order is plane-id order ("a" < "b"), ids are first-seen order
+  EXPECT_EQ(m1.wall_list[1].id, 1);
+  e.on_plane(wall("0", {3, 1.25, 0}, {-1, 0, 0}, {0, 0, 1}, 4, 2.5));  // sorts first in the list, seen last
+  auto m2 = e.overlay(1'000'000'000);
+  ASSERT_EQ(m2.wall_list.size(), 3u);
+  EXPECT_EQ(m2.wall_list[0].id, 3);
+  EXPECT_EQ(m2.wall_list[1].id, 2);
+  EXPECT_EQ(m2.wall_list[2].id, 1);
+  auto j = m2.to_json();
+  size_t p = j.find("\"surfaces\":\"");
+  ASSERT_NE(p, std::string::npos);
+  std::string s = j.substr(p + 12, j.find('"', p + 12) - p - 12);
+  size_t entries = 0;
+  for (size_t i = 0, n; i <= s.size(); i = n + 1) {
+    n = s.find(';', i);
+    if (n == std::string::npos) n = s.size();
+    int commas = int(std::count(s.begin() + i, s.begin() + n, ','));
+    EXPECT_EQ(commas, 5) << s;
+    ++entries;
+  }
+  EXPECT_EQ(entries, 3u);
+  EXPECT_EQ(s.substr(s.rfind(',') + 1), "1") << s;  // last entry is plane "b", the first wall seen
 }
 
 // Golden: generated on Linux x86_64 with g++ (Release, glibc libm trig). Coordinates are rounded to cm, but a different

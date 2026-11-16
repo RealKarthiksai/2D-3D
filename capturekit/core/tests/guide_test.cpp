@@ -110,6 +110,27 @@ TEST(GuideCoverage, NeedsViewsAndSpread) {
   EXPECT_GT(cov.stats().completeness(), 0.05);
 }
 
+// views_at: viewed wall cell > 0, outside the grid 0, valid == 0 cell (plane shrank after being viewed) 0.
+TEST(GuideCoverage, ViewsAtInsideOutsideAndInvalidCell) {
+  LiveMap m;
+  m.add_plane(back_wall());
+  GuideParams p = P();
+  Coverage cov(p);
+  cov.sync(m);
+  auto K = K640();
+  for (double x : {1.4, 2.0, 2.6}) cov.observe(Obs{pose_from_yaw_pitch({x, 1.25, 1.5}, 0, 0), K, 0, 1.0, true}, nullptr, nullptr);
+  const Vec3 inside(2.0, 1.25, 4.0), edge(3.2, 1.25, 4.0);
+  EXPECT_GE(cov.views_at("w", inside), 3);
+  EXPECT_GE(cov.views_at("w", edge), 1);
+  EXPECT_EQ(cov.views_at("w", Vec3(30.0, 1.25, 4.0)), 0);  // outside the grid
+  EXPECT_EQ(cov.views_at("w", Vec3(2.0, 40.0, 4.0)), 0);
+  // Same plane id, narrower (u in [1, 3]): the grid keeps the cell but it is no longer valid.
+  m.add_plane(plane("w", "wall", {2, 1.25, 4}, {0, 0, -1}, {1, 0, 0}, 2, 2.5));
+  cov.sync(m);
+  EXPECT_GE(cov.views_at("w", inside), 3);
+  EXPECT_EQ(cov.views_at("w", edge), 0);
+}
+
 TEST(GuideCoverage, RangeSharpnessAndOcclusion) {
   LiveMap m;
   m.add_plane(back_wall());

@@ -3,7 +3,9 @@
 // Platform-independent and deterministic: all time comes from the t_ns of the inputs.
 // Feed it the same streams a bundle carries (pose, intrinsics, points, planes) plus per-frame quality
 // and keyframe decisions from the quality module; call update() as often as poses arrive.
+#include <map>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "capturekit/bundle/types.hpp"
@@ -64,6 +66,7 @@ class GuideEngine {
 
  private:
   void refresh_levels();
+  void assign_wall_ids();  // overlay wall numbers: 1-based, first-seen order, never reused or renumbered
   GuideParams p_;
   LiveMap map_;
   Coverage cov_;
@@ -89,6 +92,9 @@ class GuideEngine {
   OpeningDetector opener_;
   std::vector<Opening> openings_;
   int64_t last_open_t_ = -1;
+  std::map<std::string, int> wall_ids_;
+  int next_wall_id_ = 1;
+  uint32_t yaw_mask_ = 0;  // overlay v2 (ADR 0022)
 };
 
 }  // namespace capturekit::guide

@@ -15,6 +15,7 @@ namespace capturekit::guide::sim {
 
 struct Box {
   double x0, z0, x1, z1, h;
+  int cls = 0;  // ObjectClass the detector oracle reports for this block (0 = not a detectable class)
 };
 
 /// A door or window cut into wall `wall` (edge poly[wall] -> poly[wall+1]): u0..u1 along that edge (m from
@@ -35,7 +36,7 @@ struct Room {
   double start_x = 1, start_z = 1, start_yaw = 0;
 };
 
-/// "box", "L", "furniture", "door_window" (the box room with a 0.9 x 2.0 m door and a 1.2 x 1.0 m window,
+/// "box", "L", "furniture", "objects", "door_window" (the box room with a 0.9 x 2.0 m door and a 1.2 x 1.0 m window,
 /// sill 0.9 m). With guide.understanding on, the report gains "openings" (what the engine detected).
 Room make_room(const std::string& name);
 
@@ -45,6 +46,10 @@ struct Human {
   double delay_min = 1.0, delay_max = 3.0;  // reaction delay (s)
   double yaw_noise_deg = 6;      // error when turning toward a bearing
   double turn_dps = 70, pitch_dps = 40;
+  /// Phase 9 understanding scenes only (ADR 0015): after a TiltUp/TiltDown the walker holds dwell_s + 0.5 s, then relaxes
+  /// pitch back to level at pitch_dps; scripted/wander pitch sweeps shrink to 6 deg. false = Phase 8 walker
+  /// (same code paths and RNG draws: goldens and guide-eval byte-identical). Not serialised into the report.
+  bool hold_level = false;
 };
 
 struct Config {
@@ -54,6 +59,16 @@ struct Config {
   double max_s = 300;
   bool trace = false;  // add a coarse state trace to the report (debugging)
   double overlay_every_s = 0;  // > 0: add "overlay_samples" (OverlayModel JSON every N s of sim time) and "overlay_max_bytes"; 0 leaves the report unchanged
+  /// Phase 9 understanding scenes only (ADR 0015): view-driven point model. Each 5 Hz tick casts 120 rays through a
+  /// jittered 12x10 pixel grid; the nearest hit (walls with opening cells skipped, floor/ceiling, furniture, through
+  /// faces) is kept with p = 1 up to 1.5 m, linear to 0 at 5 m, noise 0.01 + 0.005 * max(0, range - 2) m per axis
+  /// (all hypotheses). false = the Phase 8 area-sampled points (same RNG draws). Not serialised into the report.
+  bool view_points = false;
+  /// Phase 9 step 3, test harness: a seeded 2D detector oracle (own RNG, never touches the engine or the walker) projects the
+  /// true boxes of classed furniture at every keyframe (noisy boxes, misses, false positives), an ObjectLifter lifts them
+  /// against the sim's own sparse points and the TRUE shell planes, and the report gains an "oracle" block (lifted objects + truth). Any policy.
+  bool detector_oracle = false;
+  double oracle_miss = 0.15, oracle_false = 0.08;  // per visible box / per keyframe
   Human human;
   GuideParams guide;
 };

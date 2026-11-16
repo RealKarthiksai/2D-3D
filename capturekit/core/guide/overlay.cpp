@@ -48,8 +48,9 @@ std::string OverlayModel::to_json() const {
   std::string ws;
   for (auto& w : wall_list) {
     if (!std::isfinite(w.x0 + w.z0 + w.x1 + w.z1)) continue;  // defence in depth: JSON has no NaN/inf
-    char b[96];
-    std::snprintf(b, sizeof b, "%.2f,%.2f,%.2f,%.2f,%d", r2(w.x0), r2(w.z0), r2(w.x1), r2(w.z1), std::clamp(w.seen_pct, 0, 100));
+    char b[112];
+    std::snprintf(b, sizeof b, "%.2f,%.2f,%.2f,%.2f,%d,%d", r2(w.x0), r2(w.z0), r2(w.x1), r2(w.z1),
+                  std::clamp(w.seen_pct, 0, 100), std::max(w.id, 0));
     if (!ws.empty()) ws += ";";
     ws += b;
   }
@@ -59,7 +60,7 @@ std::string OverlayModel::to_json() const {
       .set("ceiling_found", ceiling_found).set("walls", walls).set("user_x", r2(user_x)).set("user_z", r2(user_z))
       .set("user_yaw_deg", std::round(user_yaw_deg) + 0.0).set("has_target", has_target)
       .set("target_x", r2(target_x)).set("target_z", r2(target_z)).set("why_id", why_id).set("why_text", why_text)
-      .set("surfaces", ws);
+      .set("surfaces", ws).set("yaw_mask", int64_t(yaw_mask & ((1u << kYawSectors) - 1)));
   return o.dump();
 }
 
