@@ -8,6 +8,7 @@ import android.graphics.Path
 import android.view.View
 import dev.capturekit.capture.CoreEvent
 import dev.capturekit.capture.GapMark
+import dev.capturekit.capture.LabelMap
 import dev.capturekit.capture.ObjectBox
 import dev.capturekit.capture.Opening
 import dev.capturekit.capture.PlanPt
@@ -24,8 +25,9 @@ import kotlin.math.sin
  * Live mini-map (real-room-fix T3): a top-down plan, HEADING-UP (the user is fixed at the centre, their forward
  * direction is screen up; [MiniMapMath] owns the sign conventions, yaw positive = left). Draws the closed room outline
  * with corner dots, the layout walls (inked by the seen percentage, green from [DONE_PCT]), hatched spans for stretches
- * hidden by furniture (never demanded), dashed spans for missing stretches, doors / windows, detected furniture and
- * unseen-area marks when the core sends them, the 12-sector heading ring, the target dot and a ceiling icon.
+ * hidden by furniture (never demanded), dashed spans for missing stretches, doors / windows, detected objects (footprint
+ * in a per-class colour with its name, e.g. "sofa", issue #2 B) and unseen-area marks when the core sends them, the
+ * 12-sector heading ring, the target dot and a ceiling icon.
  * Elements the core did not send are simply not drawn (older core, or `guide.understanding` off).
  * [setData] copies the snapshot into preallocated arrays (call at <= 4 Hz, UI thread); onDraw never allocates.
  */
@@ -43,6 +45,8 @@ class RoomView(ctx: Context) : View(ctx) {
     private var nShell = 0
     private var shellClosed = false
     private val ob = FloatArray(MAX_OBJ * 5)   // x, z, w, d, yaw(rad)
+    private val obName = arrayOfNulls<String>(MAX_OBJ)   // display word ("sofa"), built in copyObjects, never in onDraw
+    private val obColor = IntArray(MAX_OBJ)
     private var nObj = 0
     private val op = FloatArray(MAX_OPEN * 4); private val opDoor = BooleanArray(MAX_OPEN)
     private var nOpen = 0
@@ -76,6 +80,11 @@ class RoomView(ctx: Context) : View(ctx) {
     private val windowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 5f * d; color = 0xFF80DEEA.toInt() }
     private val objFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x66B0BEC5 }
     private val objEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.2f * d; color = 0xCCCFD8DC.toInt() }
+    private val objLabel = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 8.5f * d; color = 0xFFFFFFFF.toInt(); textAlign = Paint.Align.CENTER }
+    private val objLabelHalo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 8.5f * d; color = 0xCC000000.toInt(); textAlign = Paint.Align.CENTER
+        style = Paint.Style.STROKE; strokeWidth = 2.5f * d; strokeJoin = Paint.Join.ROUND
+    }
     private val gapRing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = 0xCCFFB74D.toInt()
         pathEffect = DashPathEffect(floatArrayOf(3f * d, 3f * d), 0f)
@@ -162,6 +171,7 @@ class RoomView(ctx: Context) : View(ctx) {
             val o = objs[i]
             ob[5 * i] = o.x.toFloat(); ob[5 * i + 1] = o.z.toFloat(); ob[5 * i + 2] = o.w.toFloat(); ob[5 * i + 3] = o.d.toFloat()
             ob[5 * i + 4] = Math.toRadians(o.yawDeg.toDouble()).toFloat()
+            obName[i] = LabelMap.displayName(o.cls); obColor[i] = objectColor(o.cls)
         }
     }
 
@@ -265,7 +275,16 @@ class RoomView(ctx: Context) : View(ctx) {
                 if (k == 0) path.moveTo(tmp[0], tmp[1]) else path.lineTo(tmp[0], tmp[1])
             }
             path.close()
+            objFill.color = (obColor[i] and 0x00FFFFFF) or 0x66000000
+            objEdge.color = (obColor[i] and 0x00FFFFFF) or 0xDD000000.toInt()
             c.drawPath(path, objFill); c.drawPath(path, objEdge)
+        }
+        // Object names on top of every footprint (after all footprints, so a neighbour never covers a name).
+        for (i in 0 until nObj) {
+            val name = obName[i] ?: continue
+            pt(ob[5 * i], ob[5 * i + 1])
+            val y = tmp[1] - (objLabel.ascent() + objLabel.descent()) / 2f   // vertically centred on the footprint
+            c.drawText(name, tmp[0], y, objLabelHalo); c.drawText(name, tmp[0], y, objLabel)
         }
 
         // Unseen-area marks
@@ -342,6 +361,23 @@ class RoomView(ctx: Context) : View(ctx) {
     }
 
     companion object {
+        /**
+         * Colour of an object class (core name) on the maps and the camera-feed boxes, by kind: seating blue, tables and
+         * desks amber, bed purple, screens cyan, plants green, kitchen and bathroom teal, storage brown, lamp yellow;
+         * anything else (newer core) grey.
+         */
+        fun objectColor(coreName: String): Int = when (coreName) {
+            "chair", "couch", "bench" -> 0xFF64B5F6.toInt()
+            "dining_table", "desk" -> 0xFFFFB74D.toInt()
+            "bed" -> 0xFFBA68C8.toInt()
+            "tv", "laptop" -> 0xFF4DD0E1.toInt()
+            "potted_plant" -> 0xFF81C784.toInt()
+            "toilet", "sink", "refrigerator", "oven" -> 0xFF4DB6AC.toInt()
+            "shelf", "cabinet" -> 0xFFA1887F.toInt()
+            "lamp" -> 0xFFFFF176.toInt()
+            else -> 0xFFB0BEC5.toInt()
+        }
+
         /** Review hand-over encoders (overlay string formats; parse with EventParser). */
         fun encodeSurfaces(segs: List<WallSeg>): String = segs.joinToString(";") {
             String.format(java.util.Locale.ROOT, "%.3f,%.3f,%.3f,%.3f,%d,%d", it.x0, it.z0, it.x1, it.z1, it.pct, it.id)

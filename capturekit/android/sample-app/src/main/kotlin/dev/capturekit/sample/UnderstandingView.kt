@@ -129,6 +129,7 @@ class UnderstandingView(private val ctx: Context) {
     private var shownCeiling = false
     private var shownPct = -1
     private var shownCollapsed = false
+    private var shownFoundText = ""
 
     init {
         // Children are summarised by the card's contentDescription; keep TalkBack from reading them again.
@@ -178,8 +179,9 @@ class UnderstandingView(private val ctx: Context) {
         val found = ChecklistView.foundWalls(o)
         val ceilingSeen = o.ceilingFound || o.ceilingSeen
         // Text is rebuilt only when what it says changes (not on every 4 Hz render).
+        val foundText = dev.capturekit.guidance.ObjectSummary.text(o.objects, o.openings)
         val textChanged = found != shownFound || done != shownDone || scanning != shownScanning ||
-            o.floorFound != shownFloor || ceilingSeen != shownCeiling
+            o.floorFound != shownFloor || ceilingSeen != shownCeiling || foundText != shownFoundText
         if (textChanged) {
             checklist.set(o.floorFound, ceilingSeen, found, done, scanning, pct)
             // Haptic tick only when the done count reaches a new maximum (not on the first snapshot, not on flicker).
@@ -189,12 +191,13 @@ class UnderstandingView(private val ctx: Context) {
         if (textChanged || collapsed != shownCollapsed) {
             // Parts, never a percentage (the percentage is a small caption, hidden from TalkBack).
             card.contentDescription = "Room parts. ${checklist.description} " +
+                (if (foundText.isEmpty()) "" else "Found: $foundText. ") +
                 if (collapsed) "Details hidden. Tap to show." else "Tap to hide details."
         }
         checklist.visibility = if (collapsed) View.GONE else View.VISIBLE
         card.visibility = View.VISIBLE
         shownFound = found; shownDone = done; shownScanning = scanning
-        shownFloor = o.floorFound; shownCeiling = ceilingSeen; shownPct = pct; shownCollapsed = collapsed
+        shownFloor = o.floorFound; shownCeiling = ceilingSeen; shownPct = pct; shownCollapsed = collapsed; shownFoundText = foundText
         val t = o.whyText.ifEmpty { longText }
         if (t.isEmpty() || collapsed) caption.visibility = View.GONE
         else { if (caption.text.toString() != t) caption.text = t; caption.visibility = View.VISIBLE }

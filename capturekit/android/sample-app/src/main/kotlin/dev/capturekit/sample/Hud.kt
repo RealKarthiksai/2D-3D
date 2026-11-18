@@ -48,6 +48,11 @@ class Hud(private val ctx: Activity) {
         addView(recText)
     }
     private val voice = UiKit.chip(ctx).apply { visibility = View.GONE; textSize = UiKit.TEXT_S }
+    /** Camera-feed detector boxes on/off (issue #2 C). Hidden unless the detector runs in this scan. */
+    private val boxes = UiKit.chip(ctx).apply {
+        visibility = View.GONE; textSize = UiKit.TEXT_S; gravity = Gravity.CENTER
+        minimumHeight = dp(48)   // 48 dp touch target
+    }
     /** Push-to-talk chip (top-right zone, left of the voice toggle). Hidden unless voice commands are available. */
     private val mic = UiKit.chip(ctx).apply {
         visibility = View.GONE; textSize = UiKit.TEXT_S; gravity = Gravity.CENTER
@@ -88,6 +93,7 @@ class Hud(private val ctx: Activity) {
         val mid = (longSide * 0.55).toInt()
         coaching.maxWidth = (longSide * 0.6).toInt(); detail.maxWidth = mid; voiceLine.maxWidth = mid; result.maxWidth = mid; debug.maxWidth = mid
         voice.setOnClickListener { onVoiceToggle() }
+        boxes.setOnClickListener { onBoxesToggle() }
         mic.setOnClickListener { onMicClick() }
         trial.setOnClickListener { onTrialClick() }
         pill.setOnLongClickListener { debugOn = !debugOn; if (!debugOn) debug.visibility = View.GONE; true }
@@ -123,6 +129,7 @@ class Hud(private val ctx: Activity) {
             addView(recRow, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
             addView(trial, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
             addView(mic, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
+            addView(boxes, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
             addView(voice)
         }
         val topBar = LinearLayout(ctx).apply {
@@ -235,6 +242,17 @@ class Hud(private val ctx: Activity) {
         voice.visibility = View.VISIBLE
         UiKit.setChip(voice, if (on) "Voice on" else "Voice off", if (on) UiKit.GREEN else 0xFF546E7A.toInt())
         voice.contentDescription = if (on) "Voice guidance on. Tap to turn off." else "Voice guidance off. Tap to turn on."
+    }
+
+    /** Set to handle taps on the "Boxes" chip. */
+    var onBoxesToggle: () -> Unit = {}
+
+    /** Camera-feed boxes chip; null hides it (detector not running, not recording, or the unguided trial arm). */
+    fun setBoxes(on: Boolean?) {
+        if (on == null) { boxes.visibility = View.GONE; return }
+        boxes.visibility = View.VISIBLE
+        UiKit.setChip(boxes, if (on) "Boxes on" else "Boxes off", if (on) UiKit.GREEN else 0xFF546E7A.toInt())
+        boxes.contentDescription = if (on) "Object boxes on the camera view are shown. Tap to hide them." else "Object boxes on the camera view are hidden. Tap to show them."
     }
 
     /** Set to handle taps on the trial chip (field flavour: opens the trial setup). */
