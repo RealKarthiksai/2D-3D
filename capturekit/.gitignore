@@ -49,3 +49,7 @@ dist/
 .vscode/
 *.iml
 .DS_Store
+
+# --- Detector model (fetched by scripts/fetch_models.sh, never committed; ADR 0017) ---
+/android/capturekit/src/main/assets/*.tflite
+.kotlin/

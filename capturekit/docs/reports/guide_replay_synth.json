@@ -4,13 +4,15 @@
       "bundle": "G1_synth_60s",
       "by_type": {
         "MOVE_TO": 1,
-        "ROTATE_TOWARD": 8,
-        "SLOW_DOWN": 2,
+        "PROGRESS": 1,
+        "ROTATE_TOWARD": 7,
+        "SLOW_DOWN": 1,
         "TILT_DOWN": 2,
         "TILT_UP": 2
       },
       "coverage_completeness": 0.5519,
       "coverage_seen": 0.7873,
+      "duration_s": 43.57,
       "first_instructions": [
         {
           "t_s": 2,
@@ -19,12 +21,12 @@
         },
         {
           "t_s": 4,
-          "text": "Turn left toward the unscanned area.",
+          "text": "Face left to scan more.",
           "type": "ROTATE_TOWARD"
         },
         {
           "t_s": 9,
-          "text": "Turn left toward the unscanned area.",
+          "text": "Turn left to the unscanned part.",
           "type": "ROTATE_TOWARD"
         },
         {
@@ -34,11 +36,12 @@
         },
         {
           "t_s": 19,
-          "text": "Turn left toward the unscanned area.",
+          "text": "Face left to scan more.",
           "type": "ROTATE_TOWARD"
         }
       ],
-      "instructions": 15,
+      "instruction_demand_per_min": 17.9,
+      "instructions": 13,
       "planes": 6,
       "repetition_rate": 0,
       "target_switches": 16,
@@ -49,6 +52,7 @@
       "bundle": "G2_synth_90s",
       "by_type": {
         "MOVE_TO": 5,
+        "PROGRESS": 1,
         "ROTATE_TOWARD": 13,
         "SLOW_DOWN": 2,
         "TILT_DOWN": 1,
@@ -56,6 +60,7 @@
       },
       "coverage_completeness": 0.3505,
       "coverage_seen": 0.9269,
+      "duration_s": 71.8,
       "first_instructions": [
         {
           "t_s": 1.5,
@@ -64,12 +69,12 @@
         },
         {
           "t_s": 3.5,
-          "text": "Turn left toward the unscanned area.",
+          "text": "Face left to scan more.",
           "type": "ROTATE_TOWARD"
         },
         {
           "t_s": 5.5,
-          "text": "Walk slightly left, 1 meters.",
+          "text": "Head slightly left, 1 meter.",
           "type": "MOVE_TO"
         },
         {
@@ -78,11 +83,12 @@
           "type": "ROTATE_TOWARD"
         },
         {
-          "t_s": 13.5,
-          "text": "Turn left toward the unscanned area.",
-          "type": "ROTATE_TOWARD"
+          "t_s": 13,
+          "text": "Quarter done. Keep going.",
+          "type": "PROGRESS"
         }
       ],
+      "instruction_demand_per_min": 19.22,
       "instructions": 23,
       "planes": 6,
       "repetition_rate": 0,
@@ -100,6 +106,7 @@
       },
       "coverage_completeness": 0.0607,
       "coverage_seen": 0.225,
+      "duration_s": 39.995,
       "first_instructions": [
         {
           "t_s": 0.533,
@@ -108,12 +115,12 @@
         },
         {
           "t_s": 1.933,
-          "text": "Turn left toward the unscanned area.",
+          "text": "Face left to scan more.",
           "type": "ROTATE_TOWARD"
         },
         {
           "t_s": 5.033,
-          "text": "Walk slightly right, 0.5 meters.",
+          "text": "Head slightly right, 0.5 meters.",
           "type": "MOVE_TO"
         },
         {
@@ -123,10 +130,11 @@
         },
         {
           "t_s": 7.033,
-          "text": "Turn left toward the unscanned area.",
+          "text": "Face left to scan more.",
           "type": "ROTATE_TOWARD"
         }
       ],
+      "instruction_demand_per_min": 25.5,
       "instructions": 17,
       "planes": 6,
       "repetition_rate": 0.091,
@@ -138,6 +146,7 @@
       "bundle": "G4_synth_70s",
       "by_type": {
         "MOVE_TO": 2,
+        "PROGRESS": 1,
         "ROTATE_TOWARD": 13,
         "SLOW_DOWN": 4,
         "TILT_DOWN": 1,
@@ -145,6 +154,7 @@
       },
       "coverage_completeness": 0.397,
       "coverage_seen": 0.8469,
+      "duration_s": 69.855,
       "first_instructions": [
         {
           "t_s": 1.5,
@@ -153,17 +163,17 @@
         },
         {
           "t_s": 3.5,
-          "text": "Turn left toward the unscanned area.",
+          "text": "Face left to scan more.",
           "type": "ROTATE_TOWARD"
         },
         {
           "t_s": 7.567,
-          "text": "Tilt down to scan the floor.",
+          "text": "Aim down at the floor.",
           "type": "TILT_DOWN"
         },
         {
           "t_s": 8.933,
-          "text": "Slow down.",
+          "text": "A bit slower, please.",
           "type": "SLOW_DOWN"
         },
         {
@@ -172,6 +182,7 @@
           "type": "ROTATE_TOWARD"
         }
       ],
+      "instruction_demand_per_min": 20.61,
       "instructions": 24,
       "planes": 6,
       "repetition_rate": 0,
@@ -190,6 +201,7 @@
       },
       "coverage_completeness": 0.0835,
       "coverage_seen": 0.6799,
+      "duration_s": 43.57,
       "first_instructions": [
         {
           "t_s": 0.533,
@@ -198,12 +210,12 @@
         },
         {
           "t_s": 2.333,
-          "text": "Tilt up to scan the ceiling.",
+          "text": "Aim up at the ceiling.",
           "type": "TILT_UP"
         },
         {
           "t_s": 4.367,
-          "text": "Walk slightly left, 0.5 meters.",
+          "text": "Head slightly left, 0.5 meters.",
           "type": "MOVE_TO"
         },
         {
@@ -213,10 +225,11 @@
         },
         {
           "t_s": 8.333,
-          "text": "Turn left toward the unscanned area.",
+          "text": "Face left to scan more.",
           "type": "ROTATE_TOWARD"
         }
       ],
+      "instruction_demand_per_min": 19.28,
       "instructions": 14,
       "planes": 6,
       "repetition_rate": 0,
@@ -227,14 +240,17 @@
     {
       "bundle": "G6_synth_45s",
       "by_type": {
-        "ROTATE_TOWARD": 5,
-        "SLOW_DOWN": 3,
+        "KEEP_TURNING": 1,
+        "PROGRESS": 2,
+        "ROTATE_TOWARD": 4,
+        "SLOW_DOWN": 2,
         "SWEEP": 2,
         "TILT_DOWN": 1,
         "TILT_UP": 2
       },
       "coverage_completeness": 0.5684,
       "coverage_seen": 0.8289,
+      "duration_s": 43.57,
       "first_instructions": [
         {
           "t_s": 3,
@@ -242,7 +258,12 @@
           "type": "SWEEP"
         },
         {
-          "t_s": 12,
+          "t_s": 10.833,
+          "text": "Good. Keep turning left.",
+          "type": "KEEP_TURNING"
+        },
+        {
+          "t_s": 12.833,
           "text": "Tilt up to scan the ceiling.",
           "type": "TILT_UP"
         },
@@ -252,17 +273,13 @@
           "type": "SWEEP"
         },
         {
-          "t_s": 17,
-          "text": "Tilt up to scan the ceiling.",
+          "t_s": 17.833,
+          "text": "Point the phone up.",
           "type": "TILT_UP"
-        },
-        {
-          "t_s": 17.133,
-          "text": "Slow down.",
-          "type": "SLOW_DOWN"
         }
       ],
-      "instructions": 13,
+      "instruction_demand_per_min": 15.15,
+      "instructions": 11,
       "planes": 6,
       "repetition_rate": 0,
       "target_switches": 6,
@@ -279,6 +296,7 @@
       },
       "coverage_completeness": 0.0606,
       "coverage_seen": 0.58,
+      "duration_s": 17.72,
       "first_instructions": [
         {
           "t_s": 0.533,
@@ -287,25 +305,26 @@
         },
         {
           "t_s": 2.533,
-          "text": "Turn left toward the unscanned area.",
+          "text": "Face left to scan more.",
           "type": "ROTATE_TOWARD"
         },
         {
           "t_s": 7.7,
-          "text": "Turn left toward the unscanned area.",
+          "text": "Face left to scan more.",
           "type": "ROTATE_TOWARD"
         },
         {
           "t_s": 9,
-          "text": "Slow down.",
+          "text": "A bit slower, please.",
           "type": "SLOW_DOWN"
         },
         {
           "t_s": 12.667,
-          "text": "Tilt down to scan the floor.",
+          "text": "Point the phone down.",
           "type": "TILT_DOWN"
         }
       ],
+      "instruction_demand_per_min": 23.7,
       "instructions": 7,
       "planes": 5,
       "repetition_rate": 0,
@@ -319,12 +338,14 @@
         "HOLD_STILL": 2,
         "MORE_LIGHT": 2,
         "MOVE_TO": 3,
+        "PROGRESS": 1,
         "ROTATE_TOWARD": 4,
         "SLOW_DOWN": 3,
         "TILT_DOWN": 2
       },
       "coverage_completeness": 0.485,
       "coverage_seen": 0.8845,
+      "duration_s": 39.995,
       "first_instructions": [
         {
           "t_s": 2,
@@ -338,12 +359,12 @@
         },
         {
           "t_s": 6.367,
-          "text": "Turn left toward the unscanned area.",
+          "text": "Face left to scan more.",
           "type": "ROTATE_TOWARD"
         },
         {
           "t_s": 11.267,
-          "text": "Walk slightly left, 0.5 meters.",
+          "text": "Head slightly left, 0.5 meters.",
           "type": "MOVE_TO"
         },
         {
@@ -352,6 +373,7 @@
           "type": "HOLD_STILL"
         }
       ],
+      "instruction_demand_per_min": 24.0,
       "instructions": 16,
       "planes": 5,
       "repetition_rate": 0,

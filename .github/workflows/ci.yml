@@ -133,8 +133,6 @@ jobs:
 
   schema-compat:
     name: schema-compat (frozen 1.0.0 bundle still validates)
-    # until frozen-1.0.0 fixture lands (human later; must land before schema 1.1.0)
-    continue-on-error: true
     runs-on: ubuntu-24.04
     defaults:
       run:

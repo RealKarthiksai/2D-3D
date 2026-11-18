@@ -6,7 +6,9 @@ computed by the real core (`_ckcore.replay.Sink`). Two identical runs give byte-
 
 ## Ordering
 Merged by `(t_ns, channel rank, original index)`. Rank for equal `t_ns`:
-`intrinsics < pose < gyro < accel < frame < event < points < planes`.
+`intrinsics < pose < gyro < accel < frame < event < points < planes < detections`.
+`/guide/labels`, `/guide/shell`, `/guide/gaps` (schema 1.3.0, ADR 0028) are derived outputs: replay ignores them and recomputes them.
+`/ar/detections` (schema 1.1.0, ADR 0016) is delivered through `ReplaySink::on_detections`; bundles without the channel replay exactly as before.
 Injected events are placed by their own `t_ns` (before same-time events of higher rank).
 
 ## Modes and clock
