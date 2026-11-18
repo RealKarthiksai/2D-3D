@@ -135,6 +135,7 @@ class Session {
   void expire_acks(int64_t now_t);
   void governor_step(int64_t t);
   void guide_tick(int64_t t);
+  void publish_recovery();  // tracking_lost / tracking_reset events + /events records (ADR 0031)
   void write_guide_outputs(int64_t t, bool final_pass);  // /guide/labels, /guide/shell, /guide/gaps (ADR 0028)
   void write_event(int64_t t, const std::string& source, const std::string& code, const std::string& msg,
                    std::vector<std::pair<std::string, std::string>> attrs = {});

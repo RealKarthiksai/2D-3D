@@ -22,7 +22,13 @@ class StatusPillTest {
         "NOT_NOVEL" to "Good",
         "MIN_GAP" to "Good",
         "NOT_BEST" to "Good",
+        "RECALIBRATING" to "Recalibrating",
     )
+
+    @Test fun recalibratingOutranksEverythingButTrackingLost() {
+        assertEquals(StatusPill.RECALIBRATING, statusPill("PAUSED", "INSUFFICIENT_FEATURES", listOf("MOTION_BLUR", "RECALIBRATING"), 4, everTracked = true))
+        assertEquals(StatusPill.LOST, statusPill("STOPPED", "NONE", listOf("RECALIBRATING"), 0, everTracked = true))
+    }
 
     @Test fun everyCoreReasonHasAPlainPhrase() {
         assertEquals(expected.keys, StatusPill.REASON_CODES.toSet())

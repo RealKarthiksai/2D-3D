@@ -14,10 +14,12 @@ object StatusPill {
     /** Every reason code the core quality module emits (core/quality/quality.cpp reason_code). */
     val REASON_CODES = listOf(
         "TRACKING_LOST", "TRACKING_LIMITED", "MOTION_BLUR", "BLUR", "SOFT_FOCUS", "OVEREXPOSED", "UNDEREXPOSED",
-        "LOW_TEXTURE", "POOR_SPREAD", "NO_IMAGE", "NOT_NOVEL", "MIN_GAP", "NOT_BEST",
+        "LOW_TEXTURE", "POOR_SPREAD", "NO_IMAGE", "NOT_NOVEL", "MIN_GAP", "NOT_BEST", "RECALIBRATING",
     )
 
     val LOST = Pill("Tracking lost", Tone.BAD)
+    /** Issue #1 / ADR 0031: the core is recalibrating tracking (keyframes paused). */
+    val RECALIBRATING = Pill("Recalibrating", Tone.BAD)
     val TOO_FAST = Pill("Move slower", Tone.WARN)
     val HOLD = Pill("Hold steady", Tone.WARN)
     val LIGHT = Pill("More light", Tone.WARN)
@@ -29,7 +31,8 @@ object StatusPill {
 
     /** Lower = more urgent. */
     private fun rank(p: Pill): Int = when (p) {
-        LOST -> 0; TOO_FAST -> 1; HOLD -> 2; LIGHT -> 3; HOT -> 4; WARMING -> 5; KEEP_GOING -> 6; GOOD -> 7; else -> 8
+        LOST -> 0; RECALIBRATING -> 1; TOO_FAST -> 2; HOLD -> 3; LIGHT -> 4; HOT -> 5; WARMING -> 6; KEEP_GOING -> 7; GOOD -> 8
+        else -> 9
     }
 
     /**
@@ -39,6 +42,7 @@ object StatusPill {
      */
     fun forReason(code: String): Pill? = when (code) {
         "TRACKING_LOST" -> LOST
+        "RECALIBRATING" -> RECALIBRATING
         "MOTION_BLUR" -> TOO_FAST
         "SOFT_FOCUS", "BLUR" -> HOLD
         "UNDEREXPOSED" -> LIGHT

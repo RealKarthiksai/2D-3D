@@ -20,7 +20,10 @@ class GuideSink : public replay::ReplaySink {
   bool needs_images() const override { return true; }
   void on_intrinsics(const bundle::IntrinsicsSample& k) override;
   void on_pose(const bundle::PoseSample& p) override;
-  void on_gyro(const bundle::ImuSample& s) override { quality_.on_gyro(s); }
+  void on_gyro(const bundle::ImuSample& s) override {
+    quality_.on_gyro(s);
+    engine_.on_gyro(s);  // tracking-recovery steadiness check (ADR 0031), as in the live session
+  }
   void on_frame(const replay::FrameView& f) override { quality_.on_frame(f); }
   void on_points(const bundle::PointCloudRecord& p) override;
   void on_plane(const bundle::PlaneRecord& p) override { engine_.on_plane(p); }

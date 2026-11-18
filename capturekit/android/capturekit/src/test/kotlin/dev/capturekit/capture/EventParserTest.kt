@@ -155,6 +155,16 @@ not json
     }
 
     @Test
+    fun trackingRecoveryEvents() {
+        // Exactly as the core writes them (sorted keys); t_ns keeps all 64 bits.
+        val lost = EventParser.parseLine("""{"degraded_s":2.013,"reason":3,"t_ns":9007199254740993,"tracking_state":2,"type":"tracking_lost"}""")
+        assertEquals(CoreEvent.TrackingLost(9007199254740993L, 2, 3, 2.013), lost)
+        val reset = EventParser.parseLine("""{"drift_deg":4.5,"drift_m":0.123,"lost_s":3.5,"t_ns":12000000000,"type":"tracking_reset"}""")
+        assertEquals(CoreEvent.TrackingReset(12_000_000_000L, 3.5, 0.123, 4.5), reset)
+        assertNull(EventParser.parseLine("""{"type":"tracking_lost","reason":3}"""))   // no t_ns: malformed, skipped
+    }
+
+    @Test
     fun configJsonEscapes() {
         assertEquals("""{"a":1,"b":"x\"y","c":true}""", SessionManager.toJson(linkedMapOf("a" to 1, "b" to "x\"y", "c" to true)))
     }

@@ -24,13 +24,14 @@ const char* reason_code(Reason r) {
     case kNotNovel: return "NOT_NOVEL";
     case kMinGap: return "MIN_GAP";
     case kNotBest: return "NOT_BEST";
+    case kRecalibrating: return "RECALIBRATING";
   }
   return "UNKNOWN";
 }
 
 std::vector<std::string> reason_codes(uint32_t mask) {
   std::vector<std::string> v;
-  for (uint32_t b = 1; b && b <= kNotBest; b <<= 1)
+  for (uint32_t b = 1; b && b <= kLastReason; b <<= 1)
     if (mask & b) v.emplace_back(reason_code(Reason(b)));
   return v;
 }

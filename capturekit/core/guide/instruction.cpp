@@ -7,12 +7,14 @@ namespace capturekit::guide {
 
 const char* type_name(InstrType t) {
   static const char* n[] = {"SLOW_DOWN", "HOLD_STILL", "RELOCALIZE", "MOVE_TO", "ROTATE_TOWARD", "TILT_UP",
-                            "TILT_DOWN", "STEP_BACK", "SWEEP", "MORE_LIGHT", "FINISH", "PROGRESS", "KEEP_TURNING", "AIM_TEXTURED"};
+                            "TILT_DOWN", "STEP_BACK", "SWEEP", "MORE_LIGHT", "FINISH", "PROGRESS", "KEEP_TURNING", "AIM_TEXTURED",
+                            "RECALIBRATE"};
   return n[int(t)];
 }
 int type_priority(InstrType t) {
   switch (t) {
-    case InstrType::SlowDown: case InstrType::HoldStill: case InstrType::Relocalize: case InstrType::AimTextured: return 3;
+    case InstrType::SlowDown: case InstrType::HoldStill: case InstrType::Relocalize: case InstrType::AimTextured:
+    case InstrType::Recalibrate: return 3;
     case InstrType::MoreLight: case InstrType::Progress: case InstrType::KeepTurning: return 1;
     default: return 2;
   }
@@ -67,6 +69,8 @@ const std::map<std::string, Entry>& catalog() {
                         {"Keep turning slowly so the phone can see the whole room."}}},
       {"aim_texture", {{"Aim at a textured wall.", "Point at a wall with detail.", "Aim at something with texture."},
                        {"The phone cannot see enough detail. Aim at a textured wall or furniture."}}},
+      {"recalibrate", {{"Turn your phone slowly in a small circle.", "Slowly circle the phone to recalibrate.", "Keep circling the phone slowly."},
+                       {"Tracking lost. Slowly turn your phone in a small circle to recalibrate."}}},
   };
   return c;
 }
@@ -137,7 +141,7 @@ bool InstructionGenerator::cooled(InstrType t, int64_t now) const {
     case InstrType::MoreLight: cd = p_.cd_light; break;
     case InstrType::Finish: cd = p_.cd_finish; break;
     case InstrType::Progress: case InstrType::KeepTurning: cd = 0; break;  // paced by last_info_ns_
-    case InstrType::AimTextured: cd = p_.cd_hold_still; break;
+    case InstrType::AimTextured: case InstrType::Recalibrate: cd = p_.cd_hold_still; break;
   }
   return double(now - it->second) / 1e9 >= cd;
 }
@@ -187,6 +191,7 @@ Instruction InstructionGenerator::make(InstrType t, const Situation& s, std::vec
     case InstrType::Progress: i.msg_id = "progress." + num(i.param("pct")); i.haptic = "none"; break;
     case InstrType::KeepTurning: i.msg_id = "keep_turning"; i.haptic = "none"; break;
     case InstrType::AimTextured: i.msg_id = "aim_texture"; i.haptic = "double"; break;
+    case InstrType::Recalibrate: i.msg_id = "recalibrate"; i.haptic = "double"; i.overlay_hint = "recalibrate"; break;
   }
   const uint32_t variant = i.id - 1;  // deterministic phrasing: the first instruction always uses phrasing 0
   if ((t == InstrType::MoveTo || t == InstrType::RotateToward) && s.plan.target.gap && !s.plan.target.why.empty()) {
@@ -217,6 +222,7 @@ bool InstructionGenerator::complete(Active& a, const Situation& s) const {
     case InstrType::HoldStill: case InstrType::Relocalize: return s.tracking_state == 1;
     case InstrType::MoreLight: return !s.underexposed && !low_light(s);
     case InstrType::AimTextured: return !few_features(s);
+    case InstrType::Recalibrate: return !s.recovering;
     case InstrType::Finish: return false;
     case InstrType::Progress: case InstrType::KeepTurning: return true;  // one-shot, spoken once
   }
@@ -273,6 +279,30 @@ void InstructionGenerator::update(const Situation& s, std::vector<Instruction>& 
       if (a.ins.type == cand.type && bucket(a.ins) == bucket(cand)) return true;
     return false;
   };
+
+  auto is_active = [&](InstrType t) {
+    return std::any_of(active_.begin(), active_.end(), [t](auto& a) { return a.ins.type == t; });
+  };
+
+  // 1b. Tracking recovery (ADR 0031): the pose is unreliable, so every guidance / info instruction still active is
+  // superseded (its baselines would complete or expire it on drifted poses) and nothing but the recovery prompt is
+  // issued. While tracking is degraded: RECALIBRATE, escalated to RELOCALIZE after a long NOT_AVAILABLE loss. While
+  // tracking is back but still settling: silence (the prompt completes when recovery ends).
+  if (s.recovering) {
+    for (size_t k = 0; k < active_.size();)
+      if (active_[k].ins.priority < 3) {
+        finish_active(active_[k], LifeState::Superseded, s, events);
+        active_.erase(active_.begin() + long(k));
+      } else {
+        ++k;
+      }
+    if (s.tracking_state == 1) return;
+    const bool long_lost = s.tracking_state == 3 && double(s.t_ns - s.lost_since_ns) / 1e9 >= p_.lost_relocalize_s;
+    const InstrType t = long_lost ? InstrType::Relocalize : InstrType::Recalibrate;
+    if (!is_active(t) && cooled(t, s.t_ns) && !(t == InstrType::Recalibrate && is_active(InstrType::Relocalize)))
+      issue(make(t, s, {}));  // supersedes HOLD_STILL / AIM_TEXTURED (same priority class)
+    return;
+  }
 
   // 2. Urgent interrupts (bypass the global gap, respect their own cooldown).
   if (s.tracking_state == 3) {

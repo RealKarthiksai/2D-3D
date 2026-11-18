@@ -37,6 +37,13 @@ sealed class CoreEvent {
         val gapWhyText: String = "",
     ) : CoreEvent()
     data class IngestDrop(val counts: Map<String, Long>) : CoreEvent()
+    /**
+     * Issue #1 / ADR 0031: tracking has been degraded (LIMITED = ARCore PAUSED, or NOT_AVAILABLE) for 2 s. The core has
+     * paused keyframe capture and speaks RECALIBRATE until [TrackingReset]. [trackingState] / [reason] are core codes.
+     */
+    data class TrackingLost(val tNs: Long, val trackingState: Int, val reason: Int, val degradedS: Double) : CoreEvent()
+    /** Tracking is back and steady: the session was re-anchored. [driftM] / [driftDeg] = pose jump across the loss. */
+    data class TrackingReset(val tNs: Long, val lostS: Double, val driftM: Double, val driftDeg: Double) : CoreEvent()
     data class Other(val type: String, val raw: String) : CoreEvent()
 }
 
@@ -119,6 +126,10 @@ object EventParser {
     private fun num(line: String, key: String): Double? =
         Regex("\"$key\":(-?[0-9.eE+-]+)").find(line)?.groupValues?.get(1)?.toDoubleOrNull()
 
+    /** Integer field without a round trip through Double (t_ns needs all 64 bits). */
+    private fun long(line: String, key: String): Long? =
+        Regex("\"$key\":(-?[0-9]+)(?![0-9.eE])").find(line)?.groupValues?.get(1)?.toLongOrNull()
+
     fun parseLine(line: String): CoreEvent? {
         val type = str(line, "type") ?: return null
         return when (type) {
@@ -156,6 +167,14 @@ object EventParser {
                 openings = parseOpenings(str(line, "openings") ?: ""),
                 gaps = parseGaps(str(line, "gaps") ?: ""),
                 gapWhyText = str(line, "gap_why_text") ?: "",
+            )
+            "tracking_lost" -> CoreEvent.TrackingLost(
+                long(line, "t_ns") ?: return null, (num(line, "tracking_state") ?: 0.0).toInt(),
+                (num(line, "reason") ?: 0.0).toInt(), num(line, "degraded_s") ?: 0.0,
+            )
+            "tracking_reset" -> CoreEvent.TrackingReset(
+                long(line, "t_ns") ?: return null, num(line, "lost_s") ?: 0.0,
+                num(line, "drift_m") ?: 0.0, num(line, "drift_deg") ?: 0.0,
             )
             "ingest_drop" -> CoreEvent.IngestDrop(
                 listOf("pose", "gyro", "accel", "intrinsics", "frame", "points", "plane", "platform")

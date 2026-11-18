@@ -82,9 +82,10 @@ struct Feeder {
   bool ack = true;
   std::set<std::string> written;
 
-  void step(int64_t i, bool frames = true) {
+  std::vector<std::string> seen;  // every outbound event line, in order
+  void step(int64_t i, bool frames = true, int32_t tracking = 1, int32_t reason = 0) {
     int64_t t = (i + 1) * 33 * kMs;  // t_ns <= 0 is rejected at ingest
-    ck_pose p{t, {0.015 * double(i), 0, 0}, {1, 0, 0, 0}, 1, 0};
+    ck_pose p{t, {0.015 * double(i), 0, 0}, {1, 0, 0, 0}, tracking, reason};
     EXPECT_EQ(ck_ingest_pose(s, &p, CK_POSE_OPENCV), CK_OK);
     for (int k = 0; k < 6; ++k) {
       ck_imu g{t + k * 5 * kMs, {0.01, 0, 0}};
@@ -98,6 +99,7 @@ struct Feeder {
   }
   void handle_events() {
     for (auto& e : drain(s)) {
+      seen.push_back(e);
       if (e.find("\"keyframe_request\"") == std::string::npos) continue;
       auto file = json_str(e, "file");
       if (ack) {
@@ -828,4 +830,111 @@ TEST(SessionGuideOutputs, WrittenOnlyWithUnderstandingAndDeterministic) {
     EXPECT_EQ(c2.labels[i].t_ns, c.labels[i].t_ns);
     EXPECT_EQ(bundle::codec::encode(c2.labels[i]), bundle::codec::encode(c.labels[i]));
   }
+}
+
+// Issue #1 / ADR 0031: covering the camera (ARCore PAUSED + INSUFFICIENT_FEATURES) for 3 s mid-scan. Recovery starts after
+// 2 s: the shell gets tracking_lost + a RECALIBRATE prompt and nothing else, keyframe capture pauses (frames recorded as
+// RECALIBRATING hard rejects), and once tracking is back and steady the shell gets tracking_reset, scanning resumes and
+// the bundle's /events timeline has TRACKING_LOST and TRACKING_RESET (with the drift delta).
+namespace {
+int64_t json_i64(const std::string& line, const std::string& key) {
+  auto p = line.find("\"" + key + "\":");
+  return std::stoll(line.substr(p + key.size() + 3));
+}
+}  // namespace
+
+TEST(SessionTrackingRecovery, KeyframesPausedPromptOnlyAndTimelineEvents) {
+  auto d = fresh("tracking_recovery");
+  auto* s = make(d, "{\"threaded\":0, \"platform\":\"test\"}");
+  Feeder f{s, d};
+  ASSERT_EQ(ck_session_start(s, 0), CK_OK);
+  intr(s);
+  auto feed = [&](int64_t from, int64_t to, int32_t tracking, int32_t reason) {
+    for (int64_t i = from; i < to; ++i) {
+      f.step(i, true, tracking, reason);
+      ck_session_pump(s);
+      f.handle_events();
+    }
+  };
+  feed(0, 150, 1, 0);    // 5 s scanning
+  feed(150, 240, 2, 3);  // 3 s camera covered: LIMITED / INSUFFICIENT_FEATURES
+  feed(240, 420, 1, 0);  // 6 s scanning again
+  ASSERT_EQ(ck_session_stop(s, 420 * 33 * kMs), CK_OK);
+  ck_session_pump(s);
+  f.handle_events();
+  ck_session_pump(s);
+  ASSERT_EQ(ck_session_finalize(s), CK_OK);
+  ck_session_destroy(s);
+
+  // Outbound (shell) events.
+  int64_t lost_t = -1, reset_t = -1;
+  int n_lost = 0, n_reset = 0, n_recal = 0, n_flagged = 0;
+  for (auto& e : f.seen) {
+    if (e.find("\"type\":\"tracking_lost\"") != std::string::npos) {
+      ++n_lost, lost_t = json_i64(e, "t_ns");
+      EXPECT_EQ(json_i64(e, "tracking_state"), 2);
+      EXPECT_EQ(json_i64(e, "reason"), 3);
+    } else if (e.find("\"type\":\"tracking_reset\"") != std::string::npos) {
+      ++n_reset, reset_t = json_i64(e, "t_ns");
+      EXPECT_NE(e.find("\"drift_m\":"), std::string::npos);
+      EXPECT_NE(e.find("\"lost_s\":"), std::string::npos);
+    }
+  }
+  ASSERT_EQ(n_lost, 1);
+  ASSERT_EQ(n_reset, 1);
+  EXPECT_EQ(lost_t, 212 * 33 * kMs);  // pose 211 (t = 212 * 33 ms) is the first >= 2 s after pose 150 (61 x 33 ms)
+  EXPECT_GT(reset_t, 240 * 33 * kMs + 990 * kMs);  // settled for 1 s (the feeder's gyro is steady)
+  EXPECT_LT(reset_t, 240 * 33 * kMs + 1100 * kMs);
+  for (auto& e : f.seen) {
+    if (e.find("\"type\":\"instruction\"") != std::string::npos) {
+      const int64_t t = json_i64(e, "t_ns");
+      if (t >= lost_t && t < reset_t) {
+        EXPECT_NE(e.find("\"instruction\":\"RECALIBRATE\""), std::string::npos) << e;  // nothing else while recovering
+        EXPECT_NE(e.find("\"overlay_hint\":\"recalibrate\""), std::string::npos) << e;
+        ++n_recal;
+      }
+    }
+    if (e.find("\"type\":\"frame_quality\"") != std::string::npos && e.find("RECALIBRATING") != std::string::npos) {
+      const int64_t t = json_i64(e, "t_ns");
+      EXPECT_GT(t, lost_t);
+      EXPECT_LT(t, reset_t);
+      EXPECT_NE(e.find("\"hard_reject\":true"), std::string::npos);
+      ++n_flagged;
+    }
+  }
+  EXPECT_EQ(n_recal, 1);
+  EXPECT_GE(n_flagged, 8);  // ~10 candidate frames per second of recovery
+
+  // Bundle: no keyframe while recovering, keyframes again afterwards, both events on the /events timeline.
+  auto c = bundle::read_streams((d / "streams.mcap").string());
+  ASSERT_TRUE(c.finalized);
+  size_t kf_after = 0, recal_frames = 0;
+  for (auto& fr : c.frames) {
+    const bool recal = std::find(fr.reasons.begin(), fr.reasons.end(), "RECALIBRATING") != fr.reasons.end();
+    if (fr.t_ns > lost_t && fr.t_ns < reset_t) {
+      EXPECT_FALSE(fr.keyframe) << fr.t_ns;
+      EXPECT_TRUE(recal) << fr.t_ns;
+      ++recal_frames;
+    } else {
+      EXPECT_FALSE(recal) << fr.t_ns;
+    }
+    if (fr.keyframe && fr.t_ns > reset_t) ++kf_after;
+  }
+  EXPECT_GE(recal_frames, 8u);
+  EXPECT_GT(kf_after, 0u);  // scanning continued seamlessly
+  const bundle::EventRecord* lost = nullptr;
+  const bundle::EventRecord* reset = nullptr;
+  for (auto& e : c.events) {
+    if (e.code == "TRACKING_LOST") lost = &e;
+    if (e.code == "TRACKING_RESET") reset = &e;
+  }
+  ASSERT_NE(lost, nullptr);
+  ASSERT_NE(reset, nullptr);
+  EXPECT_EQ(lost->source, "guide");
+  EXPECT_EQ(lost->t_ns, lost_t);
+  EXPECT_EQ(reset->t_ns, reset_t);
+  std::set<std::string> keys;
+  for (auto& [k, v] : reset->attrs) keys.insert(k);
+  EXPECT_EQ(keys, (std::set<std::string>{"drift_deg", "drift_m", "lost_s"}));
+  EXPECT_TRUE(fs::exists(d / "manifest.json"));
 }
