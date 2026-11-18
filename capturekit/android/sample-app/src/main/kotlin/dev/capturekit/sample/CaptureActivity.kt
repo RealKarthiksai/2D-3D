@@ -17,6 +17,7 @@ import dev.capturekit.capture.LiteRtKeyframeDetector
 import dev.capturekit.capture.Policy
 import dev.capturekit.capture.SensorBridge
 import dev.capturekit.capture.SessionManager
+import dev.capturekit.guidance.Recalibration
 import dev.capturekit.guidance.ScanStateSnapshot
 import dev.capturekit.nativebridge.Status
 import dev.capturekit.platform.PlatformSignals
@@ -57,6 +58,14 @@ class CaptureActivity : Activity(), SessionManager.Listener {
     @Volatile private var lastGovernor = "-"
     @Volatile private var instruction = ""
     @Volatile private var instructionLong = ""
+    @Volatile private var instructionType = ""
+    /** Issue #1 / ADR 0031: tracking recalibration prompt (immutable; replaced on the core event thread, read on the UI thread). */
+    @Volatile private var recal = Recalibration()
+    /**
+     * Guards the read-modify-write updates of [recal] and of the instruction fields: the core event thread and the UI
+     * thread (scan start / finish) both write them, so a late event must not overwrite a reset. Reads stay lock-free.
+     */
+    private val recalLock = Any()
     @Volatile private var overlay: CoreEvent.Overlay? = null
     @Volatile private var trackState = "?"
     @Volatile private var trackFailure = "NONE"
@@ -194,7 +203,8 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         adapter = ARAdapter(s, 0L) { ar.session }
         sensors = SensorBridge(this, s).also { it.start() }
         thermal = ThermalAdapter(this) { p -> pushPlatform(s, p) }.also { it.start() }
-        keyframes = 0; instruction = ""; instructionLong = ""; overlay = null; lastQuality = -1.0; lastReasons = emptyList()
+        keyframes = 0; overlay = null; lastQuality = -1.0; lastReasons = emptyList()
+        synchronized(recalLock) { instruction = ""; instructionLong = ""; instructionType = ""; recal = Recalibration() }
         corePaused = false; pausedTotalMs = 0; pausedAtMs = 0
         recStartMs = SystemClock.elapsedRealtime(); recording = true
         speech.stats.reset(); speech.stats.begin(recStartMs)
@@ -268,6 +278,8 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         hud.button.isEnabled = false
         hud.pauseButton.isEnabled = false
         boxView.clear(); hud.setBoxes(null)
+        synchronized(recalLock) { recal = Recalibration() }
+        hud.setRecalibrate(null)
         val elapsed = elapsedMs()
         recording = false
         ar.recording = false
@@ -331,6 +343,10 @@ class CaptureActivity : Activity(), SessionManager.Listener {
             if (recording && p != null) p.level else 0, ar.live() || ar.lastFrameMs == 0L || ar.state != ArState.READY)
         if (hud.debugOn) session?.let { hud.setDebug(it.stats.hudLine()) }
         hud.setUnderstanding(if (recording && !research.unguided) overlay else null)
+        // Recalibration card (issue #1): only while scanning; the unguided trial arm gets no guidance, but the core still
+        // pauses keyframes there. A user pause hides it (the core keeps tracking the recovery and resumes it on Resume).
+        val r = recal
+        hud.setRecalibrate(if (recording && !corePaused && !finishing && !research.unguided && r.active) r.prompt else null)
         refreshMic()
         if (recording) {
             hud.setPaused(corePaused)
@@ -353,11 +369,31 @@ class CaptureActivity : Activity(), SessionManager.Listener {
 
     // Core event thread (not the AR thread).
     override fun onEvent(e: CoreEvent) {
+        // Pure reducer (same instance for unrelated events); after finishScan() reset it, a late event is ignored.
+        synchronized(recalLock) { if (!finishing) recal = recal.on(e) }
         when (e) {
             is CoreEvent.FrameQuality -> { lastQuality = e.quality; lastReasons = e.reasons }
             is CoreEvent.KeyframeRequest -> keyframes++
+            is CoreEvent.TrackingLost -> {
+                Log.i(TAG, "tracking lost for ${e.degradedS} s (state ${e.trackingState}, reason ${e.reason}): recalibrating")
+                ui.post { refresh() }   // show the card now, not at the next 250 ms tick
+            }
+            is CoreEvent.TrackingReset -> {
+                Log.i(TAG, "tracking reset after ${e.lostS} s, drift ${e.driftM} m / ${e.driftDeg} deg")
+                // The prompt auto-dismisses; a stale "turn in a circle" line must not stay up until the next instruction.
+                val wasRecal = synchronized(recalLock) {
+                    (instructionType == Recalibration.RECALIBRATE).also { if (it) { instruction = ""; instructionType = "" } }
+                }
+                ui.post {
+                    if (recording && !corePaused && !finishing && !research.unguided) {
+                        if (wasRecal) hud.setCoaching(scanPrompt())
+                        hud.haptic(true)   // confirm: back on track
+                    }
+                    refresh()
+                }
+            }
             is CoreEvent.Instruction -> {
-                instruction = e.speakText; instructionLong = e.longText
+                synchronized(recalLock) { instruction = e.speakText; instructionLong = e.longText; instructionType = e.type }
                 research.onInstruction()
                 if (!corePaused && !research.unguided) {
                     speech.onInstruction(e.id, e.speakText, e.priority)

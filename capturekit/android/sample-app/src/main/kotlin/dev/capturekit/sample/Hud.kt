@@ -64,6 +64,8 @@ class Hud(private val ctx: Activity) {
         minimumHeight = dp(48)
     }
     private val coaching = glassText(UiKit.TEXT_L).apply { gravity = Gravity.CENTER; typeface = Typeface.DEFAULT_BOLD; maxLines = 2 }
+    /** Issue #1: centred "Recalibrating" card with the circling-phone animation (declared before [root], which adds it). */
+    private val recalibrate = RecalibrateOverlay(ctx)
     private val bannerText = TextView(ctx)
     private val bannerButton = UiKit.bigButton(ctx, "Retry", 0x33FFFFFF).apply { textSize = UiKit.TEXT_M; minimumHeight = 0; minHeight = 0 }
     private val bannerRow = LinearLayout(ctx).apply {
@@ -164,6 +166,7 @@ class Hud(private val ctx: Activity) {
             addView(buttons, LinearLayout.LayoutParams(match, wrap))
         }
         addView(column, FrameLayout.LayoutParams(match, match))
+        addView(recalibrate.card, FrameLayout.LayoutParams(wrap, wrap, Gravity.CENTER))   // above the column, never clickable
         UiKit.applyInsets(this)
     }
 
@@ -313,5 +316,11 @@ class Hud(private val ctx: Activity) {
     fun haptic(confirm: Boolean) = UiKit.haptic(button, confirm)
     fun hapticFor(haptic: String, priority: Int) = UiKit.hapticFor(button, haptic, priority)
 
-    fun release() { pulse.cancel(); coaching.animate().cancel() }
+    /**
+     * Issue #1 / ADR 0031: the recalibration card. [text] = the core's sentence ([dev.capturekit.guidance.Recalibration.prompt]);
+     * null hides it. Shown while the core recovers tracking (keyframe capture paused); dismissed when tracking is back.
+     */
+    fun setRecalibrate(text: String?) = recalibrate.set(text)
+
+    fun release() { pulse.cancel(); coaching.animate().cancel(); recalibrate.release() }
 }
