@@ -46,7 +46,7 @@ dependencies {
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
     implementation(libs.work.runtime.ktx)
-    implementation(libs.sentry.android)
+    implementation(libs.litert)
 
     testImplementation(libs.junit)
 }

@@ -9,7 +9,7 @@ class SpeechScheduler(private val cfg: Config = Config()) {
     /** Speech budget is a config value (phases/10), not a constant. */
     data class Config(
         val minGapMs: Long = 2_000,         // non-urgent: min time since the last utterance started/ended
-        val maxPerMinute: Int = 8,          // non-urgent: utterances per rolling minute
+        val maxPerMinute: Int = 6,          // non-urgent: utterances per rolling minute (real-room-fix T3: 8 -> 6, matches core max_prompts_per_min)
         val repeatWindowMs: Long = 12_000,  // same text suppressed inside this window
         val pendingTtlMs: Long = 4_000,     // a queued same-priority line is stale after this
         val urgentPriority: Int = 3,
@@ -35,6 +35,11 @@ class SpeechScheduler(private val cfg: Config = Config()) {
     private var lastEndMs = Long.MIN_VALUE / 2
     private var lastStartMs = Long.MIN_VALUE / 2
     private var pending: Pending? = null
+    private var manualSeq = 0
+
+    /** Last text issued for speech (guidance or answer). Survives [reset] so "repeat" works after a pause. */
+    var lastText: String? = null
+        private set
 
     fun isSpeaking() = speakingId != null
 
@@ -75,10 +80,33 @@ class SpeechScheduler(private val cfg: Config = Config()) {
         return speak(id, text, priority, nowMs, flush = false)
     }
 
-    private fun speak(id: Int, text: String, priority: Int, nowMs: Long, flush: Boolean): Action.Speak {
+    /**
+     * Voice-command speech (answer to "what is missing", volume feedback): user-requested, so it bypasses the
+     * repeat window, the gap and the per-minute budget, and cuts any current utterance. Muted or blank = Drop.
+     * [remember] false keeps [lastText] (so "repeat" does not repeat "Louder").
+     */
+    fun speakNow(text: String, nowMs: Long, remember: Boolean = true): Action {
+        expireStuck(nowMs)
+        if (!enabled) return Action.Drop("muted")
+        if (text.isBlank()) return Action.Drop("empty")
+        val id = -(++manualSeq)   // negative ids never collide with the core's instruction ids
+        return speak(id, text, MANUAL_PRIORITY, nowMs, flush = speakingId != null, countBudget = false, remember = remember)
+    }
+
+    /** "Repeat that": the last spoken text again, bypassing the repeat window. Nothing said yet = Drop("nothing"). */
+    fun repeatLast(nowMs: Long): Action {
+        val t = lastText ?: return Action.Drop("nothing")
+        return speakNow(t, nowMs)
+    }
+
+    private fun speak(
+        id: Int, text: String, priority: Int, nowMs: Long, flush: Boolean,
+        countBudget: Boolean = true, remember: Boolean = true,
+    ): Action.Speak {
         seenIds += id
         lastSaid[text] = nowMs
-        startTimes.addLast(nowMs)
+        if (countBudget) startTimes.addLast(nowMs)
+        if (remember) lastText = text
         speakingId = "ck-$id"; speakingPriority = priority; lastStartMs = nowMs
         if (flush && pending != null) { pending = null; onStale?.invoke() }
         return Action.Speak("ck-$id", text, priority, flush)
@@ -101,6 +129,8 @@ class SpeechScheduler(private val cfg: Config = Config()) {
         if (nowMs - p.atMs > cfg.pendingTtlMs) { onStale?.invoke(); return null }
         return speak(p.id, p.text, p.priority, nowMs, flush = false)
     }
+
+    companion object { const val MANUAL_PRIORITY = 2 }
 
     fun reset() { seenIds.clear(); lastSaid.clear(); startTimes.clear(); speakingId = null; speakingPriority = 0; pending = null }
 }

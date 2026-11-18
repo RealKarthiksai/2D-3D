@@ -22,8 +22,11 @@ class IngestStats {
     val arDupFrames = AtomicLong()       // duplicate timestamps that REACHED the adapter/core (must stay 0 after dedupe)
     val glSkippedDup = AtomicLong()      // draws whose Frame.timestamp repeated and were kept away from the core
     val ringBusy = AtomicLong()          // candidates dropped because every ring slot was pinned by the JPEG encoder
+    val detectorDropped = AtomicLong()   // detector jobs evicted from the 2-deep drop-oldest queue (DetectorWorker)
+    val detectorRuns = AtomicLong()      // detector frames processed
     @Volatile var candidateStride = 3    // current FrameRateControl stride (every Nth AR frame becomes a candidate)
     @Volatile var lastReason = "NONE"
+    @Volatile var policyLevel = 0        // last governor policy level from the core (read-only for consumers; written by SessionManager)
     @Volatile var lastError = ""
     private val acquireFail = ConcurrentHashMap<String, AtomicLong>()
     private val status = ConcurrentHashMap<Int, AtomicLong>()

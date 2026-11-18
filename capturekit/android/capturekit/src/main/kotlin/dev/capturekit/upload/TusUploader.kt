@@ -21,7 +21,12 @@ class TusUploader(
     private val tusUrl: String,
     private val verifierUrl: String?,
     private val chunkSize: Int = 256 * 1024,
+    /** (bytes sent so far, total bytes) over the whole bundle; called on the worker thread after every chunk. */
+    private val onProgress: ((Long, Long) -> Unit)? = null,
 ) {
+    private var doneBefore = 0L
+    private var total = 0L
+
     private val prefs = context.applicationContext.getSharedPreferences("capturekit_tus", Context.MODE_PRIVATE)
     private val store = TusPreferencesURLStore(prefs)
     private val client = TusClient().apply {
@@ -45,7 +50,7 @@ class TusUploader(
             override fun makeAttempt() {
                 val uploader = client.resumeOrCreateUpload(up)
                 uploader.chunkSize = chunkSize
-                do { /* upload chunk by chunk; offset is server-confirmed */ } while (uploader.uploadChunk() > -1)
+                do { onProgress?.invoke((doneBefore + uploader.offset).coerceAtMost(total), total) } while (uploader.uploadChunk() > -1)
                 uploader.finish()
             }
         }.apply { setDelays(intArrayOf(500, 1000, 2000, 4000, 8000)) }.makeAttempts()
@@ -60,7 +65,10 @@ class TusUploader(
     /** Runs the whole upload. IOExceptions (offline, server restart) surface as Retry. */
     fun uploadBundle(bundle: File, waitMs: Long = 30_000): Outcome = try {
         val id = UploadPlan.bundleId(File(bundle, UploadPlan.MANIFEST).readText()) ?: return Outcome.Failed("manifest has no bundle_id")
-        UploadPlan.order(bundle).forEach { uploadFile(bundle, it, id, fresh = false) }
+        val files = UploadPlan.order(bundle)
+        total = files.sumOf { File(bundle, it).length() }; doneBefore = 0L
+        files.forEach { uploadFile(bundle, it, id, fresh = false); doneBefore += File(bundle, it).length() }
+        onProgress?.invoke(total, total)
         if (verifierUrl == null) Outcome.Complete else waitForVerdict(bundle, id, waitMs)
     } catch (e: java.io.IOException) {
         Outcome.Retry(e.message ?: e.javaClass.simpleName)

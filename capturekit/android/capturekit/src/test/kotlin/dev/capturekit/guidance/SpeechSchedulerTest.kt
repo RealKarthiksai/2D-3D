@@ -14,6 +14,16 @@ class SpeechSchedulerTest {
         assertEquals("Turn slowly left.", a.text); assertEquals("ck-1", a.utteranceId); assertTrue(!a.flush)
     }
 
+    @Test fun defaultSpeaksAtMostSixNonUrgentPerMinute() {
+        val x = s(SpeechScheduler.Config(minGapMs = 0, repeatWindowMs = 0))
+        var spoken = 0
+        for (i in 1..8) {
+            val t = i * 5_000L
+            if (x.onInstruction(i, "Line $i.", 2, t) is SpeechScheduler.Action.Speak) { spoken++; x.onDone("ck-$i", t + 100) }
+        }
+        assertEquals(6, spoken)
+    }
+
     @Test fun mutedDropsEverything() {
         val x = s(); x.enabled = false
         assertEquals(SpeechScheduler.Action.Drop("muted"), x.onInstruction(1, "Slow down.", 3, 0))
@@ -109,5 +119,49 @@ class SpeechSchedulerTest {
 
     @Test fun blankTextIsDropped() {
         assertEquals(SpeechScheduler.Action.Drop("empty"), s().onInstruction(1, "  ", 2, 0))
+    }
+
+    @Test fun repeatLastWithNothingSaidDrops() {
+        assertEquals(SpeechScheduler.Action.Drop("nothing"), s().repeatLast(0))
+    }
+
+    @Test fun repeatLastBypassesRepeatWindowGapAndBudget() {
+        val x = s(SpeechScheduler.Config(maxPerMinute = 1, minGapMs = 60_000))
+        x.onInstruction(1, "Turn slowly left.", 2, 0); x.onDone("ck-1", 500)
+        // Same text 1 s later: the guidance path suppresses it, the user's "repeat" does not.
+        assertEquals(SpeechScheduler.Action.Drop("repeat"), x.onInstruction(2, "Turn slowly left.", 2, 1_000))
+        val a = sp(x.repeatLast(1_000))
+        assertEquals("Turn slowly left.", a.text)
+        assertTrue(a.utteranceId != "ck-1")
+        assertTrue(!a.flush)
+    }
+
+    @Test fun repeatLastCutsCurrentSpeechAndSurvivesReset() {
+        val x = s()
+        x.onInstruction(1, "Step back.", 2, 0); x.onStart("ck-1", 100)
+        x.reset()   // pause: stopNow() resets the scheduler
+        assertEquals("Step back.", sp(x.repeatLast(2_000)).text)
+        val b = sp(x.repeatLast(2_500))   // still speaking the first repeat: flush it
+        assertTrue(b.flush)
+        assertEquals("Step back.", b.text)
+    }
+
+    @Test fun repeatLastWhenMutedDrops() {
+        val x = s(); x.onInstruction(1, "Step back.", 2, 0); x.onDone("ck-1", 300)
+        x.enabled = false
+        assertEquals(SpeechScheduler.Action.Drop("muted"), x.repeatLast(1_000))
+    }
+
+    @Test fun speakNowFeedbackIsNotRemembered() {
+        val x = s(); x.onInstruction(1, "Step back.", 2, 0); x.onDone("ck-1", 300)
+        sp(x.speakNow("Louder", 1_000, remember = false))
+        assertEquals("Step back.", x.lastText)
+        assertEquals("Step back.", sp(x.repeatLast(1_100)).text)
+    }
+
+    @Test fun speakNowDoesNotConsumeTheBudget() {
+        val x = s(SpeechScheduler.Config(maxPerMinute = 1, minGapMs = 0))
+        sp(x.speakNow("Missing: Wall 2, 40 percent.", 0)); x.onDone("ck--1", 100)
+        assertTrue(x.onInstruction(5, "Turn left.", 2, 200) is SpeechScheduler.Action.Speak)
     }
 }

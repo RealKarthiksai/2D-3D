@@ -33,6 +33,8 @@ object CaptureKitNative {
     external fun ingestPoints(handle: Long, tNs: Long, xyz: FloatArray, nPoints: Int): Int
     /** d = center[3], normal[3], axis_u[3], extent_u, extent_v */
     external fun ingestPlane(handle: Long, tNs: Long, id: String, kind: String, d: DoubleArray): Int
+    /** [boxes] = flat [cls, score, x0, y0, x1, y1] per box (cls as float), [nBoxes] boxes; 0 = ran, saw nothing. */
+    external fun ingestDetections(handle: Long, tNs: Long, frameId: Int, boxes: FloatArray, nBoxes: Int): Int
     external fun ingestPlatform(handle: Long, tNs: Long, thermal: Int, lowPower: Boolean, batteryPct: Double, charging: Boolean, frameTimeMs: Double): Int
     external fun keyframeWritten(handle: Long, frameId: Int, ok: Boolean): Int
     /** Whole JSON lines, '\n' separated; empty when nothing is pending. */

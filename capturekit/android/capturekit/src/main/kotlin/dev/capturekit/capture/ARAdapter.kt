@@ -29,7 +29,13 @@ class ARAdapter(
     private var lastFrameNs = Long.MIN_VALUE
     private var lastArSession: com.google.ar.core.Session? = null   // planeIds belong to one Session instance
 
+    private val tsGuard = FrameTimestampGuard()
+
     fun onFrame(frame: Frame) {
+        if (!tsGuard.accept(frame.timestamp)) {
+            if (tsGuard.firstSkip()) Log.w("CK/Ingest", "skipping frames with timestamp 0 (ARCore has no real frame yet)")
+            return
+        }
         val t = frame.timestamp + clockOffsetNs
         val cam = frame.camera
         val (state, reason) = mapTracking(cam.trackingState, cam.trackingFailureReason)

@@ -100,6 +100,61 @@ not json
     }
 
     @Test
+    fun overlayV3SpansShellCeilingSeen() {
+        val e = EventParser.parseLine(
+            """{"ceiling_found":false,"ceiling_seen":true,"completeness":0.5,"floor_found":true,"has_target":false,"mode":"sweep","seen":0.5,"shell":"0,0;4,0;4,3;0,3","shell_closed":true,"spans":"1,0,0,2,0,o;1,2,0,3,0,b;1,3,0,4,0,m;-1,4,0,4,3,o","surfaces":"0,0,4,0,60,1;4,0,4,3,80,2","t_ns":1,"target_x":0,"target_z":0,"tracking":1,"type":"overlay","user_x":1,"user_yaw_deg":0,"user_z":1,"wall_found":true,"walls":4,"why_id":"w","why_text":"x"}""",
+        ) as CoreEvent.Overlay
+        assertTrue(e.layoutV3); assertTrue(e.shellClosed); assertTrue(e.ceilingSeen); assertEquals(4, e.walls)
+        assertEquals(listOf(PlanPt(0.0, 0.0), PlanPt(4.0, 0.0), PlanPt(4.0, 3.0), PlanPt(0.0, 3.0)), e.shell)
+        assertEquals(4, e.spans.size)
+        assertEquals(SpanSeg(1, 2.0, 0.0, 3.0, 0.0, 'b'), e.spans[1])
+        assertEquals(-1, e.spans[3].id)
+        assertEquals(listOf('o', 'b', 'm', 'o'), e.spans.map { it.state })
+    }
+
+    @Test
+    fun overlayWithoutV3KeysKeepsDefaults() {
+        val e = EventParser.parseLine(
+            """{"ceiling_found":false,"completeness":0,"floor_found":false,"has_target":false,"mode":"sweep","seen":0,"surfaces":"","t_ns":0,"target_x":0,"target_z":0,"tracking":1,"type":"overlay","user_x":0,"user_yaw_deg":0,"user_z":0,"wall_found":false,"walls":0,"why_id":"w","why_text":"x"}""",
+        ) as CoreEvent.Overlay
+        assertTrue(!e.layoutV3 && !e.shellClosed && !e.ceilingSeen)
+        assertTrue(e.spans.isEmpty() && e.shell.isEmpty() && e.objects.isEmpty() && e.openings.isEmpty() && e.gaps.isEmpty())
+    }
+
+    @Test
+    fun overlayObjectsOpeningsGaps() {
+        val e = EventParser.parseLine(
+            """{"ceiling_found":false,"completeness":0,"floor_found":false,"gap_why_id":"gap.occluded","gap_why_text":"behind the sofa","gaps":"occluded,1.5,2.0,0.8;missing_wall,0,4,0.5","has_target":false,"mode":"sweep","objects":"1,sofa,1.2,0.4,1.8,0.9,15,0.8;2,chair,3,1,0.5,0.5,0,0.9","openings":"door,W1,0,0,0.9,0,0,2;window,,4,1,4,2,0.9,1.9","seen":0,"surfaces":"","t_ns":0,"target_x":0,"target_z":0,"tracking":1,"type":"overlay","user_x":0,"user_yaw_deg":0,"user_z":0,"wall_found":false,"walls":0,"why_id":"w","why_text":"x"}""",
+        ) as CoreEvent.Overlay
+        assertEquals(ObjectBox(1, "sofa", 1.2, 0.4, 1.8, 0.9, 15, 0.8), e.objects[0]); assertEquals(2, e.objects.size)
+        assertEquals(Opening("door", "W1", 0.0, 0.0, 0.9, 0.0, 0.0, 2.0), e.openings[0]); assertEquals("", e.openings[1].wall)
+        assertEquals(GapMark("occluded", 1.5, 2.0, 0.8), e.gaps[0]); assertEquals("behind the sofa", e.gapWhyText)
+    }
+
+    @Test
+    fun reviewHandOverEncodersRoundTrip() {
+        val shell = listOf(PlanPt(0.0, 0.0), PlanPt(4.5, 0.0), PlanPt(4.5, -3.25))
+        assertEquals(shell, EventParser.parseShell(EventParser.encodeShell(shell)))
+        val spans = listOf(SpanSeg(2, 0.0, 0.0, 1.5, 0.0, 'b'), SpanSeg(-1, 1.5, 0.0, 4.5, 0.0, 'm'))
+        assertEquals(spans, EventParser.parseSpans(EventParser.encodeSpans(spans)))
+        val objs = listOf(ObjectBox(3, "sofa", 1.0, 2.0, 1.8, 0.9, 30, 0.8))
+        assertEquals(objs, EventParser.parseObjects(EventParser.encodeObjects(objs)))
+        val ops = listOf(Opening("door", "W1", 0.0, 0.0, 0.9, 0.0, 0.0, 2.0), Opening("window", "", 4.0, 1.0, 4.0, 2.0, 0.9, 1.9))
+        assertEquals(ops, EventParser.parseOpenings(EventParser.encodeOpenings(ops)))
+        assertEquals(emptyList<PlanPt>(), EventParser.parseShell(EventParser.encodeShell(emptyList())))
+    }
+
+    @Test
+    fun malformedV3RowsAreSkipped() {
+        assertTrue(EventParser.parseSpans("").isEmpty())
+        assertEquals(1, EventParser.parseSpans("1,0,0,1,0,o;1,0,0,1,0,x;a,0,0,1,0,o;1,0,0,1,o;").size)
+        assertEquals(1, EventParser.parseShell("1,2;x,3;4").size)
+        assertEquals(1, EventParser.parseObjects("1,sofa,0,0,1,1,0,1;1,sofa,0,0,1,1,0;1,sofa,q,0,1,1,0,1").size)
+        assertEquals(0, EventParser.parseOpenings("door,W1,0,0,1,0,0").size)
+        assertEquals(0, EventParser.parseGaps("occluded,1,two,0.5").size)
+    }
+
+    @Test
     fun configJsonEscapes() {
         assertEquals("""{"a":1,"b":"x\"y","c":true}""", SessionManager.toJson(linkedMapOf("a" to 1, "b" to "x\"y", "c" to true)))
     }

@@ -8,6 +8,7 @@ tusJava = "0.5.1"
 room = "2.8.5"
 work = "2.12.0"
 sentry = "8.64.0"
+litert = "2.3.2"
 junit = "4.13.2"
 
 [libraries]
@@ -20,6 +21,7 @@ room-ktx = { module = "androidx.room:room-ktx", version.ref = "room" }
 room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
 work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
 sentry-android = { module = "io.sentry:sentry-android", version.ref = "sentry" }
+litert = { module = "com.google.ai.edge.litert:litert", version.ref = "litert" }
 junit = { module = "junit:junit", version.ref = "junit" }
 
 [plugins]

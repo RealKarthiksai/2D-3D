@@ -37,6 +37,15 @@ class VoiceStatsTest {
         assertTrue(s.withinBudget(SpeechScheduler.Config(maxPerMinute = 10)))
     }
 
+    @Test fun defaultBudgetIsSixPerMinute() {
+        assertEquals(6, SpeechScheduler.Config().maxPerMinute)
+        val st = VoiceStats(); st.begin(0)
+        repeat(6) { st.onAction(SpeechScheduler.Action.Speak("ck-$it", "x$it", 2, false), it * 1_000L) }
+        assertTrue(st.snapshot(60_000).withinBudget(SpeechScheduler.Config()))
+        st.onAction(SpeechScheduler.Action.Speak("ck-7", "x7", 2, false), 7_000L)
+        assertFalse(st.snapshot(60_000).withinBudget(SpeechScheduler.Config()))
+    }
+
     @Test fun budgetCountsOnlyNonUrgentPrompts() {
         val st = VoiceStats(); st.begin(0)
         repeat(7) { st.onAction(SpeechScheduler.Action.Speak("ck-$it", "n$it", 2, false), it * 1_000L) }
@@ -129,7 +138,7 @@ class VoiceStatsTest {
 
     @Test fun budgetRoundTripsThroughStore() {
         val st = MapStore()
-        val cfg = SpeechScheduler.Config(minGapMs = 1_500, maxPerMinute = 6, repeatWindowMs = 20_000, pendingTtlMs = 3_000, urgentPriority = 3, speakTimeoutMs = 8_000)
+        val cfg = SpeechScheduler.Config(minGapMs = 1_500, maxPerMinute = 7, repeatWindowMs = 20_000, pendingTtlMs = 3_000, urgentPriority = 3, speakTimeoutMs = 8_000)
         SpeechBudgetPrefs.save(st, cfg)
         assertEquals(cfg, SpeechBudgetPrefs.load(st))
     }
