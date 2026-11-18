@@ -129,9 +129,52 @@ class DetectionDecoderTest {
         assertEquals(LabelMap.DINING_TABLE, LabelMap.coreClass(66))
         assertEquals(LabelMap.TV, LabelMap.coreClass(71))
         assertEquals(LabelMap.LAPTOP, LabelMap.coreClass(72))
-        for (c in intArrayOf(0, 16, 74, 65, 89, -1, 500)) assertEquals(LabelMap.UNKNOWN, LabelMap.coreClass(c))
+        // ADR 0030: further COCO indoor classes (0-based index = COCO id - 1).
+        assertEquals(LabelMap.BENCH, LabelMap.coreClass(14))
+        assertEquals(LabelMap.TOILET, LabelMap.coreClass(69))
+        assertEquals(LabelMap.OVEN, LabelMap.coreClass(78))
+        assertEquals(LabelMap.SINK, LabelMap.coreClass(80))
+        assertEquals(LabelMap.REFRIGERATOR, LabelMap.coreClass(81))
+        // person, cat, remote, the never-predicted "???" slots (mirror 65, window 67, desk 68, door 70), microwave, toothbrush, junk
+        for (c in intArrayOf(0, 16, 74, 65, 67, 68, 70, 77, 89, -1, 500)) assertEquals(LabelMap.UNKNOWN, LabelMap.coreClass(c))
         assertEquals("dining_table", LabelMap.coreName(LabelMap.DINING_TABLE))
         assertEquals("unknown", LabelMap.coreName(99))
+    }
+
+    /** Pinned against understanding.hpp kObjectClassNames (core test ObjectClassIdsAreFrozen pins the same table). */
+    @Test fun coreNamesMatchTheCoreClassIds() {
+        val expected = listOf(
+            "unknown", "chair", "couch", "bed", "dining_table", "tv", "potted_plant", "laptop",
+            "bench", "toilet", "sink", "refrigerator", "oven", "desk", "shelf", "cabinet", "lamp",
+        )
+        assertEquals(expected, LabelMap.coreNames)
+        assertEquals("lamp", LabelMap.coreName(LabelMap.LAMP))
+        assertEquals("refrigerator", LabelMap.coreName(LabelMap.REFRIGERATOR))
+        // Every mapped COCO index lands on a real (non-unknown) core class.
+        for (i in 0..90) { val c = LabelMap.coreClass(i); if (c != LabelMap.UNKNOWN) assertTrue(c in 1 until LabelMap.coreNames.size) }
+    }
+
+    @Test fun displayNamesMatchTheSpokenWords() {
+        assertEquals("sofa", LabelMap.displayName("couch"))
+        assertEquals("sofas", LabelMap.displayName("couch", plural = true))
+        assertEquals("TV", LabelMap.displayName("tv"))
+        assertEquals("table", LabelMap.displayName("dining_table"))
+        assertEquals("fridge", LabelMap.displayName(LabelMap.REFRIGERATOR))
+        assertEquals("shelves", LabelMap.displayName("shelf", plural = true))
+        assertEquals("benches", LabelMap.displayName("bench", plural = true))
+        assertEquals("door", LabelMap.displayName("door"))
+        // Every core class has its own word (never the raw core name with an underscore).
+        for (n in LabelMap.coreNames.drop(1)) assertFalse(n, LabelMap.displayName(n).contains('_'))
+        // A class this build does not know (newer core) is shown, not dropped.
+        assertEquals("coffee machine", LabelMap.displayName("coffee_machine"))
+        assertEquals("coffee machines", LabelMap.displayName("coffee_machine", plural = true))
+    }
+
+    @Test fun boxLabelRoundsAndClampsTheScore() {
+        assertEquals("chair 82%", LabelMap.boxLabel(LabelMap.CHAIR, 0.816f))
+        assertEquals("sofa 100%", LabelMap.boxLabel(LabelMap.COUCH, 1.7f))
+        assertEquals("TV 0%", LabelMap.boxLabel(LabelMap.TV, Float.NaN))
+        assertEquals("unknown 40%", LabelMap.boxLabel(99, 0.4f))
     }
 
     @Test fun rolesFromLite0OutputShapes() {
