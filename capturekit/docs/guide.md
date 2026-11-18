@@ -14,7 +14,7 @@ Core: `core/include/capturekit/guide/` (deterministic, no clock, no I/O). Stages
 | Instructions | instruction.hpp | fixed vocabulary, egocentric text (positive yaw = left), cooldowns, 2 s minimum gap, priority interrupts (tracking loss, blur), lifecycle (issued -> completed / expired / superseded) |
 | Log | guide_log.hpp | `guidance_log.json`: instructions, time-to-compliance, coverage delta, coverage series |
 
-Vocabulary: SLOW_DOWN, HOLD_STILL, RELOCALIZE, MOVE_TO, ROTATE_TOWARD, TILT_UP, TILT_DOWN, STEP_BACK, SWEEP, MORE_LIGHT, AIM_TEXTURED, FINISH, plus two
+Vocabulary: SLOW_DOWN, HOLD_STILL, RELOCALIZE, MOVE_TO, ROTATE_TOWARD, TILT_UP, TILT_DOWN, STEP_BACK, SWEEP, MORE_LIGHT, AIM_TEXTURED, RECALIBRATE, FINISH, plus two
 priority-1 info prompts PROGRESS and KEEP_TURNING (templates in `instruction.cpp`, message ids are the translation keys; every short
 spoken variant is <= 8 words, tested). Each id has 2-3 phrasings; phrasing = (instruction id - 1) mod count, so it is deterministic and
 the first instruction always uses phrasing 0. `{m_unit}` is plural-aware ("1 meter", "0.5 meters", "2 meters"). PROGRESS speaks once each
@@ -22,6 +22,8 @@ at 25 / 50 / 75 % completeness (a jump speaks only the highest; suppressed while
 during a SWEEP; both are spaced >= 6 s apart (`kInfoGapS`, not a GuideParams field so existing config hashes are unchanged). The guide log counts them as `info_prompts`, separate from `instructions`, `by_state` and `median_time_to_compliance_s`.
 
 Gap steering (`understanding >= 2`): while the target is a gap view, MOVE_TO / ROTATE_TOWARD use message ids `gap.move` ("Walk ahead to see the door wall.") and `gap.turn` ("Turn left to see the door wall.") with the gap's landmark phrase (`{why}`, from LandmarkLabeler, neutral wording because a relative phrase would be stale); a rendering over 8 words falls back to `move.to` / `rotate.to`. Instruction types, cooldowns and lifecycle are unchanged.
+
+Tracking recovery (issue #1, ADR 0031, `recovery.hpp`): tracking not NORMAL for >= 2 s (ARCore PAUSED incl. INSUFFICIENT_FEATURES, or NOT_AVAILABLE) starts recovery: RECALIBRATE ("Turn your phone slowly in a small circle.", priority 3, `overlay_hint` "recalibrate") is the only prompt (RELOCALIZE after a long NOT_AVAILABLE loss), active guidance is superseded, planning is frozen and keyframes do not count as coverage; the session marks frames `RECALIBRATING` (hard reject: no keyframe saved). It ends after >= 1 s of NORMAL tracking with a steady gyro (or 4 s of NORMAL tracking): the engine re-anchors (motion estimates reset, immediate replan) and RECALIBRATE completes. Shell events `tracking_lost` / `tracking_reset`; `/events` TRACKING_LOST / TRACKING_RESET (`drift_m`, `drift_deg`, `lost_s`); overlay `recalibrating:true` + `why.recalibrating`; report `recovery` {losses, resets, max_drift_m, active} only after a loss.
 
 Tracking reason (pose `tracking_reason`, only while tracking is LIMITED): EXCESSIVE_MOTION -> SLOW_DOWN (the reason path ignores the turning-on-request gate; only the blur path keeps it), INSUFFICIENT_LIGHT -> MORE_LIGHT, INSUFFICIENT_FEATURES -> AIM_TEXTURED ("Aim at a textured wall", priority 3, completes when the reason clears); other reasons add nothing.
 

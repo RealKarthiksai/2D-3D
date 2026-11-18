@@ -29,6 +29,8 @@ The Scan Bundle is the contract between capture and everything downstream. `ckit
 | `/guide/shell` | `capturekit.v1.RoomShell` | optional, since 1.3.0, derived | on change, <= 1 Hz |
 | `/guide/gaps` | `capturekit.v1.RoomGaps` | optional, since 1.3.0, derived | on change, <= 1 Hz |
 
+`/events` tracking recovery records (ADR 0031, source `guide`, no schema change): `TRACKING_LOST` (attrs `tracking_state`, `reason`, `degraded_s`) when tracking has not been NORMAL for 2 s and keyframe capture pauses, and `TRACKING_RESET` (attrs `lost_s`, `drift_m`, `drift_deg`: the pose jump across the loss) when tracking is back and the session is re-anchored. `/frame_index` records between them carry the reason `RECALIBRATING` and are never keyframes.
+
 The MCAP `log_time` and `publish_time` of each message equal its `t_ns`. Within a channel, `t_ns` is strictly increasing.
 
 ## Versioning (semver on `manifest.schema_version`)

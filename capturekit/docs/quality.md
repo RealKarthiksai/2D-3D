@@ -18,6 +18,7 @@ clip_high (>=250), FAST-9 corners and 4x4-grid spread, tracking state.
 | BLUR / SOFT_FOCUS | textured and norm < 0.35 | norm < 0.6 |
 | OVER/UNDEREXPOSED | clipped >= 40 % | >= 10 % |
 | LOW_TEXTURE, POOR_SPREAD | never | x0.5 / x(0.5+spread) |
+| RECALIBRATING | session only: tracking recovery active (ADR 0031), keyframe capture paused | — |
 
 ## Keyframe selector
 quality gate -> min gap (200 ms after last keyframe) -> novelty (translation / scene depth >= 0.1,

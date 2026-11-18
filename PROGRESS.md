@@ -1,6 +1,5 @@
 # PROGRESS
 Program = 2 parts (docs/program-spec/README.md). This whole repo = Part 1 only (Part 2 = repo roomscan-recon). Phases 0–12. Branch `main`.
-
 ## Done (software, verified on synthetic data; device acceptance blocked, see docs/STATUS.md §3)
 - 0–8 committed (cd456bf, 2e55389, d0c03ec, 8b00160, ae5ede6, 09cfcba, fe73262, 606e618); 9 partial (0a4a67d, 36a676b, e07dc94); Android 10/11 (ac76a25, 21ce79a, 17c4223, 2cc9eab, c3e6d51, 222fd20); tools/ADRs/CI (9f4ad14, b3d39f0).
 - UNCOMMITTED on top of b3d39f0 (unattended queue, all reviewed with fix rounds): U1-T WSL env + frozen-1.0.0 fixture, U1-C guide wording, U1-A StateAnswers, U1-D docs;
@@ -13,6 +12,7 @@ Program = 2 parts (docs/program-spec/README.md). This whole repo = Part 1 only (
 - T1 layout (ADR 0026) + lane B sim realism T4.1-2 (ADR 0029) + U11-CT schema 1.3.0 (ADR 0028): reviewed, fix round 1 running. Combined clean run before fixes: ctest 208/208, pytest 141/8 skipped, ruff clean, frozen OK, replay_golden 9 expected diffs x3 (new layout/timeline keys + gp2 hash; baselines regen in lane D). Logs capturekit/build/combined-*.log
 - Device: docs/DEVICE_TEST_LOG.md. First real walk FAILED guidance (completeness stuck 3–7 %, 8 walls for 4, 16 prompts/min, no ceiling prompt, arrow suspect); data itself PASS. Evidence bundle capturekit/build/device/bundles/scan_20261117_215819.
 - Issue #2 objects (UNCOMMITTED, 2026-11-18, ADR 0030): core classes 8-16 (append-only ids) + priors/phrases; detector on by default and understanding 1 when the model is packaged; mini-map labels, camera-feed boxes (Boxes chip), review "Found" counts. Core ctest + new tests green (WSL); Android NOT compiled (no SDK/JDK on this PC).
+- Issue #1 tracking recalibration (UNCOMMITTED, 2026-11-18, ADR 0031): core TrackingRecovery (not NORMAL >= 2 s after first tracking -> RECALIBRATE only, keyframes RECALIBRATING hard rejects, frozen planning; exit NORMAL 1 s + steady gyro or 4 s; re-anchor), /events TRACKING_LOST / TRACKING_RESET (drift_m, drift_deg, lost_s), shell events tracking_lost / tracking_reset; Android Recalibration reducer, RecalibrateOverlay card, CaptureActivity wiring. Core ctest 225/225 (WSL) + recovery tests after review fix; pure Kotlin (EventParser, StatusPill, Recalibration + tests, 27) compiled and run with Gradle's bundled kotlinc + JUnit stub; sample-app NOT compiled (no SDK); device check (CPH2381 cover/uncover) not done.
 - NOT done: real-walk guidance fix (top priority), U11-CT (1.3.0), U11-A, real U12-D. iOS blocked (no Mac).
 
 ## Decisions
