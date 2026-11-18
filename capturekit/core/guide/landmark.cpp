@@ -24,6 +24,15 @@ const char* LandmarkLabeler::class_phrase(ObjectClass c) {
     case ObjectClass::Tv: return "TV";
     case ObjectClass::PottedPlant: return "plant";
     case ObjectClass::Laptop: return "laptop";
+    case ObjectClass::Bench: return "bench";
+    case ObjectClass::Toilet: return "toilet";
+    case ObjectClass::Sink: return "sink";
+    case ObjectClass::Refrigerator: return "fridge";
+    case ObjectClass::Oven: return "oven";
+    case ObjectClass::Desk: return "desk";
+    case ObjectClass::Shelf: return "shelf";
+    case ObjectClass::Cabinet: return "cabinet";
+    case ObjectClass::Lamp: return "lamp";
     default: return "furniture";
   }
 }

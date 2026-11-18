@@ -13,12 +13,21 @@
 namespace capturekit::guide {
 
 /// Core object class ids (the shell maps detector labels to these once). 0 = unknown.
+/// The ids are recorded in bundles (/ar/detections, /guide/labels): only APPEND before Count_, never renumber (ADR 0030).
+/// 1..7 = the original COCO furniture set; 8..12 = further COCO indoor classes the shipped detector emits;
+/// 13..16 = room classes COCO lacks, reserved for a detector trained on them (no shell maps to them yet).
+/// Doors and windows are not object classes: they are wall openings from geometry (Opening, opening_detector).
 enum class ObjectClass : int32_t {
-  Unknown = 0, Chair, Couch, Bed, DiningTable, Tv, PottedPlant, Laptop, Count_
+  Unknown = 0, Chair, Couch, Bed, DiningTable, Tv, PottedPlant, Laptop,
+  Bench, Toilet, Sink, Refrigerator, Oven,
+  Desk, Shelf, Cabinet, Lamp,
+  Count_
 };
 
 constexpr std::array<const char*, size_t(ObjectClass::Count_)> kObjectClassNames = {
-    "unknown", "chair", "couch", "bed", "dining_table", "tv", "potted_plant", "laptop"};
+    "unknown", "chair", "couch", "bed", "dining_table", "tv", "potted_plant", "laptop",
+    "bench", "toilet", "sink", "refrigerator", "oven",
+    "desk", "shelf", "cabinet", "lamp"};
 
 inline const char* object_class_name(ObjectClass c) {
   size_t i = size_t(c);
