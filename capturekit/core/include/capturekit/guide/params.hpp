@@ -8,7 +8,7 @@
 namespace capturekit::guide {
 
 struct GuideParams {
-  std::string version = "gp1";
+  std::string version = "gp2";  // gp2 (ADR 0026): room layout model at every understanding level
   // Coverage: a cell is sufficient with >= min_views qualifying keyframe views, ray spread >= min_spread_deg.
   double cell_m = 0.10, min_views = 3, min_spread_deg = 15;
   double range_min_m = 0.4, range_max_m = 4.0, max_incidence_deg = 75, min_sharp_norm = 0.5;

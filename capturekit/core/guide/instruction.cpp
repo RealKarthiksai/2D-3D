@@ -7,13 +7,13 @@ namespace capturekit::guide {
 
 const char* type_name(InstrType t) {
   static const char* n[] = {"SLOW_DOWN", "HOLD_STILL", "RELOCALIZE", "MOVE_TO", "ROTATE_TOWARD", "TILT_UP",
-                            "TILT_DOWN", "STEP_BACK", "SWEEP", "MORE_LIGHT", "FINISH"};
+                            "TILT_DOWN", "STEP_BACK", "SWEEP", "MORE_LIGHT", "FINISH", "PROGRESS", "KEEP_TURNING", "AIM_TEXTURED"};
   return n[int(t)];
 }
 int type_priority(InstrType t) {
   switch (t) {
-    case InstrType::SlowDown: case InstrType::HoldStill: case InstrType::Relocalize: return 3;
-    case InstrType::MoreLight: return 1;
+    case InstrType::SlowDown: case InstrType::HoldStill: case InstrType::Relocalize: case InstrType::AimTextured: return 3;
+    case InstrType::MoreLight: case InstrType::Progress: case InstrType::KeepTurning: return 1;
     default: return 2;
   }
 }
@@ -23,24 +23,57 @@ const char* life_name(LifeState s) {
 }
 
 namespace {
-struct Tpl { const char* shortt; const char* longt; };
-// Message catalog (locale "en"). Placeholders {dir} {m} {deg}. IDs are stable keys for translation.
-const std::map<std::string, Tpl>& catalog() {
-  static const std::map<std::string, Tpl> c = {
-      {"slow_down", {"Slow down.", "You are moving too fast. Slow down so the photos stay sharp."}},
-      {"hold_still", {"Hold still.", "Tracking was lost. Hold the phone still and point it at the area you just scanned."}},
-      {"relocalize", {"Go back to where you scanned.", "Tracking is still lost. Walk back to an area you already scanned and move slowly."}},
-      {"move.to", {"Walk {dir}, {m} meters.", "Walk {dir} about {m} meters to reach the next area to scan."}},
-      {"rotate.to", {"Turn {dir} toward the unscanned area.", "Turn {dir}, about {deg} degrees, to face the area that still needs scanning."}},
-      {"tilt.up", {"Tilt up to scan the ceiling.", "Tilt the phone up about {deg} degrees to scan the upper wall and ceiling."}},
-      {"tilt.down", {"Tilt down to scan the floor.", "Tilt the phone down about {deg} degrees to scan the lower wall and floor."}},
-      {"step.back", {"Step back to see the whole wall.", "You are too close. Step back about {m} meters so the wall fits in view."}},
-      {"sweep", {"Turn slowly left to scan the room.", "Stand still and turn slowly all the way around so the phone can see the room."}},
-      {"more_light", {"It is too dark. Turn on a light.", "The image is too dark. Turn on a light or open a curtain."}},
-      {"finish", {"Scan complete. Say done or tap finish.", "The room is covered. Say done or tap Finish to save the scan."}},
+struct Entry { std::vector<const char*> shorts, longs; };
+// Message catalog (locale "en"). Placeholders {dir} {m} {m_unit} {deg}. IDs are stable keys for translation.
+// Each id has 3 short phrasings (every one <= 8 words); the generator picks one deterministically from the
+// instruction id so consecutive repeats do not sound identical. {m_unit} is "meter"/"meters" (see render()).
+const std::map<std::string, Entry>& catalog() {
+  static const std::map<std::string, Entry> c = {
+      {"slow_down", {{"Slow down.", "Easy, move slower.", "A bit slower, please."},
+                     {"You are moving too fast. Slow down so the photos stay sharp."}}},
+      {"hold_still", {{"Hold still.", "Stop and hold steady.", "Keep the phone still."},
+                      {"Tracking was lost. Hold the phone still and point it at the area you just scanned."}}},
+      {"relocalize", {{"Go back to where you scanned.", "Return to an area you scanned.", "Walk back to scanned ground."},
+                      {"Tracking is still lost. Walk back to an area you already scanned and move slowly."}}},
+      {"move.to", {{"Walk {dir}, {m} {m_unit}.", "Go {dir}, about {m} {m_unit}.", "Head {dir}, {m} {m_unit}."},
+                   {"Walk {dir} about {m} {m_unit} to reach the next area to scan."}}},
+      {"rotate.to", {{"Turn {dir} toward the unscanned area.", "Face {dir} to scan more.", "Turn {dir} to the unscanned part."},
+                     {"Turn {dir}, about {deg} degrees, to face the area that still needs scanning."}}},
+      // Gap steering (understanding >= 2): the same move / turn with the landmark of the gap ({why}, <= 8 words itself).
+      // make() falls back to move.to / rotate.to when a rendering exceeds 8 words.
+      {"gap.move", {{"Walk {dir} to see {why}.", "Go {dir}, {m} {m_unit}, to see {why}.", "Head {dir} toward {why}."},
+                    {"Walk {dir} about {m} {m_unit} to see {why}, which is not scanned yet."}}},
+      {"gap.turn", {{"Turn {dir} to see {why}.", "Face {dir} toward {why}.", "Turn {dir}: {why} is unscanned."},
+                    {"Turn {dir}, about {deg} degrees, to see {why}, which is not scanned yet."}}},
+      {"tilt.up", {{"Tilt up to scan the ceiling.", "Aim up at the ceiling.", "Point the phone up."},
+                   {"Tilt the phone up about {deg} degrees to scan the upper wall and ceiling."}}},
+      {"tilt.down", {{"Tilt down to scan the floor.", "Aim down at the floor.", "Point the phone down."},
+                     {"Tilt the phone down about {deg} degrees to scan the lower wall and floor."}}},
+      {"step.back", {{"Step back to see the whole wall.", "Step back a little.", "Back up so the wall fits."},
+                     {"You are too close. Step back about {m} {m_unit} so the wall fits in view."}}},
+      {"sweep", {{"Turn slowly left to scan the room.", "Slowly turn left around the room.", "Turn left, nice and slow."},
+                 {"Stand still and turn slowly all the way around so the phone can see the room."}}},
+      {"more_light", {{"It is too dark. Turn on a light.", "Too dark. Add some light.", "Turn on a light, please."},
+                      {"The image is too dark. Turn on a light or open a curtain."}}},
+      {"finish", {{"Scan complete. Say done or tap finish.", "All covered. Say done or tap finish.", "Room done. Say done or tap finish."},
+                  {"The room is covered. Say done or tap Finish to save the scan."}}},
+      {"progress.25", {{"A quarter of the room is done.", "Quarter done. Keep going.", "Nice, a quarter is scanned."},
+                       {"About a quarter of the room is scanned. Keep going."}}},
+      {"progress.50", {{"Halfway there.", "Half the room is scanned.", "Halfway done. Keep going."},
+                       {"About half of the room is scanned. Keep going."}}},
+      {"progress.75", {{"Almost done.", "Three quarters done. Nearly there.", "Nearly there. Keep scanning."},
+                       {"About three quarters of the room is scanned. Nearly there."}}},
+      {"keep_turning", {{"Keep turning.", "Keep turning slowly.", "Good. Keep turning left."},
+                        {"Keep turning slowly so the phone can see the whole room."}}},
+      {"aim_texture", {{"Aim at a textured wall.", "Point at a wall with detail.", "Aim at something with texture."},
+                       {"The phone cannot see enough detail. Aim at a textured wall or furniture."}}},
   };
   return c;
 }
+// Tracking reason (bundle::TrackingReason codes 2 / 3 / 4) while tracking is LIMITED.
+bool excessive_motion(const Situation& s) { return s.tracking_state == 2 && s.tracking_reason == 2; }
+bool few_features(const Situation& s) { return s.tracking_state == 2 && s.tracking_reason == 3; }
+bool low_light(const Situation& s) { return s.tracking_state == 2 && s.tracking_reason == 4; }
 std::string dir_word(double rel_deg) {
   double a = std::fabs(rel_deg);
   if (a < 20) return "ahead";
@@ -49,6 +82,16 @@ std::string dir_word(double rel_deg) {
   if (a < 45) return "slightly " + side;
   return side;
 }
+int word_count(const std::string& t) {
+  int n = 0;
+  bool in = false;
+  for (char c : t) {
+    const bool sp = c == ' ' || c == '\t';
+    if (!sp && !in) ++n;
+    in = !sp;
+  }
+  return n;
+}
 std::string num(double v) {
   char b[16];
   std::snprintf(b, sizeof b, v == std::floor(v) ? "%.0f" : "%.1f", v);
@@ -56,12 +99,26 @@ std::string num(double v) {
 }
 }  // namespace
 
-std::string InstructionGenerator::render(const std::string& id, const std::map<std::string, std::string>& vars, bool longer) {
+int InstructionGenerator::variant_count(const std::string& id) {
+  auto it = catalog().find(id);
+  return it == catalog().end() ? 0 : int(it->second.shorts.size());
+}
+
+std::string InstructionGenerator::render(const std::string& id, const std::map<std::string, std::string>& vars, bool longer,
+                                         uint32_t variant) {
   auto it = catalog().find(id);
   if (it == catalog().end()) return id;
-  std::string s = longer ? it->second.longt : it->second.shortt;
-  for (auto& [k, v] : vars)
-    for (size_t p; (p = s.find("{" + k + "}")) != std::string::npos;) s.replace(p, k.size() + 2, v);
+  const auto& v = longer ? it->second.longs : it->second.shorts;
+  std::string s = v[variant % v.size()];
+  auto fill = [&](const std::string& k, const std::string& val) {
+    for (size_t p; (p = s.find("{" + k + "}")) != std::string::npos;) s.replace(p, k.size() + 2, val);
+  };
+  for (auto& [k, val] : vars) fill(k, val);
+  // Plural-aware unit: exactly "1" is singular ("1 meter"); 0.5, 1.5, 2 ... are plural.
+  if (!vars.count("m_unit")) {
+    auto m = vars.find("m");
+    fill("m_unit", m != vars.end() && m->second == "1" ? "meter" : "meters");
+  }
   return s;
 }
 
@@ -79,6 +136,8 @@ bool InstructionGenerator::cooled(InstrType t, int64_t now) const {
     case InstrType::Sweep: cd = p_.cd_sweep; break;
     case InstrType::MoreLight: cd = p_.cd_light; break;
     case InstrType::Finish: cd = p_.cd_finish; break;
+    case InstrType::Progress: case InstrType::KeepTurning: cd = 0; break;  // paced by last_info_ns_
+    case InstrType::AimTextured: cd = p_.cd_hold_still; break;
   }
   return double(now - it->second) / 1e9 >= cd;
 }
@@ -125,9 +184,19 @@ Instruction InstructionGenerator::make(InstrType t, const Situation& s, std::vec
     case InstrType::Sweep: i.msg_id = "sweep"; i.haptic = "tap"; i.overlay_hint = "sweep:left"; break;
     case InstrType::MoreLight: i.msg_id = "more_light"; i.haptic = "none"; break;
     case InstrType::Finish: i.msg_id = "finish"; i.haptic = "success"; break;
+    case InstrType::Progress: i.msg_id = "progress." + num(i.param("pct")); i.haptic = "none"; break;
+    case InstrType::KeepTurning: i.msg_id = "keep_turning"; i.haptic = "none"; break;
+    case InstrType::AimTextured: i.msg_id = "aim_texture"; i.haptic = "double"; break;
   }
-  i.speak_text = render(i.msg_id, v, false);
-  i.long_text = render(i.msg_id, v, true);
+  const uint32_t variant = i.id - 1;  // deterministic phrasing: the first instruction always uses phrasing 0
+  if ((t == InstrType::MoveTo || t == InstrType::RotateToward) && s.plan.target.gap && !s.plan.target.why.empty()) {
+    const char* gid = t == InstrType::MoveTo ? "gap.move" : "gap.turn";
+    auto gv = v;
+    gv["why"] = s.plan.target.why;
+    if (word_count(render(gid, gv, false, variant)) <= 8) i.msg_id = gid, v = gv;  // else keep the plain phrase
+  }
+  i.speak_text = render(i.msg_id, v, false, variant);
+  i.long_text = render(i.msg_id, v, true, variant);
   return i;
 }
 
@@ -144,10 +213,12 @@ bool InstructionGenerator::complete(Active& a, const Situation& s) const {
     case InstrType::TiltDown: return u.pitch <= a.pitch0 - deg2rad(a.ins.param("deg")) + deg2rad(10) || u.pitch < -deg2rad(20);
     case InstrType::StepBack: return s.too_close < 0.3 || std::hypot(u.pos.x() - a.pos0.x(), u.pos.z() - a.pos0.z()) >= 0.4;
     case InstrType::Sweep: return std::fabs(a.cum_yaw) >= deg2rad(300);
-    case InstrType::SlowDown: return u.speed < 0.8 && std::fabs(u.yaw_rate) < 1.0 && s.blur_streak == 0;
+    case InstrType::SlowDown: return u.speed < 0.8 && std::fabs(u.yaw_rate) < 1.0 && s.blur_streak == 0 && !excessive_motion(s);
     case InstrType::HoldStill: case InstrType::Relocalize: return s.tracking_state == 1;
-    case InstrType::MoreLight: return !s.underexposed;
+    case InstrType::MoreLight: return !s.underexposed && !low_light(s);
+    case InstrType::AimTextured: return !few_features(s);
     case InstrType::Finish: return false;
+    case InstrType::Progress: case InstrType::KeepTurning: return true;  // one-shot, spoken once
   }
   return false;
 }
@@ -216,7 +287,12 @@ void InstructionGenerator::update(const Situation& s, std::vector<Instruction>& 
   const bool turning_on_request = std::any_of(active_.begin(), active_.end(), [](auto& a) {
     return a.ins.type == InstrType::RotateToward || a.ins.type == InstrType::Sweep || a.ins.type == InstrType::MoveTo;
   }) && std::fabs(s.user.yaw_rate) < 2.0;
-  if (s.blur_streak >= int(p_.blur_frames) && !turning_on_request && cooled(InstrType::SlowDown, s.t_ns) && !has_active(3)) {
+  if (few_features(s) && cooled(InstrType::AimTextured, s.t_ns) && !has_active(3)) {
+    issue(make(InstrType::AimTextured, s, {}));
+    return;
+  }
+  // The reason path (ARCore/ARKit report EXCESSIVE_MOTION) is not excused by a requested turn; the blur path is.
+  if ((excessive_motion(s) || (s.blur_streak >= int(p_.blur_frames) && !turning_on_request)) && cooled(InstrType::SlowDown, s.t_ns) && !has_active(3)) {
     issue(make(InstrType::SlowDown, s, {}));
     return;
   }
@@ -224,9 +300,39 @@ void InstructionGenerator::update(const Situation& s, std::vector<Instruction>& 
   const bool gap_ok = last_guidance_ns_ < 0 || double(s.t_ns - last_guidance_ns_) / 1e9 >= p_.min_gap_s;
 
   // 3. Low-priority info.
-  if (s.underexposed && cooled(InstrType::MoreLight, s.t_ns) && gap_ok && !has_active(1)) {
+  if ((s.underexposed || low_light(s)) && cooled(InstrType::MoreLight, s.t_ns) && gap_ok && !has_active(1)) {
     issue(make(InstrType::MoreLight, s, {}));
     return;
+  }
+
+  // 3b. One-shot progress prompts (25/50/75 % coverage, once each) and sweep progress ("Keep turning").
+  // Priority 1, paced by last_info_ns_; never while the plan says Finish (the finish prompt covers it).
+  const bool info_ok = last_info_ns_ < 0 || double(s.t_ns - last_info_ns_) / 1e9 >= kInfoGapS;
+  // Suppressed only while the plan says Finish; spent thresholds stay spent, pending ones resume afterwards.
+  if (s.plan.mode != Mode::Finish && progress_next_ < 3 && gap_ok && info_ok && !has_active(1)) {
+    static const double kThr[3] = {0.25, 0.5, 0.75};
+    int reached = -1;
+    for (int k = progress_next_; k < 3; ++k)
+      if (s.completeness >= kThr[k]) reached = k;
+    if (reached >= 0) {
+      progress_next_ = reached + 1;  // a jump over a threshold speaks only the highest one
+      last_info_ns_ = s.t_ns;
+      issue(make(InstrType::Progress, s, {{"pct", kThr[reached] * 100}}));
+      return;
+    }
+  }
+  if (gap_ok && info_ok && !has_active(1)) {
+    for (auto& a : active_) {
+      if (a.ins.type != InstrType::Sweep) continue;
+      int due = std::min(2, int(std::fabs(a.cum_yaw) / deg2rad(100)));  // prompts at 100 and 200 degrees turned
+      if (due > a.turn_prompts) {
+        a.turn_prompts = due;
+        last_info_ns_ = s.t_ns;
+        issue(make(InstrType::KeepTurning, s, {}));
+        return;
+      }
+      break;
+    }
   }
 
   // 4. Guidance from the plan.

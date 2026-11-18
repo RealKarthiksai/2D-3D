@@ -16,7 +16,10 @@
 namespace capturekit::guide {
 
 enum class InstrType : int {
-  SlowDown = 0, HoldStill, Relocalize, MoveTo, RotateToward, TiltUp, TiltDown, StepBack, Sweep, MoreLight, Finish
+  SlowDown = 0, HoldStill, Relocalize, MoveTo, RotateToward, TiltUp, TiltDown, StepBack, Sweep, MoreLight, Finish,
+  Progress,     // one-shot "N % done" prompt (priority 1)
+  KeepTurning,  // sweep progress prompt (priority 1)
+  AimTextured   // tracking limited by INSUFFICIENT_FEATURES: aim at a textured wall (priority 3)
 };
 const char* type_name(InstrType t);
 int type_priority(InstrType t);  // 3 safety/tracking, 2 guidance, 1 info
@@ -43,6 +46,7 @@ struct Situation {
   int64_t t_ns = 0;
   UserState user;
   int tracking_state = 1;     // 1 normal, 2 limited, 3 not available
+  int tracking_reason = 0;    // bundle::TrackingReason code; only meaningful while tracking_state == 2
   int64_t lost_since_ns = 0;  // valid when tracking_state == 3
   int blur_streak = 0;        // consecutive frames rejected for motion blur
   bool underexposed = false;
@@ -63,8 +67,11 @@ class InstructionGenerator {
   explicit InstructionGenerator(const GuideParams& p) : p_(p) {}
   /// New instructions are appended to `out`; lifecycle changes (complete/expire/supersede) to `events`.
   void update(const Situation& s, std::vector<Instruction>& out, std::vector<LifeEvent>& events);
-  /// Catalog lookup (locale "en"): short spoken variant and long text for a message id.
-  static std::string render(const std::string& msg_id, const std::map<std::string, std::string>& vars, bool longer);
+  /// Catalog lookup (locale "en"): short spoken variant and long text for a message id. `variant` picks one of
+  /// variant_count(msg_id) phrasings (modulo). {m_unit} is derived from vars["m"] ("1" -> "meter", else "meters").
+  static std::string render(const std::string& msg_id, const std::map<std::string, std::string>& vars, bool longer,
+                            uint32_t variant = 0);
+  static int variant_count(const std::string& msg_id);
 
  private:
   struct Active {
@@ -72,6 +79,7 @@ class InstructionGenerator {
     double yaw0 = 0, pitch0 = 0, cum_yaw = 0, last_yaw = 0;
     Vec3 pos0;
     int64_t calm_since = -1;
+    int turn_prompts = 0;  // "Keep turning" prompts already given for this Sweep
   };
   bool cooled(InstrType t, int64_t now) const;
   Instruction make(InstrType t, const Situation& s, std::vector<std::pair<std::string, double>> params);
@@ -83,7 +91,9 @@ class InstructionGenerator {
   uint32_t next_id_ = 1;
   std::vector<Active> active_;  // at most one guidance + one urgent/info
   std::map<int, int64_t> last_issue_;  // per type
-  int64_t last_guidance_ns_ = -1, start_ns_ = -1;
+  int64_t last_guidance_ns_ = -1, start_ns_ = -1, last_info_ns_ = -1;
+  int progress_next_ = 0;  // index of the next 25/50/75 % prompt
+  static constexpr double kInfoGapS = 6;  // min gap between progress / keep-turning prompts
 };
 
 }  // namespace capturekit::guide

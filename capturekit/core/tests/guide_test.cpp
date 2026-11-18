@@ -1,4 +1,5 @@
 // Phase 8: GuideMind unit tests per stage + simulator determinism, safety and budget.
+#include <set>
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -358,16 +359,169 @@ TEST(GuideInstructions, EgocentricMoveAndRotate) {
   EXPECT_DOUBLE_EQ(o2[0].param("distance_m"), 3.0);
 }
 
+namespace {
+int word_count(const std::string& t) {
+  int words = 0;
+  std::istringstream is(t);
+  for (std::string w; is >> w;) ++words;
+  return words;
+}
+}  // namespace
+
 TEST(GuideInstructions, ShortTextsAreShortAndAllMessagesExist) {
-  for (auto id : {"slow_down", "hold_still", "relocalize", "move.to", "rotate.to", "tilt.up", "tilt.down", "step.back", "sweep", "more_light", "finish"}) {
-    auto t = InstructionGenerator::render(id, {{"dir", "left"}, {"m", "2"}, {"deg", "90"}}, false);
-    EXPECT_NE(t, id) << id;
-    int words = 0;
-    std::istringstream is(t);
-    for (std::string w; is >> w;) ++words;
-    EXPECT_LE(words, 8) << t;
-    EXPECT_EQ(t.find('{'), std::string::npos) << t;  // all placeholders filled
+  for (auto id : {"slow_down", "hold_still", "relocalize", "move.to", "rotate.to", "tilt.up", "tilt.down", "step.back", "sweep", "more_light",
+                  "finish", "progress.25", "progress.50", "progress.75", "keep_turning", "aim_texture"}) {
+    ASSERT_GE(InstructionGenerator::variant_count(id), 2) << id;  // 2-3 phrasings per id
+    ASSERT_LE(InstructionGenerator::variant_count(id), 3) << id;
+    for (int v = 0; v < InstructionGenerator::variant_count(id); ++v) {
+      // Worst-case words: two-word direction, long number.
+      auto t = InstructionGenerator::render(id, {{"dir", "slightly left"}, {"m", "1.5"}, {"deg", "90"}}, false, uint32_t(v));
+      EXPECT_NE(t, id) << id;
+      EXPECT_LE(word_count(t), 8) << t;  // every speak_text <= 8 words
+      EXPECT_EQ(t.find('{'), std::string::npos) << t;  // all placeholders filled
+      auto l = InstructionGenerator::render(id, {{"dir", "left"}, {"m", "1"}, {"deg", "90"}}, true, uint32_t(v));
+      EXPECT_EQ(l.find('{'), std::string::npos) << l;
+    }
   }
+}
+
+TEST(GuideInstructions, MeterUnitIsPluralAware) {
+  auto one = InstructionGenerator::render("move.to", {{"dir", "ahead"}, {"m", "1"}}, false, 0);
+  EXPECT_EQ(one, "Walk ahead, 1 meter.");
+  EXPECT_EQ(InstructionGenerator::render("move.to", {{"dir", "ahead"}, {"m", "2"}}, false, 0), "Walk ahead, 2 meters.");
+  EXPECT_EQ(InstructionGenerator::render("move.to", {{"dir", "ahead"}, {"m", "0.5"}}, false, 0), "Walk ahead, 0.5 meters.");
+  EXPECT_NE(InstructionGenerator::render("step.back", {{"m", "1"}}, true, 0).find("1 meter "), std::string::npos);
+  for (int v = 0; v < 3; ++v) {
+    EXPECT_EQ(InstructionGenerator::render("move.to", {{"dir", "ahead"}, {"m", "1"}}, false, uint32_t(v)).find("1 meters"), std::string::npos);
+    EXPECT_EQ(InstructionGenerator::render("move.to", {{"dir", "ahead"}, {"m", "1"}}, true, uint32_t(v)).find("1 meters"), std::string::npos);
+  }
+  // End to end: a 1 m move is spoken singular.
+  InstructionGenerator g(P());
+  auto s = sit(0);
+  s.plan.target = {true, false, 0.0, 1.0, 0, 0, 10, 1, 0, 1};
+  s.user.pos = {0, 1.4, 0};
+  auto out = run(g, s);
+  ASSERT_EQ(out.size(), 1u);
+  ASSERT_EQ(out[0].type, InstrType::MoveTo);
+  ASSERT_DOUBLE_EQ(out[0].param("distance_m"), 1.0);
+  EXPECT_NE(out[0].speak_text.find("1 meter"), std::string::npos) << out[0].speak_text;
+  EXPECT_EQ(out[0].speak_text.find("1 meters"), std::string::npos) << out[0].speak_text;
+  EXPECT_EQ(out[0].long_text.find("1 meters"), std::string::npos) << out[0].long_text;
+}
+
+TEST(GuideInstructions, PhrasingVariesDeterministicallyById) {
+  const int n = InstructionGenerator::variant_count("move.to");
+  std::set<std::string> seen;
+  for (int i = 0; i < n; ++i) seen.insert(InstructionGenerator::render("move.to", {{"dir", "ahead"}, {"m", "2"}}, false, uint32_t(i)));
+  EXPECT_EQ(int(seen.size()), n);  // distinct phrasings
+  EXPECT_EQ(InstructionGenerator::render("move.to", {{"dir", "ahead"}, {"m", "2"}}, false, 0),
+            InstructionGenerator::render("move.to", {{"dir", "ahead"}, {"m", "2"}}, false, uint32_t(n)));  // modulo, no state
+  // Same input twice -> same output; the instruction id (1-based) selects the phrasing.
+  InstructionGenerator g1(P()), g2(P());
+  auto s = sit(0);
+  s.plan.target = {true, false, 0.0, 3.0, 0, 0, 10, 1, 0, 1};
+  auto a = run(g1, s), b = run(g2, s);
+  ASSERT_EQ(a.size(), 1u);
+  ASSERT_EQ(b.size(), 1u);
+  EXPECT_EQ(a[0].speak_text, b[0].speak_text);
+  EXPECT_EQ(a[0].speak_text, InstructionGenerator::render("move.to", {{"dir", "ahead"}, {"m", "3"}}, false, a[0].id - 1));
+}
+
+TEST(GuideInstructions, ProgressPromptsAt25_50_75OncePerThreshold) {
+  InstructionGenerator g(P());
+  std::vector<std::string> said;
+  auto step = [&](int64_t t_s, double completeness) {
+    auto s = sit(t_s);
+    s.completeness = completeness;  // no target: only info prompts can fire
+    for (auto& i : run(g, s))
+      if (i.type == InstrType::Progress) {
+        said.push_back(i.msg_id);
+        EXPECT_EQ(i.priority, 1);
+        EXPECT_LE(word_count(i.speak_text), 8) << i.speak_text;
+      }
+  };
+  step(0, 0.10);
+  step(10, 0.20);
+  EXPECT_TRUE(said.empty());
+  step(20, 0.26);
+  ASSERT_EQ(said.size(), 1u);
+  EXPECT_EQ(said[0], "progress.25");
+  step(30, 0.30);  // not repeated
+  step(40, 0.45);
+  EXPECT_EQ(said.size(), 1u);
+  step(50, 0.52);
+  ASSERT_EQ(said.size(), 2u);
+  EXPECT_EQ(said[1], "progress.50");
+  step(60, 0.60);
+  step(70, 0.80);
+  ASSERT_EQ(said.size(), 3u);
+  EXPECT_EQ(said[2], "progress.75");
+  step(80, 0.95);
+  step(90, 0.50);  // completeness dipping and recovering does not repeat a prompt
+  step(100, 0.80);
+  EXPECT_EQ(said.size(), 3u);
+}
+
+TEST(GuideInstructions, ProgressJumpSpeaksOnlyHighestAndIsRateLimited) {
+  InstructionGenerator g(P());
+  auto s = sit(0);
+  s.completeness = 0.80;  // jumped over 25 and 50
+  auto out = run(g, s);
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0].msg_id, "progress.75");
+  auto s2 = sit(10);
+  s2.completeness = 0.90;
+  EXPECT_TRUE(run(g, s2).empty());  // all thresholds spent
+  // Finish mode suppresses progress prompts (the finish instruction covers it).
+  InstructionGenerator gf(P());
+  auto sf = sit(0, Mode::Finish);
+  sf.completeness = 0.9;
+  auto of = run(gf, sf);
+  ASSERT_EQ(of.size(), 1u);
+  EXPECT_EQ(of[0].type, InstrType::Finish);
+  // Suppression lasts only while in Finish: when the plan returns to Target, the pending threshold is spoken
+  // (once), and a threshold spoken earlier is not repeated.
+  InstructionGenerator gr(P());
+  auto r0 = sit(0);
+  r0.completeness = 0.30;
+  auto o0 = run(gr, r0);
+  ASSERT_EQ(o0.size(), 1u);
+  EXPECT_EQ(o0[0].msg_id, "progress.25");
+  auto r1 = sit(20, Mode::Finish);
+  r1.completeness = 0.60;  // crosses 50 % while finishing: silent
+  for (auto& i : run(gr, r1)) EXPECT_NE(i.type, InstrType::Progress);
+  auto r2 = sit(40);
+  r2.completeness = 0.60;  // plan went back to scanning
+  auto o2 = run(gr, r2);
+  ASSERT_EQ(o2.size(), 1u);
+  EXPECT_EQ(o2[0].msg_id, "progress.50");
+  auto r3 = sit(60);
+  r3.completeness = 0.60;
+  EXPECT_TRUE(run(gr, r3).empty());  // each threshold once
+}
+
+TEST(GuideInstructions, KeepTurningDuringSweep) {
+  InstructionGenerator g(P());
+  auto at = [&](int64_t t_s, double yaw_deg) {
+    auto s = sit(t_s, Mode::Sweep);
+    s.user.yaw = deg2rad(yaw_deg);
+    return run(g, s);
+  };
+  EXPECT_TRUE(at(0, 0).empty());  // sweep only after a short settle time
+  auto o = at(4, 0);
+  ASSERT_EQ(o.size(), 1u);
+  ASSERT_EQ(o[0].type, InstrType::Sweep);
+  EXPECT_TRUE(at(6, 50).empty());
+  auto k1 = at(9, 110);  // past 100 degrees turned
+  ASSERT_EQ(k1.size(), 1u);
+  EXPECT_EQ(k1[0].type, InstrType::KeepTurning);
+  EXPECT_EQ(k1[0].msg_id, "keep_turning");
+  EXPECT_LE(word_count(k1[0].speak_text), 8);
+  EXPECT_TRUE(at(11, 150).empty());  // not before 200 degrees
+  auto k2 = at(15, 210);
+  ASSERT_EQ(k2.size(), 1u);
+  EXPECT_EQ(k2[0].type, InstrType::KeepTurning);
+  EXPECT_TRUE(at(16, 215).empty());  // at most two prompts per sweep
 }
 
 TEST(GuideInstructions, CooldownsMinGapAndNoRepeats) {
@@ -386,6 +540,81 @@ TEST(GuideInstructions, CooldownsMinGapAndNoRepeats) {
   auto s3 = sit(7);
   s3.plan = s.plan;
   EXPECT_TRUE(run(g, s3).empty());
+}
+
+TEST(GuideInstructions, TrackingReasonMapsToInstruction) {
+  GuideParams p = P();
+  // EXCESSIVE_MOTION (limited tracking) -> slow_down, with its own cooldown.
+  {
+    InstructionGenerator g(p);
+    auto s = sit(0);
+    s.tracking_state = 2, s.tracking_reason = 2;
+    auto o = run(g, s);
+    ASSERT_EQ(o.size(), 1u);
+    EXPECT_EQ(o[0].type, InstrType::SlowDown);
+    EXPECT_EQ(o[0].msg_id, "slow_down");
+    auto s2 = sit(1);
+    s2.tracking_state = 2, s2.tracking_reason = 2;
+    EXPECT_TRUE(run(g, s2).empty());  // no repeat while active / cooling
+  }
+  // A turn we asked for excuses the blur path but not the reported EXCESSIVE_MOTION.
+  {
+    InstructionGenerator g(p);
+    auto s = sit(0);
+    s.plan.target = {true, false, 3.0, 0.0, 0, 0, 10, 1, 0, 1};  // 90 degrees off: ROTATE_TOWARD
+    ASSERT_EQ(run(g, s).at(0).type, InstrType::RotateToward);
+    auto b = sit(2);
+    b.plan = s.plan;
+    b.blur_streak = 5;
+    EXPECT_TRUE(run(g, b).empty());  // blur while turning on request: not scolded
+    auto r = sit(3);
+    r.plan = s.plan;
+    r.tracking_state = 2, r.tracking_reason = 2;
+    auto o = run(g, r);
+    ASSERT_EQ(o.size(), 1u);
+    EXPECT_EQ(o[0].type, InstrType::SlowDown);
+  }
+  // INSUFFICIENT_LIGHT -> more_light, even though no frame was flagged underexposed.
+  {
+    InstructionGenerator g(p);
+    auto s = sit(0);
+    s.tracking_state = 2, s.tracking_reason = 4;
+    auto o = run(g, s);
+    ASSERT_EQ(o.size(), 1u);
+    EXPECT_EQ(o[0].type, InstrType::MoreLight);
+    EXPECT_EQ(o[0].msg_id, "more_light");
+  }
+  // INSUFFICIENT_FEATURES -> "Aim at a textured wall"; completes when the reason clears.
+  {
+    InstructionGenerator g(p);
+    auto s = sit(0);
+    s.tracking_state = 2, s.tracking_reason = 3;
+    auto o = run(g, s);
+    ASSERT_EQ(o.size(), 1u);
+    EXPECT_EQ(o[0].type, InstrType::AimTextured);
+    EXPECT_EQ(o[0].msg_id, "aim_texture");
+    EXPECT_EQ(o[0].priority, 3);
+    EXPECT_EQ(InstructionGenerator::render("aim_texture", {}, false, 0), "Aim at a textured wall.");
+    auto s2 = sit(1);
+    std::vector<LifeEvent> ev;
+    run(g, s2, &ev);
+    bool completed = false;
+    for (auto& e : ev) completed |= e.ins.type == InstrType::AimTextured && e.state == LifeState::Completed;
+    EXPECT_TRUE(completed);
+  }
+  // Other reasons (none, initializing, relocalizing, ...) add no instruction; normal tracking ignores the reason.
+  for (int reason : {0, 1, 5, 6, 8}) {
+    InstructionGenerator g(p);
+    auto s = sit(0);
+    s.tracking_state = 2, s.tracking_reason = reason;
+    EXPECT_TRUE(run(g, s).empty()) << reason;
+  }
+  {
+    InstructionGenerator g(p);
+    auto s = sit(0);
+    s.tracking_reason = 3;  // tracking_state stays 1 (normal)
+    EXPECT_TRUE(run(g, s).empty());
+  }
 }
 
 TEST(GuideInstructions, SafetyInterruptsAndLifecycle) {
@@ -460,6 +689,27 @@ TEST(GuideInstructions, FinishSweepAndTilt) {
 }
 
 // ---- Log ----
+TEST(GuideLogTest, InfoPromptsAreCountedSeparately) {
+  GuideLog l;
+  l.start(0);
+  Instruction m;
+  m.id = 1, m.type = InstrType::MoveTo, m.priority = 2, m.t_ns = 1'000'000'000LL, m.msg_id = "move.to";
+  l.issued(m, 0.1);
+  l.ended({m, LifeState::Completed, 5'000'000'000LL, 0.3});  // 4 s to comply
+  for (uint32_t k = 0; k < 3; ++k) {
+    Instruction p;
+    p.id = 2 + k, p.type = k == 2 ? InstrType::KeepTurning : InstrType::Progress, p.priority = 1, p.t_ns = 6'000'000'000LL + k * 1'000'000'000LL;
+    p.msg_id = k == 2 ? "keep_turning" : "progress.25";
+    l.issued(p, 0.3);
+    l.ended({p, LifeState::Completed, p.t_ns + 500'000'000LL, 0.3});  // 0.5 s: must not drag the median down
+  }
+  auto j = l.summary_json();
+  EXPECT_NE(j.find("\"instructions\":1"), std::string::npos) << j;
+  EXPECT_NE(j.find("\"info_prompts\":3"), std::string::npos) << j;
+  EXPECT_NE(j.find("\"median_time_to_compliance_s\":4"), std::string::npos) << j;
+  EXPECT_NE(j.find("\"COMPLETED\":1"), std::string::npos) << j;
+}
+
 TEST(GuideLogTest, RecordsLifecycleAndIsDeterministic) {
   auto make = [] {
     GuideLog l;

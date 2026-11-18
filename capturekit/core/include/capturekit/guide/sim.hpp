@@ -34,10 +34,15 @@ struct Room {
   double height = 2.5;
   std::vector<Box> boxes;                                         // furniture blocks
   double start_x = 1, start_z = 1, start_yaw = 0;
+  /// T4 sim realism (ADR 0029): this room defaults to the "arcore" plane mode (Config::planes "").
+  bool arcore_planes = false;
+  int textureless_wall = -1;  // arcore mode: this wall (poly edge index) never gets a plane and keeps 35 % of its points
 };
 
 /// "box", "L", "furniture", "objects", "door_window" (the box room with a 0.9 x 2.0 m door and a 1.2 x 1.0 m window,
 /// sill 0.9 m). With guide.understanding on, the report gains "openings" (what the engine detected).
+/// "furnished4" (5 x 4.5 m: sofa, wardrobe, bed against three walls, the fourth wall textureless) and "furnishedL"
+/// (the L room with the same three pieces): both default to the "arcore" plane mode.
 Room make_room(const std::string& name);
 
 struct Human {
@@ -69,6 +74,18 @@ struct Config {
   /// against the sim's own sparse points and the TRUE shell planes, and the report gains an "oracle" block (lifted objects + truth). Any policy.
   bool detector_oracle = false;
   double oracle_miss = 0.15, oracle_false = 0.08;  // per visible box / per keyframe
+  /// Phase 9 step 7, test harness (policy "planner", understanding on): a SHADOW RoomShell + GapFinder + virtual coverage
+  /// grids (never read by the engine) run next to the engine; every understanding_every_s of sim time the gaps are scored
+  /// against the sim's ground truth (hidden wall / corner / floor behind a classed block / ceiling / floor never seen;
+  /// false gap = the true region was well seen) and the report gains an "understanding" block. Not serialised elsewhere.
+  bool understanding_eval = false;
+  double understanding_every_s = 15;
+  /// Plane model (ADR 0029). "" = the room's default; "ideal" = one growing rectangle per true surface (Phase 8);
+  /// "arcore" = seeded ARCore-like wall planes: split into fragments at furniture against the wall, long fragments
+  /// first detected as two planes that later merge (the subsumed id goes stale), random re-ids (old id stale),
+  /// 2-4 deg yaw jitter per plane id, the room's textureless wall without a plane. Own RNG; the report gains
+  /// "sim_planes". Wall planes only: floor/ceiling/furniture tops as in "ideal".
+  std::string planes;
   Human human;
   GuideParams guide;
 };

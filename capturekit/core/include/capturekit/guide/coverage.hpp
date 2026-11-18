@@ -48,6 +48,14 @@ struct VisResult {
 };
 VisResult view_cell(const ViewCam& cam, const Vec3& p, const Vec3& n, double margin_px);
 
+/// A hypothesised surface (an inferred shell wall, ceiling or floor, Phase 9 step 7): same rectangle model as a Plane.
+/// c = centre, n = normal facing the room, u/v = unit in-plane axes, eu/ev = FULL extents.
+struct VirtualSurface {
+  std::string id;
+  Vec3 c = Vec3::Zero(), n = Vec3::UnitY(), u = Vec3::UnitX(), v = Vec3::UnitZ();
+  double eu = 0, ev = 0;
+};
+
 struct Sample {
   Vec3 p, n;
   float w = 1;
@@ -82,6 +90,11 @@ class Coverage {
   explicit Coverage(const GuideParams& p) : p_(p) {}
   /// Adopts new/changed plane geometry (call when LiveMap::version() changed).
   void sync(const LiveMap& map);
+  /// Phase 9 step 7: replaces the set of virtual surfaces (ids must not equal a LiveMap plane id; "v:" prefix by
+  /// convention). Their cells are observed by observe() like any other, so "did the user look there" is answered for
+  /// surfaces nothing detected, but they are EXCLUDED from stats(), deficient(), eval_view() and plane_ids() (a
+  /// hypothesis must never stall completeness or steer the planner). Ids that persist keep their cell statistics.
+  void sync_virtual(const std::vector<VirtualSurface>& surfaces);
   /// Updates cells from a keyframe observation. seen_floor receives centres of newly seen floor cells.
   void observe(const Obs& o, const Occluder* los, std::vector<Vec3>* seen_floor);
 
@@ -104,11 +117,14 @@ class Coverage {
     int i0 = 0, j0 = 0, nx = 0, ny = 0;
     std::vector<CellStat> cells;
     std::vector<uint8_t> valid;
+    bool virt = false;  // hypothesised surface: observed, but not part of totals / planner samples
     Vec3 center(int i, int j) const;  // cell centre by local index
   };
   Grid* find(const std::string& id);
   const Grid* find(const std::string& id) const;
   void resize(Grid& g, double u0, double u1, double v0, double v1);
+  void fit(Grid& g, const Vec3& c, const Vec3& u, const Vec3& v, double eu, double ev);  // resize to a plane rectangle
+  bool virtual_axes_stale(const Grid& g, const VirtualSurface& s) const;  // axes/offset moved beyond tolerance
   void rebuild() const;
 
   GuideParams p_;

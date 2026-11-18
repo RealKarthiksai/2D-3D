@@ -89,11 +89,78 @@ void Coverage::resize(Grid& g, double u0, double u1, double v0, double v1) {
     }
 }
 
+void Coverage::fit(Grid& g, const Vec3& c, const Vec3& u, const Vec3& v, double eu, double ev) {
+  // Rectangle corners in grid axes (unit axes) relative to the grid origin.
+  const double cm = p_.cell_m;
+  const Vec3 uu = g.u / cm, vv = g.v / cm;
+  double u0 = 1e9, u1 = -1e9, v0 = 1e9, v1 = -1e9;
+  for (int su : {-1, 1})
+    for (int sv : {-1, 1}) {
+      Vec3 q = c + u * (0.5 * su * eu) + v * (0.5 * sv * ev) - g.o;
+      u0 = std::min(u0, q.dot(uu)), u1 = std::max(u1, q.dot(uu));
+      v0 = std::min(v0, q.dot(vv)), v1 = std::max(v1, q.dot(vv));
+    }
+  resize(g, u0, u1, v0, v1);
+}
+
+// A virtual grid keeps its cells while the surface only grows/shrinks or jitters (resize() refits the extent and keeps
+// the statistics of cells that stay); it is rebuilt when an axis turns by more than kVirtualAxisDeg or any corner of
+// the new rectangle lies more than half a cell off the grid plane (measured at the extent corners, so a small tilt
+// that drifts far from the old plane over a long wall is caught too).
+bool Coverage::virtual_axes_stale(const Grid& g, const VirtualSurface& s) const {
+  constexpr double kVirtualAxisDeg = 2.0;
+  const double cos_tol = std::cos(deg2rad(kVirtualAxisDeg));
+  if (g.u.normalized().dot(s.u) < cos_tol || g.v.normalized().dot(s.v) < cos_tol || g.n.normalized().dot(s.n) < cos_tol)
+    return true;
+  const Vec3 gn = g.n.normalized();
+  for (int su : {-1, 1})
+    for (int sv : {-1, 1}) {
+      const Vec3 q = s.c + s.u * (0.5 * su * s.eu) + s.v * (0.5 * sv * s.ev);
+      if (std::fabs((q - g.o).dot(gn)) > 0.5 * p_.cell_m) return true;
+    }
+  return false;
+}
+
+void Coverage::sync_virtual(const std::vector<VirtualSurface>& surfaces) {
+  const double c = p_.cell_m;
+  grids_.erase(std::remove_if(grids_.begin(), grids_.end(),
+                              [&](const Grid& g) {
+                                if (!g.virt) return false;
+                                for (const auto& s : surfaces)
+                                  if (s.id == g.id) return false;
+                                return true;
+                              }),
+               grids_.end());
+  for (const auto& s : surfaces) {
+    Grid* g = find(s.id);
+    if (g && !g->virt) continue;  // never shadow a real plane
+    if (!g) {
+      Grid ng;
+      ng.id = s.id, ng.virt = true;
+      ng.o = s.c, ng.n = s.n, ng.u = s.u * c, ng.v = s.v * c;
+      grids_.push_back(std::move(ng));
+      std::sort(grids_.begin(), grids_.end(), [](const Grid& a, const Grid& b) { return a.id < b.id; });
+      g = find(s.id);
+    }
+    else if (virtual_axes_stale(*g, s)) {
+      // Orientation or plane offset moved beyond tolerance: the creation-time axes would put the cells on a plane
+      // that is no longer there, and their statistics belong to the old one. Rebuild this grid from scratch.
+      Grid ng;
+      ng.id = s.id, ng.virt = true;
+      ng.o = s.c, ng.n = s.n, ng.u = s.u * c, ng.v = s.v * c;
+      *g = std::move(ng);
+    }
+    fit(*g, s.c, s.u, s.v, s.eu, s.ev);
+  }
+  ++rev_;
+}
+
 void Coverage::sync(const LiveMap& map) {
   const double c = p_.cell_m;
   // A plane re-labelled by the SurfaceClassifier (floor -> table) stops being a coverage target.
   grids_.erase(std::remove_if(grids_.begin(), grids_.end(),
                               [&](const Grid& g) {
+                                if (g.virt) return false;
                                 auto it = map.planes().find(g.id);
                                 return it == map.planes().end() || !it->second.surface();
                               }),
@@ -109,16 +176,7 @@ void Coverage::sync(const LiveMap& map) {
       std::sort(grids_.begin(), grids_.end(), [](const Grid& a, const Grid& b) { return a.id < b.id; });
       g = find(id);
     }
-    // Plane rectangle corners in grid axes (unit axes) relative to the grid origin.
-    Vec3 uu = g->u / c, vv = g->v / c;
-    double u0 = 1e9, u1 = -1e9, v0 = 1e9, v1 = -1e9;
-    for (int su : {-1, 1})
-      for (int sv : {-1, 1}) {
-        Vec3 q = pl.c + pl.u * (0.5 * su * pl.eu) + pl.v * (0.5 * sv * pl.ev) - g->o;
-        u0 = std::min(u0, q.dot(uu)), u1 = std::max(u1, q.dot(uu));
-        v0 = std::min(v0, q.dot(vv)), v1 = std::max(v1, q.dot(vv));
-      }
-    resize(*g, u0, u1, v0, v1);
+    fit(*g, pl.c, pl.u, pl.v, pl.eu, pl.ev);
   }
   ++rev_;
 }
@@ -154,7 +212,7 @@ void Coverage::observe(const Obs& o, const Occluder* los, std::vector<Vec3>* see
 CoverageStats Coverage::stats() const {
   CoverageStats s;
   for (auto& g : grids_)
-    for (size_t k = 0; k < g.cells.size(); ++k) {
+    for (size_t k = 0; k < g.cells.size() && !g.virt; ++k) {
       if (!g.valid[k] || g.cells[k].unobservable()) continue;
       ++s.valid;
       s.seen += g.cells[k].seen;
@@ -190,7 +248,8 @@ CoverageStats Coverage::stats(const std::string& id) const {
 
 std::vector<std::string> Coverage::plane_ids() const {
   std::vector<std::string> v;
-  for (auto& g : grids_) v.push_back(g.id);
+  for (auto& g : grids_)
+    if (!g.virt) v.push_back(g.id);
   return v;
 }
 
@@ -201,7 +260,7 @@ void Coverage::rebuild() const {
   const int stride = std::max(1, int(p_.cell_stride));
   size_t n = 0;
   for (auto& g : grids_)
-    for (int j = 0; j < g.ny; ++j)
+    for (int j = 0; j < g.ny && !g.virt; ++j)
       for (int i = 0; i < g.nx; ++i) {
         size_t k = size_t(j) * size_t(g.nx) + size_t(i);
         if (!g.valid[k] || g.cells[k].unobservable()) continue;

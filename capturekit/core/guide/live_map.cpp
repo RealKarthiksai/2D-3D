@@ -48,33 +48,112 @@ void unite(Plane& a, const Plane& b) {
 }
 }  // namespace
 
+namespace {
+/// Fraction of b's rectangle that lies inside a's rectangle (in a's frame; axes parallel up to a small rotation).
+double inside_fraction(const Plane& a, const Plane& b) {
+  Vec3 d = b.c - a.c;
+  double du = d.dot(a.u), dv = d.dot(a.v);
+  double bu = 0.5 * (std::fabs(b.u.dot(a.u)) * b.eu + std::fabs(b.v.dot(a.u)) * b.ev);
+  double bv = 0.5 * (std::fabs(b.u.dot(a.v)) * b.eu + std::fabs(b.v.dot(a.v)) * b.ev);
+  auto frac = [](double c, double h, double half) {
+    if (h <= 0) return 0.0;
+    double lo = std::max(c - h, -half), hi = std::min(c + h, half);
+    return std::max(0.0, hi - lo) / (2 * h);
+  };
+  return frac(du, bu, 0.5 * a.eu) * frac(dv, bv, 0.5 * a.ev);
+}
+
+/// b's rectangle reaches more than tol beyond a's rectangle on either in-plane axis (a's frame).
+bool extends_beyond(const Plane& a, const Plane& b, double tol) {
+  Vec3 d = b.c - a.c;
+  double du = d.dot(a.u), dv = d.dot(a.v);
+  double bu = 0.5 * (std::fabs(b.u.dot(a.u)) * b.eu + std::fabs(b.v.dot(a.u)) * b.ev);
+  double bv = 0.5 * (std::fabs(b.u.dot(a.v)) * b.eu + std::fabs(b.v.dot(a.v)) * b.ev);
+  return std::fabs(du) + bu > 0.5 * a.eu + tol || std::fabs(dv) + bv > 0.5 * a.ev + tol;
+}
+
+constexpr int64_t kSubsumeStaleNs = 2'000'000'000;  // ADR 0026 starting guesses
+constexpr double kSubsumeOff = 0.15, kSubsumeInside = 0.7, kSubsumeGrow = 0.05;
+}  // namespace
+
+void LiveMap::rebuild(const std::string& key) {
+  auto& mem = members_[key];
+  Plane& out = planes_[key];
+  const int64_t t_first = out.t_first;
+  auto own = mem.find(key);
+  const Plane* first = own != mem.end() ? &own->second : &mem.begin()->second;
+  Plane base = *first;
+  for (auto& [rid, m] : mem)
+    if (&m != first) unite(base, m);  // platform-id order: deterministic
+  base.id = key;
+  base.t_first = t_first;
+  out = base;
+}
+
+void LiveMap::subsume_into(const std::string& key) {
+  const Plane& q = planes_.at(key);
+  std::vector<std::string> victims;
+  for (auto& [id, p] : planes_) {
+    if (id == key || p.src_kind != q.src_kind || q.t_last - p.t_last < kSubsumeStaleNs) continue;
+    if (p.n.dot(q.n) < std::cos(deg2rad(10)) || std::fabs((p.c - q.c).dot(q.n)) > kSubsumeOff) continue;
+    if (inside_fraction(q, p) >= kSubsumeInside) victims.push_back(id);
+  }
+  for (auto& v : victims) {
+    for (auto& [rid, _] : members_[v]) subsumed_[rid] = 1, alias_[rid] = key;
+    for (auto& [rid, canon] : alias_)
+      if (canon == v) canon = key;
+    alias_[v] = key;
+    subsumed_[v] = 1;
+    members_.erase(v);
+    planes_.erase(v);
+    ++version_;
+  }
+}
+
 std::string LiveMap::add_plane(const bundle::PlaneRecord& r) {
   Plane np = from_record(r);
   if (np.eu <= 0 || np.ev <= 0 || !np.n.allFinite() || !np.c.allFinite()) return r.id;  // ignore degenerate
   auto al = alias_.find(r.id);
   std::string key = al != alias_.end() ? al->second : r.id;
+  if (subsumed_.count(r.id)) {
+    // A subsumed plane's late record inside its subsumer carries nothing new. One that grew beyond it is not dropped:
+    // still parallel at the same offset, it becomes a member of the subsumer (united); otherwise it is a plane again.
+    auto q = planes_.find(key);
+    if (q != planes_.end() && !extends_beyond(q->second, np, kSubsumeGrow)) return key;
+    subsumed_.erase(r.id);
+    if (q == planes_.end() || q->second.src_kind != np.src_kind || np.n.dot(q->second.n) < std::cos(deg2rad(10)) ||
+        std::fabs((np.c - q->second.c).dot(q->second.n)) > kSubsumeOff) {
+      alias_.erase(r.id);
+      key = r.id;
+    }
+  }
   auto it = planes_.find(key);
-  if (it != planes_.end()) {  // an update of a known plane: AR planes grow, the newest geometry wins
-    np.id = key;
-    np.t_first = it->second.t_first;
-    it->second = np;
+  if (it != planes_.end()) {  // an update of a known plane: AR planes grow, the newest geometry of each member wins
+    members_[key][r.id] = np;
+    rebuild(key);
     ++version_;
+    subsume_into(key);
     classify_after(key);
     return key;
   }
   // New id: duplicate of an existing plane? (same kind, nearly parallel, same offset, touching)
   for (auto& [id, ex] : planes_) {
-    if (ex.src_kind != np.src_kind || std::fabs(ex.n.dot(np.n)) < std::cos(deg2rad(10))) continue;
+    if (ex.src_kind != np.src_kind || ex.n.dot(np.n) < std::cos(deg2rad(10))) continue;
     if (std::fabs((np.c - ex.c).dot(ex.n)) > 0.10) continue;
     if (rect_gap(ex, np) > 0.30) continue;
-    unite(ex, np);  // (ex keeps its kind; reclassified below)
-    alias_[r.id] = id;
+    const std::string canon = id;  // (ex keeps its kind; reclassified below)
+    alias_[r.id] = canon;
+    members_[canon][r.id] = np;
+    rebuild(canon);
     ++version_;
-    classify_after(id);
-    return id;
+    subsume_into(canon);
+    classify_after(canon);
+    return canon;
   }
   planes_[r.id] = np;
+  members_[r.id][r.id] = np;
   ++version_;
+  subsume_into(r.id);
   classify_after(r.id);
   return r.id;
 }

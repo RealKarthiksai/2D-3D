@@ -62,12 +62,18 @@ bool NavGrid::add_object_box(const Object& o) {
       const double dx = (ix + 0.5) * c_ - o.centre.x(), dz = (iz + 0.5) * c_ - o.centre.z();
       if (std::fabs(dx * ca - dz * sa) > hw || std::fabs(dx * sa + dz * ca) > hd) continue;
       Cell& c = cells_[index(ix, iz)];
-      c.hits = std::max(c.hits, uint8_t(p_.obstacle_hits));
-      c.max_h = std::max(c.max_h, float(top));
+      c.obj_h = std::max(c.obj_h, float(std::max(top, 1e-3)));  // object layer: separate from point hits so it can be re-stamped
       any = true;
     }
   have_clearance_ = false;
   return any;
+}
+
+void NavGrid::clear_objects() {
+  bool any = false;
+  for (auto& c : cells_)
+    if (c.obj_h > 0) c.obj_h = 0, any = true;
+  if (any) have_clearance_ = false;
 }
 
 void NavGrid::mark_traversed(const Vec3& p) {
@@ -104,7 +110,7 @@ void NavGrid::carve(const Vec3& from, const Vec3& to) {
 }
 
 bool NavGrid::obstacle(int ix, int iz) const {
-  return inside(ix, iz) && cells_[index(ix, iz)].hits >= uint8_t(p_.obstacle_hits);
+  return inside(ix, iz) && (cells_[index(ix, iz)].hits >= uint8_t(p_.obstacle_hits) || cells_[index(ix, iz)].obj_h > 0);
 }
 
 double NavGrid::near_hits(int ix, int iz) const {
@@ -114,6 +120,7 @@ double NavGrid::near_hits(int ix, int iz) const {
       if (inside(ix + dx, iz + dz)) {
         const Cell& c = cells_[index(ix + dx, iz + dz)];
         if (c.hits >= 1) top = std::max(top, double(c.max_h));
+        if (c.obj_h > 0) top = std::max(top, double(c.obj_h));
       }
   return top;
 }
@@ -121,7 +128,7 @@ double NavGrid::near_hits(int ix, int iz) const {
 bool NavGrid::known_free(int ix, int iz) const {
   if (!inside(ix, iz)) return false;
   const Cell& c = cells_[index(ix, iz)];
-  return (c.traversed || c.open) && c.hits < uint8_t(p_.obstacle_hits);
+  return (c.traversed || c.open) && c.hits < uint8_t(p_.obstacle_hits) && c.obj_h <= 0;
 }
 
 void NavGrid::rebuild() {

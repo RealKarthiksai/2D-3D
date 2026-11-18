@@ -25,6 +25,9 @@ class NavGrid : public Occluder {
   /// points. Cells whose centre is within half a cell of the rotated rectangle are set. Wall-mounted classes (TV)
   /// and objects whose top is below obstacle_min_h are ignored. Returns whether any cell was set.
   bool add_object_box(const Object& o);
+  /// Empties the object layer (point obstacles stay). The engine clears and re-stamps all objects on each change, so a
+  /// moved or resized object leaves no old cells.
+  void clear_objects();
   void mark_traversed(const Vec3& p);  // camera position (disc of traverse_radius_m)
   void mark_open(const Vec3& p);       // a seen floor cell
   /// Free-space carving: the XZ segment camera -> observed point is open (stops 0.15 m short of the point).
@@ -67,6 +70,7 @@ class NavGrid : public Occluder {
   struct Cell {
     uint8_t hits = 0;
     float max_h = 0;
+    float obj_h = 0;  // object layer: top height of a lifted object footprint, 0 = none
     bool traversed = false, open = false;
   };
   GuideParams p_;

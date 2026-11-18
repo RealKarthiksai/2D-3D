@@ -52,8 +52,16 @@ std::string GuideLog::summary_json() const {
   json::Object o;
   std::map<std::string, int> by_type, by_state;
   std::vector<double> ttc;
+  uint64_t guidance = 0, info = 0;
   for (auto& e : entries_) {
     ++by_type[type_name(e.ins.type)];
+    // Info prompts (PROGRESS, KEEP_TURNING) are one-shot and complete at once: keep them out of the
+    // guidance statistics and report them separately.
+    if (e.ins.type == InstrType::Progress || e.ins.type == InstrType::KeepTurning) {
+      ++info;
+      continue;
+    }
+    ++guidance;
     ++by_state[life_name(e.state)];
     if (e.state == LifeState::Completed) ttc.push_back(e.t_end_s - e.t_issue_s);
   }
@@ -61,7 +69,7 @@ std::string GuideLog::summary_json() const {
   for (auto& [k, v] : by_type) bt.set(k, v);
   for (auto& [k, v] : by_state) bs.set(k, v);
   std::sort(ttc.begin(), ttc.end());
-  o.set("instructions", uint64_t(entries_.size())).raw("by_type", bt.dump()).raw("by_state", bs.dump());
+  o.set("instructions", guidance).set("info_prompts", info).raw("by_type", bt.dump()).raw("by_state", bs.dump());
   o.set("repetition_rate", r3(repetition_rate()));
   o.set("median_time_to_compliance_s", ttc.empty() ? 0.0 : r3(ttc[ttc.size() / 2]));
   o.set("target_switches", target_switches_).set("unsafe_targets", unsafe_targets_);

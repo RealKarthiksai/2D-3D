@@ -5,6 +5,10 @@ target_sources(capturekit_core PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/point_store.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/opening_detector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/object_lifter.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/layout.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/room_shell.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/landmark.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/gap_finder.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/coverage.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/nav_grid.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/planner.cpp

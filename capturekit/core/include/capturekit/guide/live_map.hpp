@@ -1,7 +1,9 @@
 #pragma once
 // LiveMap (Phase 8, stage 1): the gravity-aligned room model built from AR planes and poses.
 // Planes with the same id replace each other (AR planes grow); different ids that describe the same
-// surface are merged into one canonical plane. Tier B input (planes + sparse points); with no planes
+// surface are merged into one canonical plane (the union of each member's latest record). A plane that stopped
+// updating (stale >= 2 s) and lies >= 70 % inside a parallel plane within 0.15 m that was updated later is SUBSUMED:
+// aliased to it and removed (ARCore stops sending subsumed planes; ADR 0026). Later records of it are ignored while inside the subsumer; one that grows > 5 cm beyond it is united into the subsumer (or, no longer parallel, becomes a plane again). Tier B input (planes + sparse points); with no planes
 // the map stays empty (tier C, pose-only) and guidance falls back to sweeping.
 #include <map>
 #include <string>
@@ -36,6 +38,11 @@ class LiveMap {
   bool classify_enabled() const { return classify_; }
   /// Returns the canonical id the record was stored under (changes on merge).
   std::string add_plane(const bundle::PlaneRecord& p);
+  /// The canonical plane id a platform id is stored under (itself when it was never merged or subsumed).
+  std::string canonical(const std::string& id) const {
+    auto it = alias_.find(id);
+    return it == alias_.end() ? id : it->second;
+  }
   void add_camera(const Vec3& p) { cam_.add(p); ++n_cam_; }
   int version() const { return version_; }  // bumps whenever any plane geometry changes
 
@@ -54,8 +61,12 @@ class LiveMap {
   SurfaceContext context() const;
   void reclassify(const std::string& id);
   void classify_after(const std::string& key);  // classify (if enabled), then refresh_levels
+  void rebuild(const std::string& key);         // canonical plane = its own latest record united with its duplicates'
+  void subsume_into(const std::string& key);    // ADR 0026: alias stale planes this (newer) plane covers
   std::map<std::string, Plane> planes_;
   std::map<std::string, std::string> alias_;
+  std::map<std::string, std::map<std::string, Plane>> members_;  // canonical id -> platform id -> latest record
+  std::map<std::string, char> subsumed_;                         // platform ids folded into a subsumer (records ignored)
   Aabb cam_;
   size_t n_cam_ = 0;
   int version_ = 0;

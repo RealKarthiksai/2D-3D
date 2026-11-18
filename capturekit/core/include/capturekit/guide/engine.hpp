@@ -10,14 +10,18 @@
 
 #include "capturekit/bundle/types.hpp"
 #include "capturekit/guide/coverage.hpp"
+#include "capturekit/guide/gap_finder.hpp"
 #include "capturekit/guide/guide_log.hpp"
 #include "capturekit/guide/instruction.hpp"
 #include "capturekit/guide/live_map.hpp"
 #include "capturekit/guide/nav_grid.hpp"
+#include "capturekit/guide/object_lifter.hpp"
 #include "capturekit/guide/opening_detector.hpp"
 #include "capturekit/guide/overlay.hpp"
 #include "capturekit/guide/planner.hpp"
 #include "capturekit/guide/point_store.hpp"
+#include "capturekit/guide/room_shell.hpp"
+#include "capturekit/guide/steer.hpp"
 
 namespace capturekit::guide {
 
@@ -37,6 +41,9 @@ class GuideEngine {
   void on_pose(const bundle::PoseSample& p);
   void on_points(const bundle::PointCloudRecord& p);
   void on_plane(const bundle::PlaneRecord& p);
+  /// Phase 9 (understanding on only; no-op otherwise): one keyframe's recorded 2D boxes are lifted to 3D objects at the
+  /// keyframe pose and tracked; published objects become obstacles in the NavGrid. Same call live and in replay.
+  void on_detections(const bundle::DetectionsRecord& r);
   void on_frame(const FrameObs& f);
   /// A keyframe was chosen: its view updates coverage (pose looked up at t_ns).
   void on_keyframe(uint32_t frame_id, int64_t t_ns, double sharpness_norm);
@@ -63,6 +70,17 @@ class GuideEngine {
   /// in them, re-detected at most once per second of event time.
   const SparsePointStore& points() const { return pts_; }
   const std::vector<Opening>& openings() const { return openings_; }
+  /// Published lifted objects (understanding on only), ordered by id.
+  const std::vector<Object>& objects() const { return objects_; }
+  /// Understanding >= 2 only (empty otherwise), refreshed at most once per event-second: the room outline and the gaps
+  /// found in it (all types, highest priority first; only MissingWall / UnseenCorner / Occluded steer the planner).
+  const ShellModel& shell() const { return shell_.shell(); }
+  const std::vector<Gap>& gaps() const { return gaps_; }
+  /// Room layout (ADR 0026), at EVERY understanding level: refreshed at the start of update() whenever the map changed
+  /// and at least once per event-second. shell() above is its outline.
+  const RoomShell& layout() const { return shell_; }
+  /// A ceiling plane was found or a keyframe looked up by at least pitch_up_deg.
+  bool ceiling_seen() const { return ceiling_look_ || map_.has_ceiling(); }
 
  private:
   void refresh_levels();
@@ -79,7 +97,7 @@ class GuideEngine {
   bool have_K_ = false, have_pose_ = false, points_seen_ = false;
   UserState user_;
   Plan plan_;
-  int tracking_ = 1, blur_streak_ = 0;
+  int tracking_ = 1, tracking_reason_ = 0, blur_streak_ = 0;
   int64_t lost_since_ = 0, last_pose_t_ = 0, last_plan_t_ = -1, last_sample_t_ = -1, last_underexp_t_ = 0;
   bool underexp_seen_ = false;
   double cam_height_ = 1.4, rate_scale_ = 1.0;
@@ -90,11 +108,33 @@ class GuideEngine {
   std::vector<LifeEvent> life_;
   SparsePointStore pts_;
   OpeningDetector opener_;
+  ObjectLifter lifter_;
+  std::vector<Object> objects_;
   std::vector<Opening> openings_;
   int64_t last_open_t_ = -1;
   std::map<std::string, int> wall_ids_;
   int next_wall_id_ = 1;
   uint32_t yaw_mask_ = 0;  // overlay v2 (ADR 0022)
+  // Room layout (ADR 0026, every level): the shell (outline + layout walls + spans), timeline for the report.
+  void refresh_layout(int64_t t_ns);
+  RoomShell shell_;
+  int64_t last_layout_t_ = -1;
+  bool ceiling_look_ = false;
+  int64_t first_pose_t_ = -1, last_tl_t_ = -1, prompts_ = 0;
+  struct TimelineSample {
+    double t_s = 0, completeness = 0;
+    int walls = 0;
+    int64_t prompts = 0;
+  };
+  std::vector<TimelineSample> timeline_;
+  static constexpr size_t kMaxTimeline = 720;  // one per 5 s: one hour
+  // Phase 9 step 8 (understanding >= 2 only; idle otherwise): gaps of the layout and the virtual coverage grids.
+  bool steer() const { return p_.understanding >= 2; }
+  void refresh_steer(int64_t t_ns);
+  GapFinder gapper_;
+  Coverage vcov_;
+  std::vector<Gap> gaps_;
+  int64_t last_steer_t_ = -1;
 };
 
 }  // namespace capturekit::guide

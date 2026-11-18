@@ -7,7 +7,9 @@
 
 #include "capturekit/guide/coverage.hpp"
 #include "capturekit/guide/engine.hpp"
+#include "capturekit/guide/gap_finder.hpp"
 #include "capturekit/guide/object_lifter.hpp"
+#include "capturekit/guide/room_shell.hpp"
 #include "capturekit/quality/quality.hpp"
 #include "capturekit/util/json.hpp"
 
@@ -16,6 +18,23 @@ namespace capturekit::guide::sim {
 Room make_room(const std::string& name) {
   Room r;
   r.name = name;
+  using C = ObjectClass;
+  if (name == "furnished4") {  // T4 (ADR 0029): sofa on wall 0, wardrobe on wall 1, bed (head) on wall 3, wall 2 textureless
+    r.poly = {{0, 0}, {5, 0}, {5, 4.5}, {0, 4.5}};
+    r.rects = {{0, 0, 5, 4.5}};
+    r.boxes = {{1.0, 0.0, 2.8, 0.9, 0.85, int(C::Couch)}, {4.4, 0.6, 5.0, 2.2, 2.0}, {0.0, 2.3, 2.0, 3.9, 0.55, int(C::Bed)}};
+    r.start_x = 3.0, r.start_z = 2.6;
+    r.arcore_planes = true, r.textureless_wall = 2;
+    return r;
+  }
+  if (name == "furnishedL") {  // sofa on wall 0, bed (head) on wall 1, wardrobe on wall 5, wall 4 textureless
+    r.poly = {{0, 0}, {6, 0}, {6, 3}, {3, 3}, {3, 5}, {0, 5}};
+    r.rects = {{0, 0, 6, 3}, {0, 3, 3, 5}};
+    r.boxes = {{1.5, 0.0, 3.3, 0.9, 0.85, int(C::Couch)}, {4.0, 0.8, 6.0, 2.4, 0.55, int(C::Bed)}, {0.0, 3.2, 0.6, 4.8, 2.0}};
+    r.start_x = 1.5, r.start_z = 1.8;
+    r.arcore_planes = true, r.textureless_wall = 4;
+    return r;
+  }
   if (name == "L") {
     r.poly = {{0, 0}, {6, 0}, {6, 3}, {3, 3}, {3, 5}, {0, 5}};
     r.rects = {{0, 0, 6, 3}, {0, 3, 3, 5}};
@@ -29,7 +48,6 @@ Room make_room(const std::string& name) {
       r.start_x = 1.0, r.start_z = 2.8;
     }
     if (name == "objects") {  // Phase 9 step 3: classed furniture for the detector oracle
-      using C = ObjectClass;
       r.boxes = {{0.3, 0.1, 2.1, 0.7, 0.8, int(C::Couch)},
                  {3.3, 1.7, 4.5, 2.5, 0.75, int(C::DiningTable)},
                  {1.0, 3.0, 1.5, 3.5, 0.9, int(C::Chair)},
@@ -53,7 +71,19 @@ struct Surf {
   // plane emission state: extent of seen points in (u,v)
   double umin = 1e9, umax = -1e9, vmin = 1e9, vmax = -1e9;
   int npts = 0;
+  // arcore plane mode (walls): seen points per 0.25 m along-wall bin (count, v extent)
+  std::vector<int> bin_n;
+  std::vector<double> bin_vmin, bin_vmax;
+  static constexpr double kBin = 0.25;
   Vec3 center(int i, int j, double c) const { return o + u * ((i + 0.5) * c) + v * ((j + 0.5) * c); }
+  void note(double du, double dv) {
+    umin = std::min(umin, du), umax = std::max(umax, du);
+    vmin = std::min(vmin, dv), vmax = std::max(vmax, dv);
+    ++npts;
+    if (bin_n.empty()) return;
+    const size_t b = size_t(std::clamp(int(du / kBin), 0, int(bin_n.size()) - 1));
+    ++bin_n[b], bin_vmin[b] = std::min(bin_vmin[b], dv), bin_vmax[b] = std::max(bin_vmax[b], dv);
+  }
 };
 
 struct Face {
@@ -312,6 +342,154 @@ struct Walker {
   int blocked = 0, received = 0, followed = 0;
 };
 
+// ---- Phase 9 step 7: gap truth (the sim's own ground truth, never fed back to the engine) -----------------------
+struct Frac {
+  int tot = 0, seen = 0, suff = 0;
+  double seen_f() const { return tot ? double(seen) / tot : 0.0; }
+  double suff_f() const { return tot ? double(suff) / tot : 0.0; }
+};
+
+/// Ground-truth cells of the chosen surface kinds whose centre falls in the rectangle (floor cells under blocks skipped).
+Frac region(const World& w, const GuideParams& gp, double x0, double z0, double x1, double z1, bool walls, bool floor, bool ceil) {
+  Frac f;
+  for (const Surf& s : w.surfs) {
+    if (!((s.kind == "wall" && walls) || (s.kind == "floor" && floor) || (s.kind == "ceiling" && ceil))) continue;
+    for (int j = 0; j < s.nv; ++j)
+      for (int i = 0; i < s.nu; ++i) {
+        const size_t k = size_t(j) * size_t(s.nu) + size_t(i);
+        if (!s.valid[k]) continue;
+        const Vec3 c = s.center(i, j, w.cell);
+        if (c.x() < x0 || c.x() > x1 || c.z() < z0 || c.z() > z1) continue;
+        if (s.kind == "floor")
+          if (std::any_of(w.room.boxes.begin(), w.room.boxes.end(), [&](const Box& b) { return c.x() >= b.x0 && c.x() <= b.x1 && c.z() >= b.z0 && c.z() <= b.z1; })) continue;
+        ++f.tot, f.seen += s.cells[k].seen, f.suff += s.cells[k].sufficient(gp);
+      }
+  }
+  return f;
+}
+
+Frac wall_frac(const Surf& s, const GuideParams& gp) {
+  Frac f;
+  for (size_t k = 0; k < s.cells.size(); ++k)
+    if (s.valid[k]) ++f.tot, f.seen += s.cells[k].seen, f.suff += s.cells[k].sufficient(gp);
+  return f;
+}
+
+double rect_gap(double ax0, double az0, double ax1, double az1, double bx0, double bz0, double bx1, double bz1) {
+  const double dx = std::max({0.0, ax0 - bx1, bx0 - ax1}), dz = std::max({0.0, az0 - bz1, bz0 - az1});
+  return std::hypot(dx, dz);
+}
+
+struct GapEval {
+  struct T { int n = 0, hit = 0; };
+  struct G { int n = 0, fals = 0, far = 0; };  // far: MissingWall farther than 1 m from any true wall
+  std::map<std::string, T> truth;  // wall corner block ceiling floor
+  std::map<std::string, G> gaps;   // by gap type name
+  int checkpoints = 0;
+};
+
+constexpr double kGapMatchM = 0.8;      // gap centre within this of a true hidden wall / corner
+constexpr double kHiddenSeen = 0.10;    // a true surface with at most this seen fraction is hidden
+constexpr double kBlockHidden = 0.30;   // floor ring around a block seen below this = hidden behind the block
+constexpr double kFalseSeen = 0.50;     // a gap whose true region was seen this much is a false gap
+constexpr double kFalseSuff = 0.70;     // ... Weak: sufficient this much
+
+void eval_gaps(const World& w, const GuideParams& gp, const std::vector<Gap>& gaps, GapEval& ev) {
+  const auto& P = w.room.poly;
+  const size_t nw = P.size();
+  ++ev.checkpoints;
+  auto cen = [](const Gap& g) { return std::pair<double, double>{0.5 * (g.x0 + g.x1), 0.5 * (g.z0 + g.z1)}; };
+  std::vector<bool> hidden_wall(nw, false);
+  for (size_t i = 0; i < nw; ++i) hidden_wall[i] = wall_frac(w.surfs[i], gp).seen_f() <= kHiddenSeen;
+  // Truth: hidden walls.
+  for (size_t i = 0; i < nw; ++i) {
+    if (!hidden_wall[i]) continue;
+    auto& t = ev.truth["wall"];
+    ++t.n;
+    auto [ax, az] = P[i];
+    auto [bx, bz] = P[(i + 1) % nw];
+    for (const Gap& g : gaps)
+      if (g.type == GapType::MissingWall && dist_seg(cen(g).first, cen(g).second, ax, az, bx, bz) <= kGapMatchM) { ++t.hit; break; }
+  }
+  // Truth: hidden corners (neither adjacent wall is hidden on its own).
+  for (size_t i = 0; i < nw; ++i) {
+    if (hidden_wall[i] || hidden_wall[(i + nw - 1) % nw]) continue;
+    auto [px, pz] = P[i];
+    const Frac f = region(w, gp, px - 0.8, pz - 0.8, px + 0.8, pz + 0.8, true, false, false);
+    if (f.tot == 0 || f.seen_f() > kHiddenSeen) continue;
+    auto& t = ev.truth["corner"];
+    ++t.n;
+    for (const Gap& g : gaps)
+      if (g.type == GapType::UnseenCorner && std::hypot(cen(g).first - px, cen(g).second - pz) <= kGapMatchM) { ++t.hit; break; }
+  }
+  // Truth: floor around a classed block never seen (behind / beside it).
+  for (const Box& b : w.room.boxes) {
+    if (!b.cls) continue;
+    const double m = 0.6;
+    const Frac outer = region(w, gp, b.x0 - m, b.z0 - m, b.x1 + m, b.z1 + m, false, true, false);
+    if (outer.tot < 10 || outer.seen_f() >= kBlockHidden) continue;
+    auto& t = ev.truth["block"];
+    ++t.n;
+    for (const Gap& g : gaps)
+      if (g.type == GapType::Occluded && rect_gap(g.x0, g.z0, g.x1, g.z1, b.x0, b.z0, b.x1, b.z1) <= 0.6) { ++t.hit; break; }
+  }
+  // Truth: ceiling / floor never seen.
+  for (int c = 0; c < 2; ++c) {
+    const Frac f = region(w, gp, -1e9, -1e9, 1e9, 1e9, false, c == 0, c == 1);
+    if (f.tot == 0 || f.seen_f() > kHiddenSeen) continue;
+    auto& t = ev.truth[c ? "ceiling" : "floor"];
+    ++t.n;
+    for (const Gap& g : gaps)
+      if (g.type == (c ? GapType::UnseenCeiling : GapType::UnseenFloor)) { ++t.hit; break; }
+  }
+  // False gaps: the true region was in fact well seen (or nothing is there).
+  static const char* names[] = {"missing_wall", "unseen_corner", "unseen_ceiling", "unseen_floor", "occluded", "weak"};
+  for (const Gap& g : gaps) {
+    auto& e = ev.gaps[names[int(g.type)]];
+    ++e.n;
+    const auto [cx, cz] = cen(g);
+    bool fals = false;
+    switch (g.type) {
+      case GapType::MissingWall: {
+        double best = 1e18;
+        size_t bi = 0;
+        for (size_t i = 0; i < nw; ++i) {
+          const double d = dist_seg(cx, cz, P[i].first, P[i].second, P[(i + 1) % nw].first, P[(i + 1) % nw].second);
+          if (d < best) best = d, bi = i;
+        }
+        e.far += best > 1.0;
+        fals = best > 1.0 || wall_frac(w.surfs[bi], gp).seen_f() >= kFalseSeen;
+        break;
+      }
+      case GapType::UnseenCorner: {
+        const Frac f = region(w, gp, cx - 0.8, cz - 0.8, cx + 0.8, cz + 0.8, true, false, false);
+        fals = f.tot == 0 || f.seen_f() >= kFalseSeen;
+        break;
+      }
+      case GapType::UnseenCeiling:
+      case GapType::UnseenFloor: {
+        const bool ceil = g.type == GapType::UnseenCeiling;
+        fals = region(w, gp, -1e9, -1e9, 1e9, 1e9, false, !ceil, ceil).seen_f() >= kFalseSeen;
+        break;
+      }
+      case GapType::Occluded: {
+        const Box* nb = nullptr;
+        double best = 1.5;
+        for (const Box& b : w.room.boxes) {
+          const double d = rect_gap(g.x0, g.z0, g.x1, g.z1, b.x0, b.z0, b.x1, b.z1);
+          if (d < best) best = d, nb = &b;
+        }
+        fals = !nb || region(w, gp, nb->x0 - 0.6, nb->z0 - 0.6, nb->x1 + 0.6, nb->z1 + 0.6, false, true, false).seen_f() >= kFalseSeen;
+        break;
+      }
+      case GapType::Weak:
+        fals = region(w, gp, std::min(g.x0, g.x1) - 0.3, std::min(g.z0, g.z1) - 0.3, std::max(g.x0, g.x1) + 0.3, std::max(g.z0, g.z1) + 0.3, true, true, true).suff_f() >= kFalseSuff;
+        break;
+    }
+    e.fals += fals;
+  }
+}
+
 void turn_toward(double& cur, double target, double rate, double dt, double& out_rate) {
   double e = wrap_pi(target - cur);
   double step = std::clamp(e, -rate * dt, rate * dt);
@@ -326,6 +504,69 @@ std::string simulate(const Config& cfg) {
   const GuideParams& gp = cfg.guide;
   World w(room, gp.cell_m);
   Rng rng(cfg.seed);
+  // ---- "arcore" plane mode (ADR 0029): wall planes like ARCore emits them. Own RNG (prng): the walker, sensor and
+  // engine draws stay where they were. Tracks are fixed at start: one per along-wall fragment between furniture pieces
+  // standing against the wall (< 0.3 m off it, >= 0.3 m wide); a fragment > 2 m is first two half tracks (p 0.5)
+  // that merge once both were emitted 8 times (the lower one takes the union, the other id goes stale = subsumed).
+  const std::string pmode = cfg.planes.empty() ? (room.arcore_planes ? "arcore" : "ideal") : cfg.planes;
+  const bool arcore = pmode == "arcore";
+  Rng prng(cfg.seed * 104729 + 31);
+  struct Track {
+    int wall = 0;
+    double a = 0, b = 0;  // along-wall interval (m from the wall's start)
+    int partner = -1;     // pre-merge half: index of the other half
+    std::string id;       // ARCore plane id; "" until first detected
+    double yaw_err = 0, off_err = 0;
+    int emits = 0;        // emissions under the current id
+    bool alive = true;
+  };
+  std::vector<Track> tracks;
+  std::vector<int> frag_by_wall(room.poly.size(), 0);
+  int n_frag = 0, n_reid = 0, n_subsumed = 0, next_pid = 0, max_live = 0;
+  double jit_min = 1e9, jit_max = 0;
+  auto new_id = [&](Track& tr) {  // fresh id + fresh 2-4 deg yaw jitter and +-2 cm offset
+    tr.id = "a" + std::to_string(next_pid++);
+    const double mag = prng.uniform(2.0, 4.0);
+    tr.yaw_err = prng.uniform() < 0.5 ? -mag : mag;
+    tr.off_err = prng.uniform(-0.02, 0.02);
+    tr.emits = 0;
+    jit_min = std::min(jit_min, mag), jit_max = std::max(jit_max, mag);
+  };
+  // textureless wall: keeps 35 % of its points (prng; the point draws themselves are unchanged)
+  auto thin = [&](int surf) { return arcore && surf >= 0 && surf == room.textureless_wall && prng.uniform() >= 0.35; };
+  if (arcore)
+    for (size_t i = 0; i < room.poly.size(); ++i) {
+      Surf& s = w.surfs[i];  // walls are surfs[0..poly.size()) in edge order
+      s.bin_n.assign(size_t(std::ceil(s.su / Surf::kBin)), 0);
+      s.bin_vmin.assign(s.bin_n.size(), 1e9), s.bin_vmax.assign(s.bin_n.size(), -1e9);
+      if (int(i) == room.textureless_wall) continue;
+      std::vector<std::pair<double, double>> occ;  // along-wall intervals hidden by furniture against this wall
+      for (const Box& b : room.boxes) {
+        double dmin = 1e9, ua = 1e9, ub = -1e9;
+        for (double x : {b.x0, b.x1})
+          for (double z : {b.z0, b.z1}) {
+            const Vec3 q = Vec3(x, 0, z) - s.o;
+            dmin = std::min(dmin, q.dot(s.n)), ua = std::min(ua, q.dot(s.u)), ub = std::max(ub, q.dot(s.u));
+          }
+        ua = std::max(ua, 0.0), ub = std::min(ub, s.su);
+        if (dmin > -0.05 && dmin < 0.3 && ub - ua >= 0.3) occ.push_back({ua, ub});
+      }
+      std::sort(occ.begin(), occ.end());
+      auto add_frag = [&](double a, double b) {
+        if (b - a < 0.3) return;
+        ++frag_by_wall[i], ++n_frag;
+        const int k = int(tracks.size());
+        if (b - a > 2.0 && prng.uniform() < 0.5) {
+          const double m = a + (b - a) * prng.uniform(0.35, 0.65);
+          tracks.push_back({int(i), a, m, k + 1}), tracks.push_back({int(i), m, b, k});
+        } else {
+          tracks.push_back({int(i), a, b});
+        }
+      };
+      double cur = 0;
+      for (auto [oa, ob] : occ) add_frag(cur, oa), cur = std::max(cur, ob);
+      add_frag(cur, s.su);
+    }
   const double dt = 1.0 / 30, cam_h = 1.4;
   const geometry::Intrinsics K = make_K();
   const double exposure_s = 0.010;  // well-lit room; blur px = (rotation + translation/2 m) * exposure * fx
@@ -340,6 +581,13 @@ std::string simulate(const Config& cfg) {
   SparsePointStore lift_pts;
   Rng orng(cfg.seed * 7919 + 17);
   int or_dets = 0, or_false = 0;
+  // Gap harness (Phase 9 step 7): shadow stages only the report reads; nothing here feeds the engine or the walker.
+  const bool ueval = cfg.understanding_eval && use_engine;
+  RoomShell sshell;
+  GapFinder gfinder;
+  Coverage vcov(gp);
+  GapEval geval;
+  std::vector<Gap> last_gaps;
 
   Walker me{room.start_x, room.start_z, room.start_yaw};
   const double dtr = deg2rad(1.0);
@@ -462,13 +710,11 @@ std::string simulate(const Config& cfg) {
             const double sigma = 0.01 + 0.005 * std::max(0.0, range - 2.0);
             const double nx = rng.normal(), ny = rng.normal(), nz = rng.normal();  // fixed draw order
             const Vec3 q = hit.p + Vec3(nx, ny, nz) * sigma;
+            if (thin(hit.surf)) continue;
             pc.xyz.push_back(float(q.x())), pc.xyz.push_back(float(q.y())), pc.xyz.push_back(float(q.z()));
             if (hit.surf >= 0) {
               Surf& sf = w.surfs[size_t(hit.surf)];
-              const double du = (hit.p - sf.o).dot(sf.u), dv = (hit.p - sf.o).dot(sf.v);
-              sf.umin = std::min(sf.umin, du), sf.umax = std::max(sf.umax, du);
-              sf.vmin = std::min(sf.vmin, dv), sf.vmax = std::max(sf.vmax, dv);
-              ++sf.npts;
+              sf.note((hit.p - sf.o).dot(sf.u), (hit.p - sf.o).dot(sf.v));
             } else if (hit.face >= 0 && hit.n.y() > 0.5) {  // a furniture top face
               Top& tp = tops[size_t(hit.face) / 5];
               tp.xmin = std::min(tp.xmin, hit.p.x()), tp.xmax = std::max(tp.xmax, hit.p.x());
@@ -513,6 +759,7 @@ std::string simulate(const Config& cfg) {
         VisResult vr = view_cell(vc, p, n, gp.view_margin_px);
         if (!vr.in_image || vr.range > 6.0 || vr.cos_inc < 0.1 || !w.los(vc.pos, p)) continue;
         Vec3 q = p + Vec3(rng.normal(), rng.normal(), rng.normal()) * 0.01;
+        if (sf && thin(int(idx))) continue;
         pc.xyz.push_back(float(q.x())), pc.xyz.push_back(float(q.y())), pc.xyz.push_back(float(q.z()));
         if (!sf && n.y() > 0.5) {  // a furniture top face (no RNG use: reports with the flag off are unchanged)
           Top& tp = tops[(idx - w.surfs.size()) / 5];
@@ -520,12 +767,7 @@ std::string simulate(const Config& cfg) {
           tp.zmin = std::min(tp.zmin, p.z()), tp.zmax = std::max(tp.zmax, p.z());
           ++tp.npts;
         }
-        if (sf) {
-          double du = (p - sf->o).dot(sf->u), dv = (p - sf->o).dot(sf->v);
-          sf->umin = std::min(sf->umin, du), sf->umax = std::max(sf->umax, du);
-          sf->vmin = std::min(sf->vmin, dv), sf->vmax = std::max(sf->vmax, dv);
-          ++sf->npts;
-        }
+        if (sf) sf->note((p - sf->o).dot(sf->u), (p - sf->o).dot(sf->v));
       }
       }  // !cfg.view_points
       if (oracle)
@@ -536,7 +778,7 @@ std::string simulate(const Config& cfg) {
     if (use_engine && step % 30 == 15) {
       for (size_t i = 0; i < w.surfs.size(); ++i) {
         const Surf& s = w.surfs[i];
-        if (s.npts < 15) continue;
+        if (s.npts < 15 || (arcore && i < room.poly.size())) continue;  // arcore mode: wall planes come from the tracks
         bundle::PlaneRecord pr;
         pr.t_ns = t_ns + int64_t(i);
         pr.id = std::to_string(i);
@@ -562,6 +804,58 @@ std::string simulate(const Config& cfg) {
           pr.extent_u = tp.xmax - tp.xmin, pr.extent_v = tp.zmax - tp.zmin;
           engine.on_plane(pr);
         }
+    }
+    if (arcore && step % 30 == 15) {  // arcore wall planes (1 Hz, any policy: the stats are the realism check)
+      int live = 0;
+      int64_t k_emit = int64_t(w.surfs.size() + tops.size());
+      for (size_t ti = 0; ti < tracks.size(); ++ti) {
+        Track& tr = tracks[ti];
+        if (!tr.alive) continue;
+        if (tr.partner > int(ti)) {  // subsumption: both halves seen 8 times -> this one takes the union
+          Track& o = tracks[size_t(tr.partner)];
+          if (tr.emits >= 8 && o.emits >= 8) {
+            tr.a = std::min(tr.a, o.a), tr.b = std::max(tr.b, o.b);
+            o.alive = false, o.partner = tr.partner = -1;
+            ++n_subsumed;
+          }
+        }
+        const Surf& s = w.surfs[size_t(tr.wall)];
+        int n = 0;
+        double ua = 1e9, ub = -1e9, va = 1e9, vb = -1e9;
+        for (size_t b = 0; b < s.bin_n.size(); ++b) {
+          const double b0 = double(b) * Surf::kBin, b1 = b0 + Surf::kBin, bc = b0 + 0.5 * Surf::kBin;
+          if (!s.bin_n[b] || bc < tr.a || bc > tr.b) continue;
+          n += s.bin_n[b];
+          ua = std::min(ua, std::max(b0, tr.a)), ub = std::max(ub, std::min(b1, tr.b));
+          va = std::min(va, s.bin_vmin[b]), vb = std::max(vb, s.bin_vmax[b]);
+        }
+        if (n < 10 || ub - ua < 0.2 || vb - va < 0.2) continue;  // not detected (yet)
+        if (tr.id.empty()) {
+          new_id(tr);
+        } else if (tr.emits >= 3 && prng.uniform() < 0.01) {  // re-id: same surface, new id; the old one goes stale
+          new_id(tr);
+          ++n_reid;
+        }
+        ++tr.emits, ++live;
+        if (!use_engine) continue;
+        const double cy = std::cos(deg2rad(tr.yaw_err)), sy = std::sin(deg2rad(tr.yaw_err));
+        auto rot = [&](const Vec3& d) { return Vec3(cy * d.x() + sy * d.z(), d.y(), -sy * d.x() + cy * d.z()); };
+        const Vec3 c = s.o + s.u * (0.5 * (ua + ub)) + s.v * (0.5 * (va + vb)) + s.n * tr.off_err;
+        const Vec3 nn = rot(s.n), uu = rot(s.u);
+        bundle::PlaneRecord pr;
+        pr.t_ns = t_ns + k_emit++;
+        pr.id = tr.id;
+        pr.kind = "wall";
+        for (int k = 0; k < 3; ++k) pr.center[k] = c[k], pr.normal[k] = nn[k], pr.axis_u[k] = uu[k];
+        pr.extent_u = ub - ua;
+        pr.extent_v = vb - va;
+        engine.on_plane(pr);
+      }
+      max_live = std::max(max_live, live);
+    }
+    if (ueval && step % 30 == 15) {  // shadow shell + virtual surfaces follow the engine's map at 1 Hz
+      sshell.update(engine.map(), nullptr, engine.openings());
+      vcov.sync_virtual(GapFinder::virtual_surfaces(sshell.shell(), engine.map()));
     }
     // frames (10 Hz): quality from motion, keyframe selection with the real selector
     if (step % 3 == 0) {
@@ -590,6 +884,11 @@ std::string simulate(const Config& cfg) {
         if (d.keyframe) {
           ++n_keyframes;
           if (use_engine) engine.on_keyframe(d.frame_id, it->second.t, it->second.sharp);
+          if (ueval) {
+            Obs vo;
+            vo.pose = it->second.pose, vo.K = K, vo.t_ns = it->second.t, vo.sharp_norm = it->second.sharp, vo.keyframe = true;
+            vcov.observe(vo, nullptr, nullptr);
+          }
           if (oracle) {
             const geometry::PoseWC& Tk = it->second.pose;
             const ViewCam kc = ViewCam::make(Tk, K);
@@ -601,7 +900,10 @@ std::string simulate(const Config& cfg) {
               g.c = sf.o + sf.u * (0.5 * sf.su) + sf.v * (0.5 * sf.sv), g.n = sf.n;
               lc.surfaces.push_back(g);
             }
+            bundle::DetectionsRecord erec;  // understanding >= 2: the engine gets the same boxes (flag 1 keeps the sim-only oracle)
+            erec.t_ns = it->second.t, erec.frame_id = d.frame_id;
             auto feed = [&](ObjectClass cls, double x0, double y0, double x1, double y1, double score) {
+              erec.boxes.push_back({int32_t(cls), float(score), float(x0), float(y0), float(x1), float(y1)});
               Detection dd;
               dd.t_ns = it->second.t, dd.frame_id = d.frame_id, dd.cls = cls, dd.score = float(score);
               dd.x0 = float(x0), dd.y0 = float(y0), dd.x1 = float(x1), dd.y1 = float(y1);
@@ -651,6 +953,7 @@ std::string simulate(const Config& cfg) {
               ++or_false;
               feed(cls, fx0, fy0, fx0 + fw, fy0 + fh, orng.uniform(0.3, 0.6));
             }
+            if (use_engine && gp.understanding >= 2) engine.on_detections(erec);
           }
           // ground truth with the same rule + true occlusion
           ViewCam gc = ViewCam::make(it->second.pose, K);
@@ -678,6 +981,15 @@ std::string simulate(const Config& cfg) {
       if (t90 < 0 && c >= 0.90) t90 = t;
       if (t95 < 0 && c >= 0.95) t95 = t;
       if (c >= 0.98 && cfg.policy != "planner") break;
+    }
+    if (ueval && step % std::max(1, int(std::lround(cfg.understanding_every_s * 30))) == 0 && t >= cfg.understanding_every_s) {
+      const std::vector<Object> objs = oracle ? lifter.objects() : std::vector<Object>{};
+      GapInputs gi;
+      gi.shell = &sshell.shell(), gi.map = &engine.map(), gi.objects = &objs, gi.openings = &engine.openings();
+      gi.cov = &engine.coverage(), gi.vcov = &vcov;
+      gi.user.has_user = true, gi.user.ux = me.x, gi.user.uz = me.z, gi.user.yaw = me.yaw;
+      last_gaps = gfinder.find(gi);
+      eval_gaps(w, gp, last_gaps, geval);
     }
 
     // ---- policy -> motion --------------------------------------------------------------------
@@ -913,6 +1225,16 @@ std::string simulate(const Config& cfg) {
     ser.push_back("[" + json::num(r3(series[i].first)) + "," + json::num(r3(series[i].second)) + "]");
   o.raw("coverage_series_10s", json::array(ser.begin(), ser.end()));
   if (cfg.trace) o.raw("trace", json::array(trace.begin(), trace.end()));
+  if (arcore) {  // ADR 0029: what the plane model did (absent in "ideal" mode: those reports are unchanged)
+    json::Object sp;
+    std::vector<std::string> fb;
+    for (int f : frag_by_wall) fb.push_back(std::to_string(f));
+    sp.set("mode", pmode).set("true_walls", uint64_t(room.poly.size())).set("textureless_walls", room.textureless_wall >= 0 ? 1 : 0);
+    sp.set("fragments", n_frag).raw("fragments_by_wall", json::array(fb.begin(), fb.end())).set("tracks", uint64_t(tracks.size()));
+    sp.set("wall_plane_ids", next_pid).set("reids", n_reid).set("subsumed", n_subsumed).set("max_live_wall_planes", max_live);
+    sp.set("jitter_deg_min", next_pid ? r3(jit_min) : 0.0).set("jitter_deg_max", r3(jit_max));
+    o.raw("sim_planes", sp.dump());
+  }
   if (use_engine) {
     auto st = engine.coverage().stats();
     o.set("coverage_claimed_final", r3(st.completeness())).set("tier", std::string(1, engine.tier()));
@@ -935,6 +1257,42 @@ std::string simulate(const Config& cfg) {
     }
     double mins = std::max(dur / 60.0, 1e-9);
     o.set("flap_per_min", r3(engine.planner().switches() / mins));
+  }
+  if (ueval) {
+    json::Object ub, tb, gb;
+    int tn = 0, th = 0, gn = 0, gf = 0;
+    for (const char* k : {"wall", "corner", "block", "ceiling", "floor"}) {
+      const GapEval::T t = geval.truth.count(k) ? geval.truth.at(k) : GapEval::T{};
+      tb.raw(k, json::Object().set("n", t.n).set("hit", t.hit).dump());
+      tn += t.n, th += t.hit;
+    }
+    for (const char* k : {"missing_wall", "unseen_corner", "unseen_ceiling", "unseen_floor", "occluded", "weak"}) {
+      const GapEval::G g = geval.gaps.count(k) ? geval.gaps.at(k) : GapEval::G{};
+      gb.raw(k, json::Object().set("n", g.n).set("false", g.fals).set("far", g.far).dump());
+      gn += g.n, gf += g.fals;
+    }
+    ub.set("checkpoints", geval.checkpoints).raw("truth", tb.dump()).raw("gaps", gb.dump());
+    ub.set("truth_n", tn).set("truth_hit", th).set("gaps_n", gn).set("gaps_false", gf);
+    static const char* gnames[] = {"missing_wall", "unseen_corner", "unseen_ceiling", "unseen_floor", "occluded", "weak"};
+    std::vector<std::string> lg;
+    for (const Gap& g : last_gaps) {
+      json::Object d;
+      d.set("type", gnames[int(g.type)]).set("x0", r3(g.x0)).set("z0", r3(g.z0)).set("x1", r3(g.x1)).set("z1", r3(g.z1));
+      d.set("pri", r3(g.pri)).set("why", g.why);
+      lg.push_back(d.dump());
+    }
+    ub.raw("last_gaps", json::array(lg.begin(), lg.end()));
+    ub.set("shell_walls", uint64_t(sshell.shell().walls.size())).set("shell_closed", sshell.shell().closed);
+    {
+      std::vector<std::string> sw;  // the shadow shell as of the last second (debugging aid, also in the report doc)
+      for (const ShellWall& sl : sshell.shell().walls) {
+        json::Object d;
+        d.set("id", sl.id).set("x0", r3(sl.x0)).set("z0", r3(sl.z0)).set("x1", r3(sl.x1)).set("z1", r3(sl.z1)).set("inferred", sl.inferred);
+        sw.push_back(d.dump());
+      }
+      ub.raw("shell", json::array(sw.begin(), sw.end()));
+    }
+    o.raw("understanding", ub.dump());
   }
   if (oracle) {
     std::vector<std::string> lo, tr;

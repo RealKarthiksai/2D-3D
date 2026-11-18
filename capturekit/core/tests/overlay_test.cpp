@@ -124,13 +124,21 @@ TEST(Overlay, TrackingAndWallBearingsAreRelativeToTheUser) {
   feed(r, kPi / 2, 1, 1'000'000'000);
   auto ma = a.overlay(2'000'000'000);
   ASSERT_EQ(ma.mode, "target") << ma.to_json();
-  EXPECT_EQ(ma.walls, 1);
+  EXPECT_EQ(ma.walls, 1);  // v3: one layout wall with evidence; the outline's other sides are hypothesised (id < 0)
   EXPECT_TRUE(ma.wall_found);
-  ASSERT_EQ(ma.wall_list.size(), 1u);
-  EXPECT_EQ(ma.wall_list[0].seen_pct, 0);
-  EXPECT_NEAR(ma.wall_list[0].x0, 0, 1e-6);
-  EXPECT_NEAR(ma.wall_list[0].x1, 4, 1e-6);
-  EXPECT_NEAR(ma.wall_list[0].z0, 4, 1e-6);
+  const OverlayWall* seen = nullptr;
+  for (auto& w : ma.wall_list)
+    if (w.id > 0) {
+      ASSERT_EQ(seen, nullptr) << ma.to_json();
+      seen = &w;
+    }
+  ASSERT_NE(seen, nullptr) << ma.to_json();
+  EXPECT_EQ(seen->id, 1);
+  EXPECT_EQ(seen->seen_pct, 0);
+  EXPECT_NEAR(std::min(seen->x0, seen->x1), 0, 1e-6);
+  EXPECT_NEAR(std::max(seen->x0, seen->x1), 4, 1e-6);
+  EXPECT_NEAR(seen->z0, 4, 1e-6);
+  EXPECT_NEAR(seen->z1, 4, 1e-6);
   EXPECT_EQ(ma.why_id, "why.wall_ahead");
   EXPECT_EQ(l.overlay(2'000'000'000).why_id, "why.wall_left");
   EXPECT_EQ(r.overlay(2'000'000'000).why_id, "why.wall_right");
@@ -146,20 +154,37 @@ TEST(Overlay, NonFiniteWallIsSkippedAndJsonStaysValid) {
   e.on_plane(wall("bad_inf", {2, 1.25, -4}, {0, 0, 1}, {1, 0, 0}, 4, inf));
   e.on_plane(wall("good", {-3, 1.25, 0}, {1, 0, 0}, {0, 0, 1}, 4, 2.5));
   e.on_pose(pose_at(1'000'000'000, 0, 0, 0));
+  std::vector<Instruction> out;
+  e.update(1'000'000'000, out);  // v3: the layout refreshes in update()
   auto m = e.overlay(1'000'000'000);
   auto j = m.to_json();
   for (const char* bad : {"nan", "NaN", "inf", "Inf"}) EXPECT_EQ(j.find(bad), std::string::npos) << bad << " in " << j;
   EXPECT_EQ(j.find('['), std::string::npos) << j;
-  EXPECT_EQ(m.walls, 3);  // all walls are counted, only finite ones are drawn
-  ASSERT_EQ(m.wall_list.size(), 1u) << j;
-  EXPECT_GE(m.wall_list[0].seen_pct, 0);
-  EXPECT_LE(m.wall_list[0].seen_pct, 100);
+  EXPECT_TRUE(m.wall_found);
+  EXPECT_EQ(m.walls, 1);  // v3: non-finite planes never enter the layout; only the good wall is a layout wall
+  ASSERT_FALSE(m.wall_list.empty()) << j;
+  for (auto& w : m.wall_list) {
+    EXPECT_TRUE(std::isfinite(w.x0 + w.z0 + w.x1 + w.z1));
+    EXPECT_GE(w.seen_pct, 0);
+    EXPECT_LE(w.seen_pct, 100);
+  }
   // A hand-built model with non-finite endpoints and an out-of-range percentage is sanitised by to_json too.
   OverlayModel h;
   h.wall_list = {{nan, 0, 1, 1, 50}, {0, 0, 1, 1, 250}};
   auto hj = h.to_json();
   EXPECT_EQ(hj.find("nan"), std::string::npos) << hj;
   EXPECT_NE(hj.find("\"surfaces\":\"0.00,0.00,1.00,1.00,100,0\""), std::string::npos) << hj;
+}
+
+TEST(Overlay, FreshLineIdsArePrintedUnclamped) {
+  // RoomShell's fresh line numbers start above 100000; the old +-9999 clamp printed them all as 9999 (collisions).
+  OverlayModel h;
+  h.wall_list = {{0, 0, 1, 1, 50, 100001}, {0, 0, 1, 1, 50, 100002}, {0, 0, 1, 1, 50, 9999999}};
+  h.span_list = {{100001, 0, 0, 1, 1, 'o'}, {-100002, 0, 0, 1, 1, 'b'}};
+  auto j = h.to_json();
+  EXPECT_NE(j.find("\"surfaces\":\"0.00,0.00,1.00,1.00,50,100001;0.00,0.00,1.00,1.00,50,100002;0.00,0.00,1.00,1.00,50,999999\""),
+            std::string::npos) << j;
+  EXPECT_NE(j.find("\"spans\":\"100001,0.00,0.00,1.00,1.00,o;-100002,0.00,0.00,1.00,1.00,b\""), std::string::npos) << j;
 }
 
 // ADR 0022: yaw_mask = 12 x 30 degree heading sectors (bit 0 = [0,30), yaw positive to the left) that hold a keyframe,
@@ -200,16 +225,28 @@ TEST(Overlay, WallIdsAreStableInFirstSeenOrder) {
   e.on_plane(wall("b", {2, 1.25, 4}, {0, 0, -1}, {1, 0, 0}, 4, 2.5));
   e.on_plane(wall("a", {-3, 1.25, 0}, {1, 0, 0}, {0, 0, 1}, 4, 2.5));
   e.on_pose(pose_at(1'000'000'000, 0, 0, 0));
+  std::vector<Instruction> out;
+  e.update(1'000'000'000, out);  // v3: walls are layout walls, refreshed in update()
+  auto ids_of = [](const OverlayModel& m) {
+    std::set<int> s;
+    for (auto& w : m.wall_list)
+      if (w.id > 0) s.insert(w.id);
+    return s;
+  };
+  auto id_at_z4 = [](const OverlayModel& m) {  // the line of plane "b" (z = 4), seen first
+    for (auto& w : m.wall_list)
+      if (std::abs(w.z0 - 4) < 0.05 && std::abs(w.z1 - 4) < 0.05) return w.id;
+    return 0;
+  };
   auto m1 = e.overlay(1'000'000'000);
-  ASSERT_EQ(m1.wall_list.size(), 2u);
-  EXPECT_EQ(m1.wall_list[0].id, 2);  // list order is plane-id order ("a" < "b"), ids are first-seen order
-  EXPECT_EQ(m1.wall_list[1].id, 1);
-  e.on_plane(wall("0", {3, 1.25, 0}, {-1, 0, 0}, {0, 0, 1}, 4, 2.5));  // sorts first in the list, seen last
-  auto m2 = e.overlay(1'000'000'000);
-  ASSERT_EQ(m2.wall_list.size(), 3u);
-  EXPECT_EQ(m2.wall_list[0].id, 3);
-  EXPECT_EQ(m2.wall_list[1].id, 2);
-  EXPECT_EQ(m2.wall_list[2].id, 1);
+  EXPECT_EQ(ids_of(m1), (std::set<int>{1, 2})) << m1.to_json();  // ids are first-seen plane order: b = 1, a = 2
+  EXPECT_EQ(id_at_z4(m1), 1);
+  e.on_plane(wall("0", {3, 1.25, 0}, {-1, 0, 0}, {0, 0, 1}, 4, 2.5));  // sorts first by plane id, seen last
+  e.on_pose(pose_at(2'000'000'000, 0, 0, 0));
+  e.update(2'000'000'000, out);  // the layout refreshes at most once per event-second
+  auto m2 = e.overlay(2'000'000'000);
+  EXPECT_EQ(ids_of(m2), (std::set<int>{1, 2, 3})) << m2.to_json();
+  EXPECT_EQ(id_at_z4(m2), 1);  // never renumbered
   auto j = m2.to_json();
   size_t p = j.find("\"surfaces\":\"");
   ASSERT_NE(p, std::string::npos);
@@ -222,8 +259,7 @@ TEST(Overlay, WallIdsAreStableInFirstSeenOrder) {
     EXPECT_EQ(commas, 5) << s;
     ++entries;
   }
-  EXPECT_EQ(entries, 3u);
-  EXPECT_EQ(s.substr(s.rfind(',') + 1), "1") << s;  // last entry is plane "b", the first wall seen
+  EXPECT_EQ(entries, m2.wall_list.size());
 }
 
 // Golden: generated on Linux x86_64 with g++ (Release, glibc libm trig). Coordinates are rounded to cm, but a different
