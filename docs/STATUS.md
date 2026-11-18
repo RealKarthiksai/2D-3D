@@ -4,11 +4,11 @@ The program now has two parts (see [program-spec/README.md](program-spec/README.
 
 See also [NEXT_SESSION.md](NEXT_SESSION.md) for the copy-paste start kit for a new conversation.
 
-Updated 2026-11-16 · branch `main` · last commit `21ce79a` (history was rewritten; hashes in older notes no longer exist)
+Updated 2026-11-17 (end of unattended run) · branch `main` · last commit `b3d39f0` + a large UNCOMMITTED tree (see PROGRESS.md; history was rewritten, older hashes no longer exist) · tests only you can run: [HUMAN_TESTS.md](HUMAN_TESTS.md)
 
 ## 1. Overall progress
 
-Nine of the thirteen phases (0–8, minus device acceptance) are done in software; Phase 9 is about 10 % done and Phases 10–11 are partly built on Android only. Phases 9–11 were added when the program became two parts, to cover room understanding (furniture, openings, missing areas), the voice assistant, and the overlay/review/privacy UI. Ordered plan of every open item: `.claude/agent-memory/planner/briefs/remaining-work-audit.md`. Every phase has acceptance items that need real phones, a Mac, or people (section 3). Those items stay open even after the software is written.
+Nine of the thirteen phases (0–8, minus device acceptance) are done in software; Phase 9 is about 50 % done in software (uncommitted: detections in the bundle, shell, gaps, detector worker; engine wiring and steering pending) and Phases 10–11 are mostly built on Android only (voice, consent, upload UI added uncommitted). Phases 9–11 were added when the program became two parts, to cover room understanding (furniture, openings, missing areas), the voice assistant, and the overlay/review/privacy UI. Ordered plan of every open item: `.claude/agent-memory/planner/briefs/remaining-work-audit.md`. Every phase has acceptance items that need real phones, a Mac, or people (section 3). Those items stay open even after the software is written.
 
 | Phase | Software on this machine | Acceptance status |
 |---|---|---|
@@ -21,12 +21,12 @@ Nine of the thirteen phases (0–8, minus device acceptance) are done in softwar
 | 6 Native capture pipelines | **Done** (`09cfcba`): C API, Session, recovery, JNI + Android capture, iOS source | Core met incl. SIGKILL recovery and ASAN/UBSAN/TSAN; devices needed (docs/capture-test-protocol.md); iOS uncompiled |
 | 7 Finalize + upload | **Done** (`fe73262`): on-device validator, verdict table, verifier, tus clients (Android compiled, iOS source), docker failure matrix | Server matrix met (8/8); phone cases in docs/upload-test-protocol.md |
 | 8 Guidance core (GuideMind) | **Done** (`606e618`): LiveMap, coverage, NavGrid, planner, instructions, simulator, guide sink; OverlayModel event (`5fd4887`, ADR 0013) | Manual coverage labels on real sessions need you |
-| 9 Room understanding | **Partial** (`0a4a67d`): types + SurfaceClassifier behind `understanding=0`. Openings, objects, shell, gaps, detections contract not started | Detector choice/latency per device tier, missing-area labels need you |
-| 10 Voice assistant | **Partial, Android only**: Kotlin SpeechScheduler (`ac76a25`, ADR 0014), TTS renderer (`21ce79a`). No intents/STT, no core scheduler | Latency on phones, user tuning of speech budget |
-| 11 Overlay, review, consent, privacy | **Partial**: core overlay (`5fd4887`), Android HUD, UnderstandingView, ReviewActivity verdict only (`21ce79a`). No consent, redaction or upload UI | iOS UI build, redaction set labelling, consent text owner |
-| 12 Integration + field trials | Not started; `ckit e2e`/`trial-report` can be done here | Trials need participants and your target thresholds |
+| 9 Room understanding | **Partial** (`0a4a67d`, `36a676b`, `e07dc94` + uncommitted): SurfaceClassifier, opening detector, 3D object lifter, overlay v2 (ADR 0022); uncommitted: detections channel in the bundle (schema 1.1.0, ADR 0016) and C API, RoomShell, gap finder, landmarks, virtual coverage grids, DetectorWorker (flag off). Not done: engine on_detections (U5-C), gap steering (U10-C), outputs channels 1.3.0 (U11-CT), debug flags and UI objects (U11-A) | Detector choice/latency per device tier, missing-area labels need you |
+| 10 Voice assistant | **Partial, Android only**: SpeechScheduler (`ac76a25`, ADR 0014), TTS, VoiceIntent, VoiceStats, StatusPill (`c3e6d51`); uncommitted: VoiceController push-to-talk (API 31+), repeatLast, StateAnswers (ADR 0019). No core scheduler | Latency on phones, user tuning of speech budget |
+| 11 Overlay, review, consent, privacy | **Partial**: core overlay, Android HUD, ReviewActivity, Redactor (ADR 0021), ReviewSheet, RoomView, flavours (committed); uncommitted: ConsentStore/ConsentActivity + manifest consent (schema 1.2.0, ADR 0020), My scans + upload states, Sentry (field only), ResearchLog (field). Consent text is a placeholder | iOS UI build, redaction set labelling, consent text owner |
+| 12 Integration + field trials | `ckit e2e`, `trial-report`, frozen-1.0.0 example dir (`9f4ad14`); trials not started | Trials need participants and your target thresholds |
 
-**Verified on this machine:** C++ core `ctest` 68/68 (+ ASAN/UBSAN/TSAN) · Python `pytest` 79 + 8 docker-matrix + ruff clean · docker upload stack · Android `assembleDebug testDebugUnitTest` passes (with the NDK-built core).
+**Verified on this machine (2026-11-17, uncommitted tree on b3d39f0):** C++ core `ctest` 163/163 (WSL, clean build) · WSL `pytest` 126 passed, 8 skipped · ruff check and format clean (2 files reformatted after the run) · replay_golden 0 differences · frozen-1.0.0 sha256 + validate PASS · Android `:capturekit:testDebugUnitTest` 184/184 and `assembleStandardDebug`/`assembleFieldDebug` OK. Docker smoke not run (docker down).
 **Not verified:** anything iOS/Swift (no macOS here); CI runs on `main` but the macOS job has never been seen green.
 
 ## 2. What I set up on this machine
@@ -88,7 +88,9 @@ cd android && ANDROID_HOME=~/Android/Sdk ./gradlew assembleDebug testDebugUnitTe
 ```
 
 ## 5. Next step on my side
-M1 Android stability finish (in progress), then M2 Phase 9 openings. Neither needs hardware.
+Unattended queue stopped by the user after B1-B6 plus U7-A, U8-A, U8-C, U9-C (code only, uncommitted, reviewed). Remaining, in order: U5-C, U7-C (ADR 0023), U10-C, U11-CT, U11-A, a real U12-D. iOS blocked. Detail: `.claude/agent-memory/planner/briefs/unattended-queue.md` ("Status at stop"). Everything that needs a phone or a decision is in [HUMAN_TESTS.md](HUMAN_TESTS.md) (H1-H35).
+
+
 
 ## 6. Gate 0: real-device track (from the Phase 8-12 research plan; start now, needs you)
 Provisional answers while the user was away: see capturekit/docs/decisions/0018-delegated-decisions.md (revisit). Detector: ADR 0017; face blur: ADR 0021.

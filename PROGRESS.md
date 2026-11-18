@@ -2,38 +2,38 @@
 Program = 2 parts (docs/program-spec/README.md). This whole repo = Part 1 only (Part 2 = repo roomscan-recon). Phases 0–12. Branch `main`.
 
 ## Done (software, verified on synthetic data; device acceptance blocked, see docs/STATUS.md §3)
-- 0–1 conventions, raw recorders, Scan Bundle spec/writer/validator (cd456bf) · 2 geometry core (2e55389) · 3 replay harness (d0c03ec)
-- 4 quality + keyframe selector (8b00160) · 5 thermal/battery governor (ae5ede6) · 6 C API + Session + recovery, JNI/Android capture, iOS source (09cfcba)
-- 7 on-device validator, verdicts, tus clients, verifier, docker failure matrix (fe73262) · 8 guidance core: LiveMap, coverage, NavGrid, planner, simulator (606e618)
-- JNI handle map (f3b071a, ADR 0012) · core OverlayModel event (5fd4887, f93c5ea, ADR 0013)
-- 9 PARTIAL (~10 %): understanding types + SurfaceClassifier behind param `understanding` (default 0) (0a4a67d). Openings, objects, shell, gaps not started.
-- 10/11 PARTIAL, Android only: overlay parsing, IngestStats, Kotlin SpeechScheduler (ac76a25, ADR 0014); perf baseline doc (ae934ab); sample HUD, UnderstandingView, TTS, ReviewActivity (verdict only, no upload), permissions (21ce79a). No core/spec/ckit work; iOS has none.
-- Umbrella plan of all open items: .claude/agent-memory/planner/briefs/remaining-work-audit.md (milestones M0–M14).
+- 0–8 committed (cd456bf, 2e55389, d0c03ec, 8b00160, ae5ede6, 09cfcba, fe73262, 606e618); 9 partial (0a4a67d, 36a676b, e07dc94); Android 10/11 (ac76a25, 21ce79a, 17c4223, 2cc9eab, c3e6d51, 222fd20); tools/ADRs/CI (9f4ad14, b3d39f0).
+- UNCOMMITTED on top of b3d39f0 (unattended queue, all reviewed with fix rounds): U1-T WSL env + frozen-1.0.0 fixture, U1-C guide wording, U1-A StateAnswers, U1-D docs;
+  U2-CT detections channel (schema 1.1.0), U2-A voice (VoiceController, repeatLast); U3-CT consent/privacy (1.2.0), U3-A ResearchLog; U4-CAT detections C API/JNI;
+  U5-A ConsentStore + ConsentActivity, U5-T `ckit verdict-export`; U6-C tracking-reason prompts (AIM_TEXTURED), U6-A upload states + My scans; U7-A Sentry (field only);
+  U8-C RoomShell, U8-A DetectorWorker (flag off, model fetched not committed); U9-C gap finder + landmarks + virtual coverage grids.
+- Regression at stop (clean WSL builds, 2026-11-17): core ctest 163/163 (WSL, 409 s); WSL pytest 126 passed, 8 skipped, ruff check + format clean (2 U4-CAT files reformatted after the run); Android :capturekit tests 184/184 + both flavours assemble OK (re-run after the last U6-A/Telemetry fixes); replay_golden 3x 0 differences; frozen-1.0.0 sha256 OK + validate PASS; docker smoke skipped (docker down). Logs: capturekit/build/final-*.log
+- Session 2 (uncommitted, reviewed): U5-C engine on_detections + overlay objects + NavGrid object layer (ctest 177/177); U7-C no default change (ADR 0023); FIX 5 low findings (JNI NaN/null, SessionManager handle lock + finishing flag, virtual grid axes rebuild, privacy/Scrub.kt + test, detector drain); DEV-A device fixes (t=0 frame guard, redaction.json at start, Review layout + buttons, empty-scan review sheet; device-verified).
+- real-room-fix T0 (uncommitted, reviewed PASS 2026-11-18): DEV-CT finished (ingest t_ns<=0 reject, recover.cpp redaction.json, validator NO_KEYFRAMES/TIME_ZERO/pause-aware POSE_GAP, ADR 0025); U10-C gap steering compiles (active only at understanding>=2; folded into T2). ctest 191/191, pytest 129 passed/8 skipped, ruff clean, replay_golden 3x 0 diffs. Logs capturekit/build/t0-*.log
+- T1 layout (ADR 0026) + lane B sim realism T4.1-2 (ADR 0029) + U11-CT schema 1.3.0 (ADR 0028): reviewed, fix round 1 running. Combined clean run before fixes: ctest 208/208, pytest 141/8 skipped, ruff clean, frozen OK, replay_golden 9 expected diffs x3 (new layout/timeline keys + gp2 hash; baselines regen in lane D). Logs capturekit/build/combined-*.log
+- Device: docs/DEVICE_TEST_LOG.md. First real walk FAILED guidance (completeness stuck 3–7 %, 8 walls for 4, 16 prompts/min, no ceiling prompt, arrow suspect); data itself PASS. Evidence bundle capturekit/build/device/bundles/scan_20261117_215819.
+- NOT done: real-walk guidance fix (top priority), U11-CT (1.3.0), U11-A, real U12-D. iOS blocked (no Mac).
 
 ## Decisions
-- capturekit/docs/decisions/README.md indexes ADRs 0001–0014 (latest: 0014 SpeechScheduler in Kotlin for now).
+- capturekit/docs/decisions/README.md indexes ADRs 0001-0025; 0015-0024 this program: 0016 detections + schema 1.1.0, 0019 state answers (no LLM), 0020 consent + schema 1.2.0, 0018 delegated decisions, 0021 face redaction. 0023 = guidance tuning no change; 0025 = DEV-CT device-bundle fixes (t_ns<=0, pause-aware POSE_GAP, recovered redaction log); U10-C wrote no ADR (folded into real-room-fix T2); next free 0026.
 
 ## Commands
-- C++: `cd capturekit && cmake -S core -B build/core && cmake --build build/core -j8 && ctest --test-dir build/core`
-- Py module + C API lib: `capturekit/scripts/build_core_py.sh`; Python: `cd capturekit/tools && uv run pytest -q && uv run ruff check . && uv run ruff format --check .`
-- Bundles: `ckit import-raw RAW OUT [--select-keyframes]`, `ckit validate B --level quality`, `ckit verdict B`
-- Replay: `ckit replay B --sink metrics --sink quality --sink governor [faults]`; baselines `scripts/replay_golden.sh [--update]`
-- Reports: `ckit reprojection-report`, `ckit quality-report B --uniform` (SfM, minutes)
-- Simulated phone: `ckit simulate-capture B OUT [--kill-after N]`, `ckit recover DIR`
-- Guide: `ckit guide-eval [B...] [--seeds 3 --max-s 450]` (sim matrix ~10 min), `ckit replay B --sink guide`
-- Upload: `dev-server/smoke.sh`, `dev-server/failure_test.sh` (docker), `ckit upload B --consent`
-- Android: `cd capturekit/android && ANDROID_HOME=~/Android/Sdk ./gradlew assembleDebug testDebugUnitTest`
-- Sanitizers: CI job core-sanitizers (cmake -fsanitize=address,undefined | thread)
+- Core (WSL, no Windows toolchain): PATH=$HOME/tools/cmake-3.31.6-linux-x86_64/bin; `cmake -S capturekit/core -B $HOME/ck-build-X -DCMAKE_BUILD_TYPE=Release && cmake --build ... -j8 && ctest --test-dir ...` (~6 min, background)
+- WSL Python recipe: capturekit/scripts/README.md (uv in ~/.local/bin, UV_PROJECT_ENVIRONMENT=$HOME/ck-venv, CKIT_CORE_DIR=$BUILD/py, build_core_py.sh with PYTHON/BUILD_DIR); then `cd capturekit/tools && uv run pytest -q && uv run ruff check . && uv run ruff format --check .`
+- Android: `cd capturekit/android && JAVA_HOME="C:\Program Files\Android\Android Studio\jbr" ./gradlew --no-daemon -Pkotlin.incremental=false -Dorg.gradle.java.installations.auto-detect=false :capturekit:testDebugUnitTest :sample-app:assembleStandardDebug :sample-app:assembleFieldDebug --console=plain`
+- Detector model (optional, gitignored): `capturekit/scripts/fetch_models.sh`; verdicts: `ckit verdict-export OUT`; schema desc: scripts/README.md (grpcio-tools)
+- Replay baselines `scripts/replay_golden.sh` (WSL: run an LF copy); guide sim `ckit guide-eval --seeds 3` (~10 min); upload `dev-server/smoke.sh` (docker, not run: docker down)
 
 ## Gotchas
-- History was rewritten: older hashes in reports/briefs (93f20d6, bd78bcd, fb59838, …) no longer exist; use `git log`.
-- MCAP indexed reader hangs on unfinalized files (stream_reader scans linearly). Per-channel t_ns must be strictly increasing (events/planes +1 ns).
-- Signed int overflow in test loops = UB. Use int64_t. `pkill -f` can kill your own shell. C API takes int32_t for enums (UBSAN). tus-android-client POM omits tus-java-client: declared explicitly.
-- pycolmap DB image IDs are unordered: export with DB ids. SfM registration varies run to run.
-- Killed before the first MCAP chunk flush (~1 s of event time) loses that data; recovery says so.
-- /tmp has a per-user quota (VS Code cpptools cache); long outputs go to capturekit/build/.
-- Guide sim: unsafe-target check uses the TRUE room; random wander beats the planner on time-to-90 (reports/guide_eval_synth.md). Long sims: 6+ procs in parallel, never foreground (10 min tool limit).
-- iOS/Swift never compiled (no macOS); macOS CI job never seen green. Schema minor clash: phase9 and consent briefs both claim 1.1.0 (proposal: phase9 1.1.0, consent 1.2.0).
+- CRLF scripts break in WSL: capturekit/.gitattributes now `*.sh text eol=lf`; replay_golden.sh needs an LF copy until re-checked out.
+- Concurrent gradle runs collide on incremental caches: one gradle at a time, use --no-daemon and -Pkotlin.incremental=false. Parallel WSL ctests make the sims slow.
+- WSL has 7 GB RAM: 3 parallel core builds at -j8 crashed the WSL service (2026-11-18). Parallel lanes: -j3 each; one full ctest at a time. Full-suite results are only valid once no other lane is editing core.
+- History was rewritten: some older hashes in reports and briefs no longer exist; use `git log`. MCAP reader hangs on unfinalized files; per-channel t_ns strictly increasing.
+- Signed int overflow in test loops = UB (int64_t). C API enums are int32_t. `pkill -f` can kill your own shell. Long outputs go to capturekit/build/.
+- Accepted low findings, not fixed: ck_jni ingestDetections has no NaN clamp or null-array check; SessionManager `handle` not volatile/locked for AR-thread calls vs destroy (pre-existing); coverage virtual grids keep creation-time axes if a wall refits; Telemetry.scrub has no unit test (sample-app has no test source set); detector worker closed at finish(), queued keyframes get no detections.
+- iOS/Swift never compiled; macOS CI job never seen green. Guide sim: unsafe-target check uses the TRUE room.
 
 ## Next
-- M1 Android stability finish (in progress, uncommitted): luma/UV ring, AIMD frameEveryN, off-main ARCore shutdown, exit-reason telemetry (brief android-stability-and-speed steps 5-9). Then M2 Phase 9 openings (brief phase9-room-understanding step 2).
+- RESUMED 2026-11-18 07:00 (session 3): full rebuild ck-build-rr, reviewer round 2 on T1+laneB+U11-CT (base 03d8ad7), T3+U11-A coder running (android only). Round-1 findings were not saved; round 2 is the last fix round.
+- ACTIVE 2026-11-18: brief .claude/agent-memory/planner/briefs/real-room-fix.md (user decisions at its end; RCA docs/WALK_FAILURE_RCA.md). User away: planner answers new questions under "Delegated decisions — user to confirm". Order: T0 DONE → [T1, lane B sim (T4.1-2), U11-CT] running → [T2, T3+U11-A] → D acceptance → U12-D. ADRs: 0026 T1, 0027 T2, 0028 U11-CT, 0029 lane B. Planner/reviewer = Opus medium (agent files); coders Sonnet high, Opus for T0–T2 + sim. No commits; reviewer base for T1/lane B/U11-CT = dangling snapshot 03d8ad7 (tree after T0; no ref, don't gc).
+- 1) Finish + review the stopped DEV-CT and U10-C edits (or revert them). 2) Planner: diagnose guidance on the real walk by replaying scan_20261117_215819 (completeness model, wall fragmentation, prompt churn/rate cap, tilt-up/ceiling, arrow direction in landscape) → brief real-walk-guidance-fix.md → coder → re-walk. 3) U11-CT, U11-A, U12-D. Commit the tree when asked. Spawn coders only with the shell at the repo root (agent-guard limits writes to the spawn cwd; also applies when resuming an agent via SendMessage, so `cd` to the root first).
