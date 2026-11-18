@@ -16,6 +16,10 @@ struct StreamContents {
   std::vector<EventRecord> events;
   std::vector<PointCloudRecord> points;
   std::vector<PlaneRecord> planes;
+  std::vector<DetectionsRecord> detections;  // schema 1.1.0; empty for older bundles
+  std::vector<LabelsRecord> labels;          // schema 1.3.0 /guide/labels, /guide/shell, /guide/gaps (ADR 0028)
+  std::vector<ShellRecord> shell;
+  std::vector<GapsRecord> gaps;
   bool opened = false;
   bool finalized = false;  // footer + summary present and parsed
   uint64_t undecodable = 0;

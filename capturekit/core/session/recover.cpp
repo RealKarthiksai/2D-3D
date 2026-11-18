@@ -53,6 +53,9 @@ void load_meta(const fs::path& dir, bundle::BundleMeta& m) {
   str("os", m.os);
   str("app_version", m.app_version);
   str("clock_base", m.clock_base);
+  str("consent_version", m.consent_version);
+  str("consent_at", m.consent_at);
+  str("redaction_mode", m.redaction_mode);
   str("capture_settings_json", m.capture_settings_json);
   auto it = obj->find("clock_offset_ns");
   if (it != obj->end())
@@ -122,6 +125,10 @@ RecoverResult recover(const std::string& dir_s) {
   }
   for (auto& p : c.points) w.write(p);
   for (auto& p : c.planes) w.write(p);
+  for (auto& d : c.detections) w.write(d);
+  for (auto& d : c.labels) w.write(d);
+  for (auto& d : c.shell) w.write(d);
+  for (auto& d : c.gaps) w.write(d);
   for (auto& p : c.poses) t_end = std::max(t_end, p.t_ns);
   bundle::EventRecord ev;
   ev.t_ns = t_end + 1;
@@ -148,6 +155,32 @@ RecoverResult recover(const std::string& dir_s) {
   for (auto& e : fs::directory_iterator(dir, ec)) {
     auto name = e.path().filename().string();
     if (name == "session.json" || name.size() > 4 && name.substr(name.size() - 4) == ".tmp") fs::remove(e.path(), ec);
+  }
+  // Fail-closed log gap: the shell redacts keyframes before writing them, so a session killed before the
+  // first redaction.json flush has only lost the log, not the redaction. Write an empty, marked log so the
+  // recovered bundle validates (SPEC: required when redaction_mode is "faces").
+  if (meta.redaction_mode == "faces") {
+    const fs::path pdir = dir / "privacy";
+    const fs::path red = pdir / "redaction.json";
+    fs::create_directories(pdir, ec);
+    fs::remove(pdir / "redaction.json.tmp", ec);  // a half-written flush is unusable; never listed
+    if (!fs::exists(red, ec)) {
+      const fs::path rtmp = pdir / "redaction.json.recovering";
+      {
+        std::ofstream f(rtmp, std::ios::binary | std::ios::trunc);
+        f << "{\"version\":1,\"mode\":\"faces\",\"best_effort\":true,\"recovered\":true,"
+             "\"coords\":\"keyframe_pixels_x0y0x1y1\",\"keyframes\":[]}";
+        if (!f.good()) {
+          r.error = "privacy/redaction.json";
+          return r;
+        }
+      }
+      fs::rename(rtmp, red, ec);
+      if (ec) {
+        r.error = "privacy/redaction.json rename failed: " + ec.message();
+        return r;
+      }
+    }
   }
   {
     auto rc = bundle::read_streams(streams.string());

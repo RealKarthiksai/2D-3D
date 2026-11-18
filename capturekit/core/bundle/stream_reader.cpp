@@ -22,6 +22,10 @@ void decode_into(StreamContents& out, const std::string& t, const std::byte* p, 
   else if (t == topic::kEvents) take(codec::decode_event(p, n), out.events);
   else if (t == topic::kPoints) take(codec::decode_points(p, n), out.points);
   else if (t == topic::kPlanes) take(codec::decode_plane(p, n), out.planes);
+  else if (t == topic::kDetections) take(codec::decode_detections(p, n), out.detections);
+  else if (t == topic::kGuideLabels) take(codec::decode_labels(p, n), out.labels);
+  else if (t == topic::kGuideShell) take(codec::decode_shell(p, n), out.shell);
+  else if (t == topic::kGuideGaps) take(codec::decode_gaps(p, n), out.gaps);
   if (!ok) ++out.undecodable;
 }
 

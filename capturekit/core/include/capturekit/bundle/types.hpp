@@ -69,6 +69,65 @@ struct PlaneRecord {
   double extent_u = 0, extent_v = 0;
 };
 
+/// One 2D box on a keyframe image (pixels of the stored JPEG). cls = core ObjectClass id.
+struct DetectionBox {
+  int32_t cls = 0;
+  float score = 0, x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+};
+
+/// /ar/detections: all boxes of one keyframe (schema 1.1.0, ADR 0016).
+struct DetectionsRecord {
+  int64_t t_ns = 0;
+  uint32_t frame_id = 0;
+  std::vector<DetectionBox> boxes;
+};
+
+/// /guide/labels (schema 1.3.0, ADR 0028): objects and openings the guidance engine had published, world metres.
+/// Derived output (replay recomputes it, never feeds it back). Plain copies of guide::Object / guide::Opening.
+struct LabelObject {
+  uint32_t id = 0;
+  int32_t cls = 0;  // core ObjectClass id
+  double centre[3] = {0, 0, 0}, size[3] = {0, 0, 0};  // size = width, height, depth (box frame)
+  double yaw = 0, conf = 0;
+  uint32_t n_obs = 0;
+};
+struct LabelOpening {
+  int32_t kind = 0;  // 0 door, 1 window
+  std::string wall;  // shell wall id, may be empty
+  double x0 = 0, z0 = 0, x1 = 0, z1 = 0, y0 = 0, y1 = 0, conf = 0;
+};
+struct LabelsRecord {
+  int64_t t_ns = 0;
+  std::vector<LabelObject> objects;
+  std::vector<LabelOpening> openings;
+};
+
+/// /guide/shell (schema 1.3.0): the live room shell.
+struct ShellWallItem {
+  std::string id;
+  double x0 = 0, z0 = 0, x1 = 0, z1 = 0;
+  bool inferred = false;
+};
+struct ShellRecord {
+  int64_t t_ns = 0;
+  std::vector<ShellWallItem> walls;
+  std::vector<double> corners;  // x0,z0,x1,z1,...
+  bool closed = false, low_confidence = false;
+  double ceiling_h = 0;
+  bool ceiling_inferred = false;
+};
+
+/// /guide/gaps (schema 1.3.0): expected-but-unobserved areas.
+struct GapItem {
+  int32_t type = 0;  // guide::GapType
+  double x0 = 0, z0 = 0, x1 = 0, z1 = 0, pri = 0;
+  std::string why;
+};
+struct GapsRecord {
+  int64_t t_ns = 0;
+  std::vector<GapItem> gaps;
+};
+
 namespace topic {
 inline constexpr const char* kPose = "/pose";
 inline constexpr const char* kGyro = "/imu/gyro";
@@ -78,6 +137,10 @@ inline constexpr const char* kFrameIndex = "/frame_index";
 inline constexpr const char* kEvents = "/events";
 inline constexpr const char* kPoints = "/ar/points";
 inline constexpr const char* kPlanes = "/ar/planes";
+inline constexpr const char* kDetections = "/ar/detections";
+inline constexpr const char* kGuideLabels = "/guide/labels";
+inline constexpr const char* kGuideShell = "/guide/shell";
+inline constexpr const char* kGuideGaps = "/guide/gaps";
 }  // namespace topic
 
 }  // namespace capturekit::bundle

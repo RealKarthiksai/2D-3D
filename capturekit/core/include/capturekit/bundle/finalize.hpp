@@ -18,7 +18,7 @@ struct FileEntry {
 };
 
 struct BundleMeta {
-  std::string schema_version = "1.0.0";
+  std::string schema_version = "1.1.0";
   std::string bundle_id, session_id;
   std::string platform = "other", model, os, app_version = "0.0.1";
   std::string clock_base = "unknown";
@@ -28,6 +28,10 @@ struct BundleMeta {
   std::string capture_settings_json = "{}";  // raw JSON object text
   std::string validation_json;                // optional raw JSON object text
   int display_rotation_deg = 0;
+  // Schema 1.2.0 (ADR 0020), shell-supplied: the core never reads a clock. consent_at is an ISO 8601 UTC string.
+  // Setting consent_version or redaction_mode != "none" makes write_manifest stamp schema_version 1.2.0.
+  std::string consent_version, consent_at;
+  std::string redaction_mode = "none";  // none | faces
   double q_camera_from_imu_wxyz[4] = {1, 0, 0, 0};
 };
 

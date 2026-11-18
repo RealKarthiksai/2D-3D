@@ -7,6 +7,7 @@
 #include <fstream>
 #include <set>
 
+#include "capturekit/bundle/codec.hpp"
 #include "capturekit/bundle/stream_reader.hpp"
 #include "capturekit/util/json.hpp"
 
@@ -74,10 +75,22 @@ std::optional<SessionConfig> SessionConfig::from_json(std::string_view text, std
     else if (str && k == "os") c.meta.os = *str;
     else if (str && k == "app_version") c.meta.app_version = *str;
     else if (str && k == "clock_base") c.meta.clock_base = *str;
-    else {
+    else if (str && k == "consent_version") c.meta.consent_version = *str;
+    else if (str && k == "consent_at") c.meta.consent_at = *str;
+    else if (str && k == "redaction_mode") {
+      if (*str != "none" && *str != "faces") {
+        if (err) *err = "redaction_mode must be \"none\" or \"faces\"";
+        return std::nullopt;
+      }
+      c.meta.redaction_mode = *str;
+    } else {
       if (err) *err = "unknown or mistyped session config key: " + k;
       return std::nullopt;
     }
+  }
+  if (c.meta.consent_version.empty() != c.meta.consent_at.empty()) {
+    if (err) *err = "consent_version and consent_at must be given together";
+    return std::nullopt;
   }
   auto qc = quality::QualityConfig::from_json(q.dump(), err);
   auto gc = governor::GovernorConfig::from_json(g.dump(), err);
@@ -144,6 +157,8 @@ bool Session::write_checkpoint() {
       .set("model", m.model).set("os", m.os).set("app_version", m.app_version)
       .set("clock_base", m.clock_base).set("clock_offset_ns", m.clock_offset_ns)
       .set("display_rotation_deg", m.display_rotation_deg)
+      .set("consent_version", m.consent_version).set("consent_at", m.consent_at)
+      .set("redaction_mode", m.redaction_mode)
       .set("capture_settings_json", m.capture_settings_json);
   auto tmp = fs::path(dir_) / "session.json.tmp";
   {
@@ -222,8 +237,15 @@ namespace {
 bool capturing(State s) { return s == State::Calibrating || s == State::Scanning || s == State::Paused; }
 }  // namespace
 
+
+Status Session::reject_time(int kind) {
+  ++dropped_[kind];
+  return Status::ErrArg;
+}
+
 Status Session::ingest_pose(const bundle::PoseSample& p) {
   if (!capturing(state_.load())) return Status::ErrState;
+  if (p.t_ns <= 0) return reject_time(kPose);
   return enqueue(p, kPose);
 }
 Status Session::ingest_gyro(const bundle::ImuSample& s) {
@@ -236,6 +258,7 @@ Status Session::ingest_accel(const bundle::ImuSample& s) {
 }
 Status Session::ingest_intrinsics(const bundle::IntrinsicsSample& k) {
   if (!capturing(state_.load())) return Status::ErrState;
+  if (k.t_ns <= 0) return reject_time(kIntrinsics);
   if (k.width == 0 || k.height == 0 || !(k.fx > 0) || !(k.fy > 0)) return Status::ErrArg;
   return enqueue(k, kIntrinsics);
 }
@@ -247,6 +270,11 @@ Status Session::ingest_plane(const bundle::PlaneRecord& p) {
   if (!capturing(state_.load())) return Status::ErrState;
   return enqueue(p, kPlane);
 }
+Status Session::ingest_detections(const bundle::DetectionsRecord& d) {
+  if (!capturing(state_.load())) return Status::ErrState;
+  if (d.boxes.size() > kMaxDetectionBoxes) return Status::ErrArg;
+  return enqueue(d, kDetections);
+}
 Status Session::ingest_platform(int64_t t, const governor::Signals& s) {
   if (!capturing(state_.load())) return Status::ErrState;
   return enqueue(Platform{t, s}, kPlatform);
@@ -256,6 +284,7 @@ Status Session::ingest_frame(const FrameInput& f) {
   State st = state_.load();
   if (st != State::Calibrating && st != State::Scanning) return Status::ErrState;
   if (!f.luma || f.width <= 0 || f.height <= 0 || f.stride < f.width) return Status::ErrArg;
+  if (f.t_ns <= 0) return reject_time(kFrame);
   int slot = -1;
   {
     std::lock_guard<std::mutex> lk(qmu_);
@@ -311,7 +340,7 @@ governor::Policy Session::policy() const {
 
 Counters Session::counters() const {
   Counters c;
-  for (int i = 0; i < 8; ++i) c.ingested[i] = ingested_[i].load(), c.dropped[i] = dropped_[i].load();
+  for (int i = 0; i < 9; ++i) c.ingested[i] = ingested_[i].load(), c.dropped[i] = dropped_[i].load();
   return c;
 }
 
@@ -353,6 +382,9 @@ void Session::write_event(int64_t t, const std::string& source, const std::strin
   writer_.write(e);
 }
 
+// Detections are already in the bundle; the engine lifts them to objects only with guide.understanding on.
+void Session::forward_detections(const bundle::DetectionsRecord& d) { guide_.on_detections(d); }
+
 void Session::process(Item& it) {
   std::visit(
       [&](auto& v) {
@@ -387,6 +419,9 @@ void Session::process(Item& it) {
         } else if constexpr (std::is_same_v<T, bundle::PlaneRecord>) {
           writer_.write(v);
           guide_.on_plane(v);
+        } else if constexpr (std::is_same_v<T, bundle::DetectionsRecord>) {
+          writer_.write(v);
+          forward_detections(v);
         } else if constexpr (std::is_same_v<T, Platform>) {
           auto& s = v.s;
           if (s.thermal_level != signals_.thermal_level) {
@@ -616,12 +651,66 @@ void Session::guide_tick(int64_t t) {
     last_overlay_t_ = t;
     emit(guide_.overlay(t).to_json(), false);
   }
+  write_guide_outputs(t, false);
+}
+
+// Derived outputs (ADR 0028, schema 1.3.0): what the engine published, written only when it changed, checked every
+// 1 s of event time, plus one forced check at finalize so the last record of each channel is the end state. Nothing
+// is written while the engine's understanding is off, and nothing until a channel has non-empty content.
+void Session::write_guide_outputs(int64_t t, bool final_pass) {
+  if (cfg_.guide.understanding <= 0) return;
+  if (!final_pass && last_outputs_t_ >= 0 && t - last_outputs_t_ < 1'000'000'000) return;
+  last_outputs_t_ = t;
+  const int64_t ts = std::max(t, outputs_written_t_ + 1);
+  auto key = [](const auto& r) {
+    auto b = bundle::codec::encode(r);
+    return std::string(reinterpret_cast<const char*>(b.data()), b.size());
+  };
+
+  bundle::LabelsRecord lb;
+  for (auto& o : guide_.objects()) {
+    bundle::LabelObject x;
+    x.id = o.id; x.cls = int32_t(o.cls);
+    for (int i = 0; i < 3; ++i) { x.centre[i] = o.centre[i]; x.size[i] = o.size[i]; }
+    x.yaw = o.yaw; x.conf = o.conf; x.n_obs = uint32_t(std::max(0, o.n_obs));
+    lb.objects.push_back(x);
+  }
+  for (auto& o : guide_.openings()) {
+    bundle::LabelOpening x;
+    x.kind = int32_t(o.kind); x.wall = o.wall;
+    x.x0 = o.x0; x.z0 = o.z0; x.x1 = o.x1; x.z1 = o.z1; x.y0 = o.y0; x.y1 = o.y1; x.conf = o.conf;
+    lb.openings.push_back(std::move(x));
+  }
+  bundle::ShellRecord sh;
+  {
+    const auto& s = guide_.shell();
+    for (auto& w : s.walls) sh.walls.push_back({w.id, w.x0, w.z0, w.x1, w.z1, w.inferred});
+    for (auto& c : s.corners) { sh.corners.push_back(c.first); sh.corners.push_back(c.second); }
+    sh.closed = s.closed; sh.low_confidence = s.low_confidence;
+    sh.ceiling_h = s.ceiling_h; sh.ceiling_inferred = s.ceiling_inferred;
+  }
+  bundle::GapsRecord gp;
+  for (auto& g : guide_.gaps()) gp.gaps.push_back({int32_t(g.type), g.x0, g.z0, g.x1, g.z1, g.pri, g.why});
+
+  bool wrote = false;
+  auto emit_if_changed = [&](auto& rec, int slot, bool empty) {
+    std::string k = empty ? std::string() : key(rec);  // an empty record never counts as content
+    if (k == out_key_[slot]) return;
+    out_key_[slot] = std::move(k);
+    rec.t_ns = ts;
+    writer_.write(rec);
+    wrote = true;
+  };
+  emit_if_changed(lb, 0, lb.objects.empty() && lb.openings.empty());
+  emit_if_changed(sh, 1, sh.walls.empty() && sh.corners.empty());
+  emit_if_changed(gp, 2, gp.gaps.empty());
+  if (wrote) outputs_written_t_ = ts;
 }
 
 void Session::report_drops(int64_t t) {
-  static const char* names[8] = {"pose", "gyro", "accel", "intrinsics", "frame", "points", "plane", "platform"};
+  static const char* names[9] = {"pose", "gyro", "accel", "intrinsics", "frame", "points", "plane", "platform", "detections"};
   std::vector<std::pair<std::string, std::string>> attrs;
-  for (int i = 0; i < 8; ++i) {
+  for (int i = 0; i < 9; ++i) {
     uint64_t d = dropped_[i].load();
     if (d != reported_drops_[i]) {
       reported_drops_[i] = d;
@@ -629,7 +718,7 @@ void Session::report_drops(int64_t t) {
     }
   }
   if (attrs.empty()) return;
-  write_event(t, "session", "INGEST_DROP", "bounded queue full (cumulative counts)", attrs);
+  write_event(t, "session", "INGEST_DROP", "ingest drops: queue full or timestamp <= 0 (cumulative counts)", attrs);
   json::Object o;
   o.set("type", "ingest_drop").set("t_ns", t);
   for (auto& [k, v] : attrs) o.set(k, int64_t(std::stoll(v)));
@@ -655,6 +744,7 @@ Status Session::finalize() {
     for (auto& it : batch) process(it);
   }
   flush_ready(true);
+  write_guide_outputs(last_t_, true);
   report_drops(last_t_);
   write_event(last_t_, "session", "SESSION_FINALIZED", "");
   auto counts = writer_.close();

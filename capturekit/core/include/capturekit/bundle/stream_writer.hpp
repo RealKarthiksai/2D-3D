@@ -47,6 +47,10 @@ class StreamWriter {
   bool write(const EventRecord& m);
   bool write(const PointCloudRecord& m);
   bool write(const PlaneRecord& m);
+  bool write(const DetectionsRecord& m);  // /ar/detections, schema 1.1.0
+  bool write(const LabelsRecord& m);      // /guide/labels, schema 1.3.0 (derived output, ADR 0028)
+  bool write(const ShellRecord& m);       // /guide/shell
+  bool write(const GapsRecord& m);        // /guide/gaps
 
   /// Forces the current chunk to disk (used on pause / checkpoint).
   void flush();

@@ -23,6 +23,12 @@ class Enc {
     uint64_t b; std::memcpy(&b, &v, 8);
     for (int i = 0; i < 8; ++i) out.push_back(std::byte(uint8_t(b >> (8 * i))));
   }
+  void flt(int f, float v) {
+    if (v == 0.0f && !std::signbit(v)) return;
+    tag(f, 5);
+    uint32_t b; std::memcpy(&b, &v, 4);
+    for (int i = 0; i < 4; ++i) out.push_back(std::byte(uint8_t(b >> (8 * i))));
+  }
   void str(int f, std::string_view s) {
     if (s.empty()) return;
     tag(f, 2); varint(s.size());
@@ -183,6 +189,61 @@ std::vector<std::byte> encode(const PlaneRecord& m) {
   return std::move(e.out);
 }
 
+std::vector<std::byte> encode(const DetectionsRecord& m) {
+  Enc e;
+  e.i64(1, m.t_ns); e.u32(2, m.frame_id);
+  for (auto& b : m.boxes) {
+    Enc d;
+    d.i64(1, int64_t(b.cls)); d.flt(2, b.score); d.flt(3, b.x0); d.flt(4, b.y0); d.flt(5, b.x1); d.flt(6, b.y1);
+    e.sub(3, d);  // repeated message: emitted even when all fields are zero (empty payload)
+  }
+  return std::move(e.out);
+}
+
+std::vector<std::byte> encode(const LabelsRecord& m) {
+  Enc e;
+  e.i64(1, m.t_ns);
+  for (auto& o : m.objects) {
+    Enc d;
+    d.u32(1, o.id); d.i64(2, int64_t(o.cls));
+    for (int i = 0; i < 3; ++i) d.dbl(3 + i, o.centre[i]);
+    for (int i = 0; i < 3; ++i) d.dbl(6 + i, o.size[i]);
+    d.dbl(9, o.yaw); d.dbl(10, o.conf); d.u32(11, o.n_obs);
+    e.sub(2, d);
+  }
+  for (auto& o : m.openings) {
+    Enc d;
+    d.i64(1, int64_t(o.kind)); d.str(2, o.wall);
+    d.dbl(3, o.x0); d.dbl(4, o.z0); d.dbl(5, o.x1); d.dbl(6, o.z1); d.dbl(7, o.y0); d.dbl(8, o.y1); d.dbl(9, o.conf);
+    e.sub(3, d);
+  }
+  return std::move(e.out);
+}
+
+std::vector<std::byte> encode(const ShellRecord& m) {
+  Enc e;
+  e.i64(1, m.t_ns);
+  for (auto& w : m.walls) {
+    Enc d;
+    d.str(1, w.id); d.dbl(2, w.x0); d.dbl(3, w.z0); d.dbl(4, w.x1); d.dbl(5, w.z1); d.boolean(6, w.inferred);
+    e.sub(2, d);
+  }
+  e.packed_dbl(3, m.corners);
+  e.boolean(4, m.closed); e.boolean(5, m.low_confidence); e.dbl(6, m.ceiling_h); e.boolean(7, m.ceiling_inferred);
+  return std::move(e.out);
+}
+
+std::vector<std::byte> encode(const GapsRecord& m) {
+  Enc e;
+  e.i64(1, m.t_ns);
+  for (auto& g : m.gaps) {
+    Enc d;
+    d.i64(1, int64_t(g.type)); d.dbl(2, g.x0); d.dbl(3, g.z0); d.dbl(4, g.x1); d.dbl(5, g.z1); d.dbl(6, g.pri); d.str(7, g.why);
+    e.sub(2, d);
+  }
+  return std::move(e.out);
+}
+
 std::optional<PoseSample> decode_pose(const std::byte* p, size_t n) {
   auto r = run<PoseSample>(p, n, [](PoseSample& m, const Field& f) {
     if (f.num == 1 && is_v(f)) m.t_ns = int64_t(f.v);
@@ -293,6 +354,111 @@ std::optional<PlaneRecord> decode_plane(const std::byte* p, size_t n) {
     else if (f.num >= 10 && f.num <= 12 && is_d(f)) m.axis_u[f.num - 10] = as_dbl(f);
     else if (f.num == 13 && is_d(f)) m.extent_u = as_dbl(f);
     else if (f.num == 14 && is_d(f)) m.extent_v = as_dbl(f);
+    return true;
+  });
+}
+
+std::optional<DetectionsRecord> decode_detections(const std::byte* p, size_t n) {
+  return run<DetectionsRecord>(p, n, [](DetectionsRecord& m, const Field& f) {
+    if (f.num == 1 && is_v(f)) m.t_ns = int64_t(f.v);
+    else if (f.num == 2 && is_v(f)) m.frame_id = uint32_t(f.v);
+    else if (f.num == 3 && is_l(f)) {
+      DetectionBox b;
+      Dec d(f.p, f.n); Field g;
+      while (d.next(g)) {
+        if (g.num == 1 && is_v(g)) b.cls = int32_t(int64_t(g.v));
+        else if (g.num >= 2 && g.num <= 6 && g.wire == 5) {
+          float* dst[] = {&b.score, &b.x0, &b.y0, &b.x1, &b.y1};
+          *dst[g.num - 2] = as_flt(uint32_t(g.v));
+        }
+      }
+      if (!d.ok()) return false;
+      m.boxes.push_back(b);
+    }
+    return true;
+  });
+}
+
+std::optional<LabelsRecord> decode_labels(const std::byte* p, size_t n) {
+  return run<LabelsRecord>(p, n, [](LabelsRecord& m, const Field& f) {
+    if (f.num == 1 && is_v(f)) m.t_ns = int64_t(f.v);
+    else if (f.num == 2 && is_l(f)) {
+      LabelObject o;
+      Dec d(f.p, f.n); Field g;
+      while (d.next(g)) {
+        if (g.num == 1 && is_v(g)) o.id = uint32_t(g.v);
+        else if (g.num == 2 && is_v(g)) o.cls = int32_t(int64_t(g.v));
+        else if (g.num >= 3 && g.num <= 5 && is_d(g)) o.centre[g.num - 3] = as_dbl(g);
+        else if (g.num >= 6 && g.num <= 8 && is_d(g)) o.size[g.num - 6] = as_dbl(g);
+        else if (g.num == 9 && is_d(g)) o.yaw = as_dbl(g);
+        else if (g.num == 10 && is_d(g)) o.conf = as_dbl(g);
+        else if (g.num == 11 && is_v(g)) o.n_obs = uint32_t(g.v);
+      }
+      if (!d.ok()) return false;
+      m.objects.push_back(o);
+    } else if (f.num == 3 && is_l(f)) {
+      LabelOpening o;
+      Dec d(f.p, f.n); Field g;
+      while (d.next(g)) {
+        if (g.num == 1 && is_v(g)) o.kind = int32_t(int64_t(g.v));
+        else if (g.num == 2 && is_l(g)) o.wall = as_str(g);
+        else if (g.num >= 3 && g.num <= 9 && is_d(g)) {
+          double* dst[] = {&o.x0, &o.z0, &o.x1, &o.z1, &o.y0, &o.y1, &o.conf};
+          *dst[g.num - 3] = as_dbl(g);
+        }
+      }
+      if (!d.ok()) return false;
+      m.openings.push_back(std::move(o));
+    }
+    return true;
+  });
+}
+
+std::optional<ShellRecord> decode_shell(const std::byte* p, size_t n) {
+  return run<ShellRecord>(p, n, [](ShellRecord& m, const Field& f) {
+    if (f.num == 1 && is_v(f)) m.t_ns = int64_t(f.v);
+    else if (f.num == 2 && is_l(f)) {
+      ShellWallItem w;
+      Dec d(f.p, f.n); Field g;
+      while (d.next(g)) {
+        if (g.num == 1 && is_l(g)) w.id = as_str(g);
+        else if (g.num >= 2 && g.num <= 5 && is_d(g)) {
+          double* dst[] = {&w.x0, &w.z0, &w.x1, &w.z1};
+          *dst[g.num - 2] = as_dbl(g);
+        } else if (g.num == 6 && is_v(g)) w.inferred = g.v != 0;
+      }
+      if (!d.ok()) return false;
+      m.walls.push_back(std::move(w));
+    } else if (f.num == 3) {
+      if (is_l(f)) {
+        if (f.n % 8 != 0) return false;  // packed doubles: a ragged payload is malformed, never truncated
+        for (size_t i = 0; i + 8 <= f.n; i += 8) { Field g; std::memcpy(&g.v, f.p + i, 8); m.corners.push_back(as_dbl(g)); }
+      } else if (is_d(f)) m.corners.push_back(as_dbl(f));
+    }
+    else if (f.num == 4 && is_v(f)) m.closed = f.v != 0;
+    else if (f.num == 5 && is_v(f)) m.low_confidence = f.v != 0;
+    else if (f.num == 6 && is_d(f)) m.ceiling_h = as_dbl(f);
+    else if (f.num == 7 && is_v(f)) m.ceiling_inferred = f.v != 0;
+    return true;
+  });
+}
+
+std::optional<GapsRecord> decode_gaps(const std::byte* p, size_t n) {
+  return run<GapsRecord>(p, n, [](GapsRecord& m, const Field& f) {
+    if (f.num == 1 && is_v(f)) m.t_ns = int64_t(f.v);
+    else if (f.num == 2 && is_l(f)) {
+      GapItem o;
+      Dec d(f.p, f.n); Field g;
+      while (d.next(g)) {
+        if (g.num == 1 && is_v(g)) o.type = int32_t(int64_t(g.v));
+        else if (g.num >= 2 && g.num <= 6 && is_d(g)) {
+          double* dst[] = {&o.x0, &o.z0, &o.x1, &o.z1, &o.pri};
+          *dst[g.num - 2] = as_dbl(g);
+        } else if (g.num == 7 && is_l(g)) o.why = as_str(g);
+      }
+      if (!d.ok()) return false;
+      m.gaps.push_back(std::move(o));
+    }
     return true;
   });
 }

@@ -55,12 +55,12 @@ struct FrameInput {
 };
 
 struct Counters {
-  uint64_t ingested[8] = {}, dropped[8] = {};  // index by Kind
+  uint64_t ingested[9] = {}, dropped[9] = {};  // index by Kind
 };
 
 class Session {
  public:
-  enum Kind : int { kPose = 0, kGyro, kAccel, kIntrinsics, kFrame, kPoints, kPlane, kPlatform };
+  enum Kind : int { kPose = 0, kGyro, kAccel, kIntrinsics, kFrame, kPoints, kPlane, kPlatform, kDetections };
 
   static std::unique_ptr<Session> create(const std::string& dir, const SessionConfig& cfg, std::string* err);
   ~Session();  // stops the worker; without finalize() the bundle stays recoverable
@@ -80,6 +80,9 @@ class Session {
   Status ingest_frame(const FrameInput& f);
   Status ingest_points(const bundle::PointCloudRecord& p);
   Status ingest_plane(const bundle::PlaneRecord& p);
+  /// One keyframe's boxes (may be empty); ErrArg above kMaxDetectionBoxes. Bounded queue, drops counted.
+  Status ingest_detections(const bundle::DetectionsRecord& d);
+  static constexpr size_t kMaxDetectionBoxes = 256;
   Status ingest_platform(int64_t t_ns, const governor::Signals& s);
   Status keyframe_written(uint32_t frame_id, bool ok);
 
@@ -114,21 +117,25 @@ class Session {
     bundle::ImuSample s;
   };
   using Item = std::variant<bundle::PoseSample, Gyro, Accel, bundle::IntrinsicsSample, FrameItem,
-                            bundle::PointCloudRecord, bundle::PlaneRecord, Platform, Control, Ack>;
+                            bundle::PointCloudRecord, bundle::PlaneRecord, bundle::DetectionsRecord, Platform, Control, Ack>;
   struct Pending {
     bundle::FrameRecord rec;
     bool decided = false, awaiting_ack = false;
   };
 
   Status enqueue(Item&& it, int kind, bool force = false);
+  /// t_ns <= 0 is a platform clock bug (mapped timestamp missing): counted as an ingest drop, never recorded.
+  Status reject_time(int kind);
   void worker_loop();
   void process(Item& it);
   void on_frame(FrameItem& f);
+  void forward_detections(const bundle::DetectionsRecord& d);  // -> guide_.on_detections
   void on_decisions(const std::vector<quality::KeyframeSelector::Decision>& ds);
   void flush_ready(bool force_all);
   void expire_acks(int64_t now_t);
   void governor_step(int64_t t);
   void guide_tick(int64_t t);
+  void write_guide_outputs(int64_t t, bool final_pass);  // /guide/labels, /guide/shell, /guide/gaps (ADR 0028)
   void write_event(int64_t t, const std::string& source, const std::string& code, const std::string& msg,
                    std::vector<std::pair<std::string, std::string>> attrs = {});
   void emit(const std::string& json_line, bool critical);
@@ -147,8 +154,8 @@ class Session {
   bool stop_worker_ = false;
   std::vector<std::vector<uint8_t>> slots_;
   std::vector<int> free_slots_;
-  std::atomic<uint64_t> ingested_[8] = {}, dropped_[8] = {};
-  uint64_t reported_drops_[8] = {};
+  std::atomic<uint64_t> ingested_[9] = {}, dropped_[9] = {};
+  uint64_t reported_drops_[9] = {};
   std::thread worker_;
 
   // Outbound events
@@ -173,6 +180,8 @@ class Session {
   int tracking_ = 0, normal_run_ = 0;
   int64_t last_t_ = 0, last_event_t_ = INT64_MIN, last_frame_t_ = 0;
   int64_t last_overlay_t_ = -1;  // event time of the last "overlay" event (500 ms cadence)
+  int64_t last_outputs_t_ = -1, outputs_written_t_ = 0;  // guide output channels: last check / last written event time
+  std::string out_key_[3];                               // encoded (t_ns = 0) last written labels / shell / gaps
   std::map<int64_t, Pending> reorder_;
   std::map<uint32_t, int64_t> t_of_frame_;
   uint32_t next_keyframe_ = 0;

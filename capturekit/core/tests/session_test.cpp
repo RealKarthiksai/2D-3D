@@ -12,7 +12,9 @@
 #include <thread>
 #include <vector>
 
+#include "capturekit/bundle/codec.hpp"
 #include "capturekit/bundle/stream_reader.hpp"
+#include "capturekit/bundle/stream_writer.hpp"
 #include "capturekit/capi/capturekit.h"
 #include "capturekit/session/session.hpp"
 
@@ -81,7 +83,7 @@ struct Feeder {
   std::set<std::string> written;
 
   void step(int64_t i, bool frames = true) {
-    int64_t t = i * 33 * kMs;
+    int64_t t = (i + 1) * 33 * kMs;  // t_ns <= 0 is rejected at ingest
     ck_pose p{t, {0.015 * double(i), 0, 0}, {1, 0, 0, 0}, 1, 0};
     EXPECT_EQ(ck_ingest_pose(s, &p, CK_POSE_OPENCV), CK_OK);
     for (int k = 0; k < 6; ++k) {
@@ -115,7 +117,7 @@ ck_session* make(const fs::path& d, const char* cfg) {
   return s;
 }
 
-void intr(ck_session* s, int64_t t = 0) {
+void intr(ck_session* s, int64_t t = 1) {
   ck_intrinsics k{t, 320, 240, 250, 250, 159.5, 119.5};
   EXPECT_EQ(ck_ingest_intrinsics(s, &k), CK_OK);
 }
@@ -163,6 +165,42 @@ TEST(SessionStateMachine, IllegalApiCalls) {
   EXPECT_EQ(err, CK_ERR_IO);
   EXPECT_EQ(ck_session_create(fresh("badcfg").c_str(), "{\"nope\":1}", &err), nullptr);
   EXPECT_EQ(err, CK_ERR_ARG);
+}
+
+// Device bug (2026-11-17): the first /pose and /intrinsics reached the bundle at log_time 0 (unmapped clock).
+TEST(SessionIngest, NonPositiveTimestampsAreRejectedAndCounted) {
+  auto d = fresh("time_zero");
+  auto* s = make(d, "{\"threaded\":0}");
+  ASSERT_EQ(ck_session_start(s, 1), CK_OK);
+  ck_pose p0{0, {0, 0, 0}, {1, 0, 0, 0}, 1, 0}, pn{-5, {0, 0, 0}, {1, 0, 0, 0}, 1, 0};
+  ck_intrinsics k0{0, 320, 240, 250, 250, 159.5, 119.5};
+  auto px = texture(64, 48, 1);
+  ck_frame f0{0, 1, 0, px.data(), 64, 48, 64};
+  EXPECT_EQ(ck_ingest_pose(s, &p0, CK_POSE_OPENCV), CK_ERR_ARG);
+  EXPECT_EQ(ck_ingest_pose(s, &pn, CK_POSE_OPENCV), CK_ERR_ARG);
+  EXPECT_EQ(ck_ingest_intrinsics(s, &k0), CK_ERR_ARG);
+  EXPECT_EQ(ck_ingest_frame(s, &f0), CK_ERR_ARG);
+  intr(s, 1);
+  ck_pose ok{1, {0, 0, 0}, {1, 0, 0, 0}, 1, 0};
+  EXPECT_EQ(ck_ingest_pose(s, &ok, CK_POSE_OPENCV), CK_OK);
+  ck_frame f1{2, 2, 0, px.data(), 64, 48, 64};
+  EXPECT_EQ(ck_ingest_frame(s, &f1), CK_OK);
+  ck_session_pump(s);
+  bool logged = false;
+  for (auto& e : drain(s)) logged |= e.find("\"ingest_drop\"") != std::string::npos;
+  EXPECT_TRUE(logged);
+  ck_session_stop(s, 10);
+  ck_session_pump(s);
+  ASSERT_EQ(ck_session_finalize(s), CK_OK);
+  ck_session_destroy(s);
+  auto c = bundle::read_streams((d / "streams.mcap").string());
+  ASSERT_EQ(c.poses.size(), 1u);
+  EXPECT_EQ(c.poses[0].t_ns, 1);
+  ASSERT_EQ(c.intrinsics.size(), 1u);
+  EXPECT_EQ(c.intrinsics[0].t_ns, 1);
+  bool drop_event = false;
+  for (auto& e : c.events) drop_event |= e.code == "INGEST_DROP";
+  EXPECT_TRUE(drop_event);
 }
 
 TEST(SessionEndToEnd, SyncScanFinalizesValidBundle) {
@@ -307,7 +345,7 @@ TEST(SessionThreaded, ConcurrentIngestStress) {
   };
   std::thread tp([&] {
     for (int i = 0; i < N; ++i) {
-      ck_pose p{i * 33 * kMs, {0.01 * i, 0, 0}, {1, 0, 0, 0}, 1, 0};
+      ck_pose p{(i + 1) * 33 * kMs, {0.01 * i, 0, 0}, {1, 0, 0, 0}, 1, 0};
       count(0, ck_ingest_pose(s, &p, CK_POSE_OPENCV));
     }
   });
@@ -326,7 +364,7 @@ TEST(SessionThreaded, ConcurrentIngestStress) {
   std::thread tf([&] {
     auto px = texture(160, 120, 3);
     for (int i = 0; i < N / 10; ++i) {
-      ck_frame fr{i * 330 * kMs + 2, uint32_t(i), 0, px.data(), 160, 120, 160};
+      ck_frame fr{(i + 1) * 330 * kMs + 2, uint32_t(i), 0, px.data(), 160, 120, 160};
       count(3, ck_ingest_frame(s, &fr));
     }
   });
@@ -387,6 +425,204 @@ TEST(SessionRecovery, KilledSessionBecomesRecoveredBundle) {
   // Idempotent.
   EXPECT_EQ(ck_recover(d.c_str(), rep, sizeof rep), CK_OK);
   EXPECT_NE(std::string(rep).find("\"already_complete\":true"), std::string::npos);
+}
+
+// ADR 0020: consent / privacy metadata (schema 1.2.0), shell-supplied, kept across a crash.
+namespace {
+std::string slurp(const fs::path& p) {
+  std::ifstream f(p);
+  return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+constexpr const char* kConsentCfg =
+    "{\"threaded\":0, \"model\":\"ConsentPhone\", \"consent_version\":\"v1\", "
+    "\"consent_at\":\"2026-11-17T09:30:00Z\", \"redaction_mode\":\"faces\"}";
+void expect_consent_manifest(const std::string& m) {
+  EXPECT_NE(m.find("\"schema_version\": \"1.2.0\""), std::string::npos) << m.substr(0, 200);
+  EXPECT_NE(m.find("\"consent\": {\"version\": \"v1\", \"at\": \"2026-11-17T09:30:00Z\"}"), std::string::npos);
+  EXPECT_NE(m.find("\"privacy\": {\"redaction_mode\": \"faces\"}"), std::string::npos);
+}
+}  // namespace
+
+TEST(SessionConsent, BadConfigIsRejected) {
+  for (const char* cfg : {"{\"consent_version\":\"v1\"}", "{\"consent_at\":\"2026-11-17T09:30:00Z\"}",
+                          "{\"redaction_mode\":\"blur\"}", "{\"consent_version\":5, \"consent_at\":\"x\"}"}) {
+    ck_status err = CK_OK;
+    auto d = fresh("consent_bad");
+    auto* s = ck_session_create(d.c_str(), cfg, &err);
+    EXPECT_EQ(s, nullptr) << cfg;
+    EXPECT_NE(err, CK_OK) << cfg;
+    if (s) ck_session_destroy(s);
+  }
+}
+
+TEST(SessionConsent, FinalizedBundleAndRecoveredBundleKeepConsent) {
+  auto run = [](const char* name, bool finalize) {
+    auto d = fresh(name);
+    auto* s = make(d, kConsentCfg);
+    Feeder f{s, d};
+    EXPECT_EQ(ck_session_start(s, 0), CK_OK);
+    intr(s);
+    for (int64_t i = 0; i < 120; ++i) {
+      f.step(i);
+      ck_session_pump(s);
+      f.handle_events();
+    }
+    if (finalize) {
+      EXPECT_EQ(ck_session_stop(s, 120 * 33 * kMs), CK_OK);
+      ck_session_pump(s);
+      f.handle_events();
+      ck_session_pump(s);
+      EXPECT_EQ(ck_session_finalize(s), CK_OK);
+    }
+    ck_session_destroy(s);
+    return d;
+  };
+  auto done = run("consent_final", true);
+  expect_consent_manifest(slurp(done / "manifest.json"));
+
+  auto killed = run("consent_killed", false);
+  ASSERT_FALSE(fs::exists(killed / "manifest.json"));
+  EXPECT_NE(slurp(killed / "session.json").find("\"consent_version\":\"v1\""), std::string::npos);
+  char rep[1024];
+  ASSERT_EQ(ck_recover(killed.c_str(), rep, sizeof rep), CK_OK) << rep;
+  auto m = slurp(killed / "manifest.json");
+  expect_consent_manifest(m);
+  EXPECT_NE(m.find("recovered"), std::string::npos);
+}
+
+// Device bug (2026-11-17): killed before the first redaction.json flush -> recovered bundle was REDACTION_MANIFEST_MISSING.
+TEST(SessionRecovery, FacesModeWithoutRedactionLogGetsEmptyMarkedLog) {
+  auto d = fresh("recover_faces");
+  auto* s = make(d, kConsentCfg);
+  Feeder f{s, d};
+  ck_session_start(s, 1);
+  intr(s);
+  for (int64_t i = 0; i < 120; ++i) {
+    f.step(i);
+    ck_session_pump(s);
+    f.handle_events();
+  }
+  ck_session_destroy(s);  // killed: no finalize
+  ASSERT_FALSE(fs::exists(d / "privacy" / "redaction.json"));
+  fs::create_directories(d / "privacy");
+  { std::ofstream(d / "privacy" / "redaction.json.tmp") << "{half"; }  // interrupted flush
+  char rep[1024];
+  ASSERT_EQ(ck_recover(d.c_str(), rep, sizeof rep), CK_OK) << rep;
+  auto log = slurp(d / "privacy" / "redaction.json");
+  EXPECT_NE(log.find("\"keyframes\":[]"), std::string::npos) << log;
+  EXPECT_NE(log.find("\"recovered\":true"), std::string::npos) << log;
+  EXPECT_FALSE(fs::exists(d / "privacy" / "redaction.json.tmp"));
+  EXPECT_FALSE(fs::exists(d / "privacy" / "redaction.json.recovering"));
+  auto m = slurp(d / "manifest.json");
+  EXPECT_NE(m.find("privacy/redaction.json"), std::string::npos);
+  EXPECT_NE(m.find("\"role\": \"redaction\""), std::string::npos) << m;
+}
+
+// An existing log (written by the shell) is never overwritten by recovery.
+TEST(SessionRecovery, ExistingRedactionLogIsKept) {
+  auto d = fresh("recover_faces_keep");
+  auto* s = make(d, kConsentCfg);
+  Feeder f{s, d};
+  ck_session_start(s, 1);
+  intr(s);
+  for (int64_t i = 0; i < 60; ++i) {
+    f.step(i);
+    ck_session_pump(s);
+    f.handle_events();
+  }
+  ck_session_destroy(s);
+  fs::create_directories(d / "privacy");
+  const std::string mine = "{\"version\":1,\"mode\":\"faces\",\"keyframes\":[]}";
+  { std::ofstream(d / "privacy" / "redaction.json") << mine; }
+  char rep[1024];
+  ASSERT_EQ(ck_recover(d.c_str(), rep, sizeof rep), CK_OK) << rep;
+  EXPECT_EQ(slurp(d / "privacy" / "redaction.json"), mine);
+}
+
+// U2-CT left /ar/detections out of recover(): a recovered bundle must keep it (schema 1.1.0, ADR 0016).
+TEST(SessionRecovery, RecoveredBundleCarriesDetections) {
+  auto d = fresh("recover_det");
+  fs::create_directories(d);
+  {
+    bundle::StreamWriter w;
+    ASSERT_TRUE(w.open((d / "streams.mcap").string()));
+    bundle::IntrinsicsSample k;
+    k.t_ns = 0; k.width = 320; k.height = 240; k.fx = k.fy = 250; k.cx = 159.5; k.cy = 119.5;
+    w.write(k);
+    for (int64_t i = 0; i < 20; ++i) {
+      bundle::PoseSample p;
+      p.t_ns = i * 33 * kMs;
+      w.write(p);
+    }
+    for (uint32_t id = 0; id < 3; ++id) {
+      bundle::FrameRecord fr;
+      fr.t_ns = int64_t(id) * 100 * kMs + 1;
+      fr.frame_id = id;
+      w.write(fr);
+      bundle::DetectionsRecord dr;
+      dr.t_ns = fr.t_ns;
+      dr.frame_id = id;
+      if (id != 1) dr.boxes.push_back({3, 0.75f, 10, 20, 110, 220});  // id 1: "ran, saw nothing"
+      w.write(dr);
+    }
+    w.close();
+  }
+  {
+    std::ofstream f(d / "session.json");
+    f << "{\"bundle_id\":\"b\",\"session_id\":\"s\",\"consent_version\":\"v1\",\"consent_at\":\"2026-11-17T09:30:00Z\","
+         "\"redaction_mode\":\"faces\"}\n";
+  }
+  char rep[1024];
+  ASSERT_EQ(ck_recover(d.c_str(), rep, sizeof rep), CK_OK) << rep;
+  auto c = bundle::read_streams((d / "streams.mcap").string());
+  EXPECT_TRUE(c.finalized);
+  ASSERT_EQ(c.detections.size(), 3u);
+  EXPECT_EQ(c.detections[0].boxes.size(), 1u);
+  EXPECT_EQ(c.detections[0].boxes[0].cls, 3);
+  EXPECT_FLOAT_EQ(c.detections[0].boxes[0].x1, 110.f);
+  EXPECT_TRUE(c.detections[1].boxes.empty());
+  auto m = slurp(d / "manifest.json");
+  EXPECT_NE(m.find("\"detections\": 3"), std::string::npos) << m;
+  expect_consent_manifest(m);
+}
+
+TEST(SessionDetections, ReachBundleAreBoundedAndDropsAreCounted) {
+  auto d = fresh("detections");
+  auto* s = make(d, "{\"threaded\":0, \"queue_capacity\":16, \"frame_slots\":2}");
+  ck_detection bx[2] = {{3, 0.75f, 10, 20, 110, 220}, {1, 0.5f, 0, 0, 50, 60}};
+  EXPECT_EQ(ck_ingest_detections(s, 1, 0, bx, 2), CK_ERR_STATE);  // not capturing yet
+  ASSERT_EQ(ck_session_start(s, 0), CK_OK);
+  ck_session_pump(s);
+  intr(s);
+  ck_session_pump(s);
+  EXPECT_EQ(ck_ingest_detections(nullptr, 1, 0, bx, 2), CK_ERR_ARG);
+  EXPECT_EQ(ck_ingest_detections(s, 1, 0, nullptr, 2), CK_ERR_ARG);
+  EXPECT_EQ(ck_ingest_detections(s, 1, 0, bx, 100000), CK_ERR_ARG);  // absurd box count
+  EXPECT_EQ(ck_ingest_detections(s, 100 * kMs, 7, bx, 2), CK_OK);
+  EXPECT_EQ(ck_ingest_detections(s, 200 * kMs, 8, nullptr, 0), CK_OK);  // ran, saw nothing
+  ck_session_pump(s);
+  int full = 0;  // the queue holds 16: the rest are refused and counted
+  for (uint32_t i = 0; i < 40; ++i) full += ck_ingest_detections(s, (300 + i) * kMs, 20 + i, bx, 1) == CK_ERR_FULL;
+  EXPECT_EQ(full, 40 - 16);
+  ck_session_pump(s);
+  ASSERT_EQ(ck_session_finalize(s), CK_OK);
+  bool logged = false;
+  for (auto& e : drain(s))
+    logged |= e.find("\"ingest_drop\"") != std::string::npos && e.find("\"detections\":24") != std::string::npos;
+  EXPECT_TRUE(logged);
+  ck_session_destroy(s);
+  auto c = bundle::read_streams((d / "streams.mcap").string());
+  ASSERT_EQ(c.detections.size(), 2u + 16u);
+  EXPECT_EQ(c.detections[0].frame_id, 7u);
+  ASSERT_EQ(c.detections[0].boxes.size(), 2u);
+  EXPECT_EQ(c.detections[0].boxes[0].cls, 3);
+  EXPECT_FLOAT_EQ(c.detections[0].boxes[0].y1, 220.f);
+  EXPECT_TRUE(c.detections[1].boxes.empty());
+  bool drop_event = false;
+  for (auto& e : c.events) drop_event |= e.code == "INGEST_DROP";
+  EXPECT_TRUE(drop_event);
+  auto m = slurp(d / "manifest.json");
+  EXPECT_NE(m.find("\"detections\": 18"), std::string::npos) << m;
 }
 
 TEST(SessionRecovery, TruncatedStreamsNeverCrash) {
@@ -509,4 +745,87 @@ TEST(SessionOverlay, EmittedEvery500msOfEventTimeSmallAndDeterministic) {
     prev = t;
   }
   EXPECT_EQ(a, overlay_events("overlay_b"));  // same input stream -> byte-identical events
+}
+
+// Phase 9 step 5: the session forwards recorded detections to the engine; objects appear in the overlay only with
+// guide.understanding on.
+namespace {
+std::vector<std::string> overlays_with_detections(const char* name, const char* cfg) {
+  auto d = fresh(name);
+  auto* s = make(d, cfg);
+  EXPECT_EQ(ck_session_start(s, 0), CK_OK);
+  intr(s);
+  ck_plane fl{0, "f", "floor", {0, 0, 2}, {0, 1, 0}, {1, 0, 0}, 6, 6};
+  ck_plane wl{0, "w1", "wall", {0, 1.25, 4}, {0, 0, -1}, {1, 0, 0}, 5, 2.5};
+  EXPECT_EQ(ck_ingest_plane(s, &fl), CK_OK);
+  EXPECT_EQ(ck_ingest_plane(s, &wl), CK_OK);
+  // A chair (0.5 x 0.9 x 0.5 m) 3.5 m ahead of a camera 1.4 m up (pinhole f = 250, 320 x 240; camera upright in an
+  // OpenCV frame = rotation of 180 degrees about the optical axis relative to world axes).
+  ck_detection chair{1, 0.8f, 159.5f - 17.9f, 155.2f, 159.5f + 17.9f, 219.5f};
+  std::vector<std::string> out;
+  for (int64_t i = 0; i < 150; ++i) {
+    ck_pose p{(i + 1) * 33 * kMs, {0, 1.4, 0}, {0, 0, 0, 1}, 1, 0};
+    EXPECT_EQ(ck_ingest_pose(s, &p, CK_POSE_OPENCV), CK_OK);
+    if (i == 30 || i == 36 || i == 42) EXPECT_EQ(ck_ingest_detections(s, (i + 1) * 33 * kMs, uint32_t(i), &chair, 1), CK_OK);
+    ck_session_pump(s);
+    for (auto& e : drain(s))
+      if (e.find("\"type\":\"overlay\"") != std::string::npos) out.push_back(e);
+  }
+  ck_session_stop(s, 150 * 33 * kMs);
+  ck_session_pump(s);
+  ck_session_finalize(s);
+  ck_session_destroy(s);
+  return out;
+}
+}  // namespace
+
+TEST(SessionDetections, ForwardedToEngineOnlyWithUnderstanding) {
+  auto on = overlays_with_detections("det_engine_on", "{\"threaded\":0, \"platform\":\"test\", \"guide.understanding\":1}");
+  ASSERT_FALSE(on.empty());
+  EXPECT_EQ(on.front().find("\"objects\""), std::string::npos);  // before the detections
+  EXPECT_NE(on.back().find("\"objects\":\"1,chair,"), std::string::npos) << on.back();
+  for (auto& e : on) EXPECT_LT(e.size(), 4096u);
+  auto off = overlays_with_detections("det_engine_off", "{\"threaded\":0, \"platform\":\"test\"}");
+  ASSERT_FALSE(off.empty());
+  for (auto& e : off) EXPECT_EQ(e.find("\"objects\""), std::string::npos);
+  EXPECT_EQ(on, overlays_with_detections("det_engine_on2", "{\"threaded\":0, \"platform\":\"test\", \"guide.understanding\":1}"));
+}
+
+// ADR 0028: with understanding on, the engine's published labels reach /guide/* (change-triggered + final) and the
+// manifest is 1.3.0; with it off nothing is written and the manifest stays 1.1.0. Deterministic.
+TEST(SessionGuideOutputs, WrittenOnlyWithUnderstandingAndDeterministic) {
+  const char* on_cfg = "{\"threaded\":0, \"platform\":\"test\", \"guide.understanding\":1}";
+  auto dir = [](const char* n) { return fs::path(CK_TEST_TMP) / "session" / n; };
+  auto slurp = [](const fs::path& p) {
+    std::ifstream f(p, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  };
+  overlays_with_detections("guide_out_on", on_cfg);
+  auto c = bundle::read_streams((dir("guide_out_on") / "streams.mcap").string());
+  ASSERT_TRUE(c.finalized);
+  ASSERT_FALSE(c.labels.empty());
+  for (size_t i = 1; i < c.labels.size(); ++i) EXPECT_GT(c.labels[i].t_ns, c.labels[i - 1].t_ns);
+  ASSERT_EQ(c.labels.back().objects.size(), 1u);
+  EXPECT_EQ(c.labels.back().objects[0].cls, 1);  // chair
+  EXPECT_GE(c.labels.back().objects[0].n_obs, 2u);
+  auto m = slurp(dir("guide_out_on") / "manifest.json");
+  EXPECT_NE(m.find("\"schema_version\": \"1.3.0\""), std::string::npos) << m.substr(0, 120);
+  EXPECT_NE(m.find("\"guide_labels\": " + std::to_string(c.labels.size())), std::string::npos);
+
+  overlays_with_detections("guide_out_off", "{\"threaded\":0, \"platform\":\"test\"}");
+  auto off = bundle::read_streams((dir("guide_out_off") / "streams.mcap").string());
+  EXPECT_TRUE(off.labels.empty() && off.shell.empty() && off.gaps.empty());
+  auto mo = slurp(dir("guide_out_off") / "manifest.json");
+  EXPECT_NE(mo.find("\"schema_version\": \"1.1.0\""), std::string::npos);
+  EXPECT_EQ(mo.find("guide_labels"), std::string::npos);
+
+  overlays_with_detections("guide_out_on2", on_cfg);
+  auto c2 = bundle::read_streams((dir("guide_out_on2") / "streams.mcap").string());
+  ASSERT_EQ(c2.labels.size(), c.labels.size());
+  ASSERT_EQ(c2.shell.size(), c.shell.size());
+  ASSERT_EQ(c2.gaps.size(), c.gaps.size());
+  for (size_t i = 0; i < c.labels.size(); ++i) {
+    EXPECT_EQ(c2.labels[i].t_ns, c.labels[i].t_ns);
+    EXPECT_EQ(bundle::codec::encode(c2.labels[i]), bundle::codec::encode(c.labels[i]));
+  }
 }

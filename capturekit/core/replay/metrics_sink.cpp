@@ -68,6 +68,8 @@ void MetricsSink::on_points(const bundle::PointCloudRecord& p) {
 
 void MetricsSink::on_plane(const bundle::PlaneRecord& p) { accept("planes", p.t_ns); }
 
+void MetricsSink::on_detections(const bundle::DetectionsRecord& d) { accept("detections", d.t_ns); }
+
 void MetricsSink::on_end(int64_t t) {
   if (ended_) return;
   ended_ = true;

@@ -3,7 +3,7 @@
 // and the live session (Phase 6) feed sinks the same, t_ns-ordered calls. Sinks never read a clock.
 //
 // Delivery order for equal t_ns (documented tie-break, docs/replay.md):
-//   intrinsics < pose < gyro < accel < frame < event < points < planes
+//   intrinsics < pose < gyro < accel < frame < event < points < planes < detections
 #include <cstdint>
 #include <string>
 
@@ -36,6 +36,7 @@ class ReplaySink {
   virtual void on_event(const bundle::EventRecord&) {}
   virtual void on_points(const bundle::PointCloudRecord&) {}
   virtual void on_plane(const bundle::PlaneRecord&) {}
+  virtual void on_detections(const bundle::DetectionsRecord&) {}
   virtual void on_end(int64_t /*t_ns*/) {}
 
   /// Deterministic JSON object (sorted keys, no wall-clock values).

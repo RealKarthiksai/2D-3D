@@ -19,6 +19,7 @@ class MetricsSink : public ReplaySink {
   void on_event(const bundle::EventRecord& e) override;
   void on_points(const bundle::PointCloudRecord& p) override;
   void on_plane(const bundle::PlaneRecord& p) override;
+  void on_detections(const bundle::DetectionsRecord& d) override;
   void on_end(int64_t t_ns) override;
   std::string report_json() const override;
 

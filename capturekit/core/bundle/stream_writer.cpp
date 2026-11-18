@@ -68,6 +68,9 @@ bool StreamWriter::open(const std::string& path, const StreamWriterOptions& opts
       {topic::kAccel, "capturekit.v1.ImuSample"},     {topic::kIntrinsics, "capturekit.v1.Intrinsics"},
       {topic::kFrameIndex, "capturekit.v1.FrameIndex"}, {topic::kEvents, "capturekit.v1.Event"},
       {topic::kPoints, "capturekit.v1.PointCloud"},   {topic::kPlanes, "capturekit.v1.PlaneAnchor"},
+      {topic::kDetections, "capturekit.v1.Detections"},
+      {topic::kGuideLabels, "capturekit.v1.RoomLabels"}, {topic::kGuideShell, "capturekit.v1.RoomShell"},
+      {topic::kGuideGaps, "capturekit.v1.RoomGaps"},
   };
   std::unordered_map<std::string, mcap::SchemaId> schemas;
   for (auto& [t, s] : chans) {
@@ -93,6 +96,10 @@ bool StreamWriter::write(const FrameRecord& m) {
 bool StreamWriter::write(const EventRecord& m) { return impl_->put(topic::kEvents, m.t_ns, codec::encode(m)); }
 bool StreamWriter::write(const PointCloudRecord& m) { return impl_->put(topic::kPoints, m.t_ns, codec::encode(m)); }
 bool StreamWriter::write(const PlaneRecord& m) { return impl_->put(topic::kPlanes, m.t_ns, codec::encode(m)); }
+bool StreamWriter::write(const DetectionsRecord& m) { return impl_->put(topic::kDetections, m.t_ns, codec::encode(m)); }
+bool StreamWriter::write(const LabelsRecord& m) { return impl_->put(topic::kGuideLabels, m.t_ns, codec::encode(m)); }
+bool StreamWriter::write(const ShellRecord& m) { return impl_->put(topic::kGuideShell, m.t_ns, codec::encode(m)); }
+bool StreamWriter::write(const GapsRecord& m) { return impl_->put(topic::kGuideGaps, m.t_ns, codec::encode(m)); }
 void StreamWriter::flush() { impl_->flush(); }
 
 StreamCounts StreamWriter::close() {
