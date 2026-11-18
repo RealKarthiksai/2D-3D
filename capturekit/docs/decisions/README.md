@@ -31,3 +31,4 @@ Architecture Decision Records (ADRs), one file per decision: NNNN-title.md.
 - [0026](0026-room-layout-model-overlay-v3.md) Room layout model (wall lines, blocked/missing spans), overlay v3, GuideParams gp2
 - [0028](0028-guide-output-channels-schema-1-3-0.md) Derived /guide/labels, /guide/shell, /guide/gaps channels, schema 1.3.0
 - [0029](0029-sim-arcore-plane-mode-furnished-rooms.md) Simulator "arcore" plane mode (fragments, re-ids, subsumption, jitter) and furnished4 / furnishedL rooms
+- [0030](0030-object-classes-detector-default-on.md) More object classes (append-only ids), detector on by default, objects on the mini-map, camera boxes and review
