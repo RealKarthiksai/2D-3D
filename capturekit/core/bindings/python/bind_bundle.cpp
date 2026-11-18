@@ -2,6 +2,7 @@
 #include <nanobind/stl/map.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/tuple.h>
 #include <nanobind/stl/vector.h>
 
 #include "capturekit/bundle/finalize.hpp"
@@ -56,6 +57,9 @@ BundleMeta meta_from(const nb::dict& d) {
   m.capture_settings_json = get<std::string>(d, "capture_settings_json", "{}");
   m.validation_json = get<std::string>(d, "validation_json", "");
   m.display_rotation_deg = get<int>(d, "display_rotation_deg", 0);
+  m.consent_version = get<std::string>(d, "consent_version", "");
+  m.consent_at = get<std::string>(d, "consent_at", "");
+  m.redaction_mode = get<std::string>(d, "redaction_mode", m.redaction_mode);
   if (d.contains("q_camera_from_imu")) {
     auto q = nb::cast<std::vector<double>>(d["q_camera_from_imu"]);
     for (int i = 0; i < 4 && i < int(q.size()); ++i) m.q_camera_from_imu_wxyz[i] = q[size_t(i)];
@@ -139,6 +143,42 @@ void bind_bundle(nb::module_& root) {
              p.extent_u = e.at(0); p.extent_v = e.at(1);
              return w.write(p);
            })
+      .def("write_detections", [](StreamWriter& w, int64_t t, uint32_t frame_id,
+                                  const std::vector<std::tuple<int, float, float, float, float, float>>& boxes) {
+             DetectionsRecord r; r.t_ns = t; r.frame_id = frame_id;
+             for (auto& [c, s, x0, y0, x1, y1] : boxes) r.boxes.push_back({c, s, x0, y0, x1, y1});
+             return w.write(r);
+           }, nb::arg("t_ns"), nb::arg("frame_id"), nb::arg("boxes"))
+      .def("write_labels", [](StreamWriter& w, int64_t t,
+                              const std::vector<std::tuple<uint32_t, int, double, double, double, double, double, double, double, double, uint32_t>>& objs,
+                              const std::vector<std::tuple<int, std::string, double, double, double, double, double, double, double>>& ops) {
+             LabelsRecord r; r.t_ns = t;
+             for (auto& [id, c, cx, cy, cz, sx, sy, sz, yaw, conf, n] : objs) {
+               LabelObject o; o.id = id; o.cls = c; o.centre[0] = cx; o.centre[1] = cy; o.centre[2] = cz;
+               o.size[0] = sx; o.size[1] = sy; o.size[2] = sz; o.yaw = yaw; o.conf = conf; o.n_obs = n;
+               r.objects.push_back(o);
+             }
+             for (auto& [k, wall, x0, z0, x1, z1, y0, y1, conf] : ops) {
+               LabelOpening o; o.kind = k; o.wall = wall; o.x0 = x0; o.z0 = z0; o.x1 = x1; o.z1 = z1; o.y0 = y0; o.y1 = y1; o.conf = conf;
+               r.openings.push_back(std::move(o));
+             }
+             return w.write(r);
+           }, nb::arg("t_ns"), nb::arg("objects"), nb::arg("openings"))
+      .def("write_shell", [](StreamWriter& w, int64_t t,
+                             const std::vector<std::tuple<std::string, double, double, double, double, bool>>& walls,
+                             std::vector<double> corners, bool closed, bool low_conf, double ceiling_h, bool ceiling_inferred) {
+             ShellRecord r; r.t_ns = t; r.corners = std::move(corners); r.closed = closed; r.low_confidence = low_conf;
+             r.ceiling_h = ceiling_h; r.ceiling_inferred = ceiling_inferred;
+             for (auto& [id, x0, z0, x1, z1, inf] : walls) r.walls.push_back({id, x0, z0, x1, z1, inf});
+             return w.write(r);
+           }, nb::arg("t_ns"), nb::arg("walls"), nb::arg("corners"), nb::arg("closed"), nb::arg("low_confidence"),
+           nb::arg("ceiling_h"), nb::arg("ceiling_inferred"))
+      .def("write_gaps", [](StreamWriter& w, int64_t t,
+                            const std::vector<std::tuple<int, double, double, double, double, double, std::string>>& gaps) {
+             GapsRecord r; r.t_ns = t;
+             for (auto& [ty, x0, z0, x1, z1, pri, why] : gaps) r.gaps.push_back({ty, x0, z0, x1, z1, pri, why});
+             return w.write(r);
+           }, nb::arg("t_ns"), nb::arg("gaps"))
       .def("flush", &StreamWriter::flush)
       .def("close", [](StreamWriter& w) { return counts_dict(w.close()); })
       .def("counts", [](StreamWriter& w) { return counts_dict(w.counts()); });
@@ -208,6 +248,45 @@ void bind_bundle(nb::module_& root) {
       pls.append(e);
     }
     d["planes"] = pls;
+    nb::list dets;
+    for (auto& r2 : r.detections) {
+      nb::dict e;
+      e["t_ns"] = r2.t_ns; e["frame_id"] = r2.frame_id;
+      nb::list bx;
+      for (auto& b : r2.boxes) bx.append(nb::make_tuple(b.cls, b.score, b.x0, b.y0, b.x1, b.y1));
+      e["boxes"] = bx;
+      dets.append(e);
+    }
+    d["detections"] = dets;
+    nb::list lbl, shl, gps;
+    for (auto& r2 : r.labels) {
+      nb::dict e;
+      e["t_ns"] = r2.t_ns;
+      nb::list os, ops;
+      for (auto& o : r2.objects)
+        os.append(nb::make_tuple(o.id, o.cls, o.centre[0], o.centre[1], o.centre[2], o.size[0], o.size[1], o.size[2], o.yaw, o.conf, o.n_obs));
+      for (auto& o : r2.openings) ops.append(nb::make_tuple(o.kind, o.wall, o.x0, o.z0, o.x1, o.z1, o.y0, o.y1, o.conf));
+      e["objects"] = os; e["openings"] = ops;
+      lbl.append(e);
+    }
+    for (auto& r2 : r.shell) {
+      nb::dict e;
+      e["t_ns"] = r2.t_ns;
+      nb::list ws;
+      for (auto& w : r2.walls) ws.append(nb::make_tuple(w.id, w.x0, w.z0, w.x1, w.z1, w.inferred));
+      e["walls"] = ws; e["corners"] = r2.corners; e["closed"] = r2.closed; e["low_confidence"] = r2.low_confidence;
+      e["ceiling_h"] = r2.ceiling_h; e["ceiling_inferred"] = r2.ceiling_inferred;
+      shl.append(e);
+    }
+    for (auto& r2 : r.gaps) {
+      nb::dict e;
+      e["t_ns"] = r2.t_ns;
+      nb::list gs;
+      for (auto& g : r2.gaps) gs.append(nb::make_tuple(g.type, g.x0, g.z0, g.x1, g.z1, g.pri, g.why));
+      e["gaps"] = gs;
+      gps.append(e);
+    }
+    d["labels"] = lbl; d["shell"] = shl; d["gaps"] = gps;
     return d;
   });
 

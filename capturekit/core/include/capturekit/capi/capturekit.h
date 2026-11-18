@@ -96,6 +96,14 @@ typedef struct ck_plane {
   double extent_u, extent_v;
 } ck_plane;
 
+/* One 2D box on a stored keyframe JPEG (pixels of that image). cls = core ObjectClass id
+ * (0 unknown, 1 chair, 2 couch, 3 bed, 4 dining_table, 5 tv, 6 potted_plant, 7 laptop). */
+typedef struct ck_detection {
+  int32_t cls;
+  float score;
+  float x0, y0, x1, y1;
+} ck_detection;
+
 typedef struct ck_policy {
   int32_t level;  /* 0 NOMINAL .. 5 SAFE_PAUSE */
   double keyframe_rate_scale;
@@ -110,7 +118,8 @@ const char* ck_version(void);
 
 /* config_json: flat JSON. Keys: threaded, frame_slots, queue_capacity, calib_normal_poses,
  * keyframe_ack_timeout_s, string metadata (bundle_id, session_id, platform, model, os, app_version,
- * clock_base), "quality.<key>" and "governor.<key>" overrides. NULL or "{}" for defaults.
+ * clock_base), consent_version + consent_at (ISO-8601 text, both or neither), redaction_mode
+ * ("none" | "faces"), "quality.<key>" and "governor.<key>" overrides. NULL or "{}" for defaults.
  * Creates bundle_dir if needed. Returns NULL on error (status in *err if non-NULL). */
 ck_session* ck_session_create(const char* bundle_dir, const char* config_json, ck_status* err);
 void ck_session_destroy(ck_session* s);
@@ -132,6 +141,11 @@ ck_status ck_ingest_intrinsics(ck_session* s, const ck_intrinsics* k);
 ck_status ck_ingest_frame(ck_session* s, const ck_frame* f);
 ck_status ck_ingest_points(ck_session* s, int64_t t_ns, const float* xyz, size_t n_points);
 ck_status ck_ingest_plane(ck_session* s, const ck_plane* p);
+/* All boxes of one keyframe (schema 1.1.0 /ar/detections). n_boxes may be 0 ("ran, saw nothing") with
+ * boxes NULL; more than 256 boxes returns CK_ERR_ARG. t_ns = the keyframe t_ns. Never blocks: a full
+ * queue returns CK_ERR_FULL and is counted in INGEST_DROP ("detections"). */
+ck_status ck_ingest_detections(ck_session* s, int64_t t_ns, uint32_t frame_id, const ck_detection* boxes,
+                               size_t n_boxes);
 ck_status ck_ingest_platform(ck_session* s, int64_t t_ns, const ck_platform* p);
 ck_status ck_keyframe_written(ck_session* s, uint32_t frame_id, int32_t ok);
 

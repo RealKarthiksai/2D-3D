@@ -151,6 +151,19 @@ ck_status ck_ingest_plane(ck_session* s, const ck_plane* p) {
   });
 }
 
+ck_status ck_ingest_detections(ck_session* s, int64_t t, uint32_t frame_id, const ck_detection* boxes, size_t n) {
+  if (!boxes && n) return CK_ERR_ARG;
+  if (n > session::Session::kMaxDetectionBoxes) return CK_ERR_ARG;
+  return guard(s, [&](auto& x) {
+    bundle::DetectionsRecord r;
+    r.t_ns = t;
+    r.frame_id = frame_id;
+    r.boxes.reserve(n);
+    for (size_t i = 0; i < n; ++i) r.boxes.push_back({boxes[i].cls, boxes[i].score, boxes[i].x0, boxes[i].y0, boxes[i].x1, boxes[i].y1});
+    return x.ingest_detections(r);
+  });
+}
+
 ck_status ck_ingest_platform(ck_session* s, int64_t t, const ck_platform* p) {
   if (!p) return CK_ERR_ARG;
   return guard(s, [&](auto& x) {

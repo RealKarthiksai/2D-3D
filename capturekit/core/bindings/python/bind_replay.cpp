@@ -5,6 +5,7 @@
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/tuple.h>
 #include <nanobind/stl/unique_ptr.h>
 #include <nanobind/stl/vector.h>
 
@@ -89,6 +90,12 @@ void bind_replay(nb::module_& root) {
              }
              r.extent_u = eu; r.extent_v = ev;
              p.s->on_plane(r);
+           })
+      .def("on_detections", [](PySink& p, int64_t t, uint32_t frame_id,
+                               const std::vector<std::tuple<int, float, float, float, float, float>>& boxes) {
+             bundle::DetectionsRecord r; r.t_ns = t; r.frame_id = frame_id;
+             for (auto& [c, s, x0, y0, x1, y1] : boxes) r.boxes.push_back({c, s, x0, y0, x1, y1});
+             p.s->on_detections(r);
            })
       .def("on_end", [](PySink& p, int64_t t) { p.s->on_end(t); })
       .def("report_json", [](const PySink& p) { return p.s->report_json(); });

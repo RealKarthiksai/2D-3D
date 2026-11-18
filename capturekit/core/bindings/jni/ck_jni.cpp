@@ -5,6 +5,7 @@
 // negative, fooling the Kotlin "handle <= 0 means error" check.
 #include <jni.h>
 
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -112,6 +113,25 @@ FN(jint, ingestPlane)(JNIEnv* e, jobject, jlong h, jlong t, jstring id, jstring 
   auto sid = str(e, id), sk = str(e, kind);
   ck_plane p{t, sid.c_str(), sk.c_str(), {v[0], v[1], v[2]}, {v[3], v[4], v[5]}, {v[6], v[7], v[8]}, v[9], v[10]};
   return ck_ingest_plane(S(h), &p);
+}
+// boxes = flat [cls, score, x0, y0, x1, y1] * n (cls as float); n boxes, may be 0.
+FN(jint, ingestDetections)(JNIEnv* e, jobject, jlong h, jlong t, jint frameId, jfloatArray boxes, jint n) {
+  if (n < 0 || n > (1 << 16)) return CK_ERR_ARG;
+  if (n > 0 && (boxes == nullptr || e->GetArrayLength(boxes) < 6 * n)) return CK_ERR_ARG;
+  std::vector<float> v(size_t(6 * n));
+  if (n) e->GetFloatArrayRegion(boxes, 0, 6 * n, v.data());
+  std::vector<ck_detection> d;
+  d.reserve(static_cast<size_t>(n));
+  for (jint i = 0; i < n; ++i) {
+    const float* b = &v[size_t(6) * size_t(i)];
+    bool finite = true;
+    for (int k = 0; k < 6; ++k) finite = finite && std::isfinite(b[k]);
+    if (!finite) continue;  // skip boxes with NaN/Inf; the rest of the frame is still ingested
+    // class id: clamp before the int32 conversion (float -> int out of range is UB)
+    const float c = std::fmin(std::fmax(b[0], 0.0f), 1.0e6f);
+    d.push_back(ck_detection{int32_t(c), b[1], b[2], b[3], b[4], b[5]});
+  }
+  return ck_ingest_detections(S(h), t, uint32_t(frameId), d.data(), d.size());
 }
 FN(jint, ingestPlatform)(JNIEnv*, jobject, jlong h, jlong t, jint thermal, jboolean lowPower, jdouble battery,
                          jboolean charging, jdouble frameTimeMs) {
