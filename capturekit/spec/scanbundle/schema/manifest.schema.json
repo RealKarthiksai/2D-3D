@@ -40,13 +40,19 @@
           "path": {"type": "string", "pattern": "^[^/][^\\\\]*$"},
           "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "size": {"type": "integer", "minimum": 0},
-          "role": {"enum": ["streams", "camera", "keyframe", "guidance", "config", "other"]}
+          "role": {"enum": ["streams", "camera", "keyframe", "guidance", "config", "redaction", "other"]}
         }
       }
     },
     "counts": {
       "type": "object",
       "required": ["poses", "imu_gyro", "imu_accel", "intrinsics", "frames", "keyframes", "events"],
+      "properties": {
+        "detections": {"type": "integer", "minimum": 0},
+        "guide_labels": {"type": "integer", "minimum": 0},
+        "guide_shell": {"type": "integer", "minimum": 0},
+        "guide_gaps": {"type": "integer", "minimum": 0}
+      },
       "additionalProperties": {"type": "integer", "minimum": 0}
     },
     "clock": {
@@ -67,6 +73,14 @@
         "status": {"enum": ["complete", "partial", "recovered"]},
         "reason": {"type": "string"}
       }
+    },
+    "consent": {
+      "type": "object",
+      "properties": {"version": {"type": "string"}, "at": {"type": "string"}}
+    },
+    "privacy": {
+      "type": "object",
+      "properties": {"redaction_mode": {"enum": ["none", "faces"]}}
     },
     "validation": {"type": "object"}
   }

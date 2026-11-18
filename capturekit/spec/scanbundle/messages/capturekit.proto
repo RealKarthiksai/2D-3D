@@ -118,3 +118,97 @@ message PlaneAnchor {
   double extent_u = 13;
   double extent_v = 14;
 }
+
+// One 2D object box on a keyframe image (schema 1.1.0, ADR 0016). Pixels of the stored keyframe JPEG,
+// top-left origin, x right, y down. cls = core object class id (core/include/capturekit/guide/understanding.hpp).
+message Detection {
+  int32 cls = 1;
+  float score = 2;
+  float x0 = 3;
+  float y0 = 4;
+  float x1 = 5;
+  float y1 = 6;
+}
+
+// /ar/detections : all boxes the shell detector found on one keyframe (schema 1.1.0, ADR 0016).
+// frame_id refers to /frame_index. One message per keyframe, t_ns = that keyframe's t_ns.
+message Detections {
+  int64 t_ns = 1;
+  uint32 frame_id = 2;
+  repeated Detection boxes = 3;
+}
+
+// ---- Derived guidance outputs (schema 1.3.0, ADR 0028). World frame, metres, Y up. Written by the capture core
+// whenever the published value changes (at most once per second of event time) plus one final snapshot; the last
+// record of each channel is the end state. Part 2 may ignore them; replay recomputes them and never feeds them back.
+
+// One lifted object: an oriented box standing on the floor.
+message LabelObject {
+  uint32 id = 1;
+  int32 cls = 2;          // core object class id (core/include/capturekit/guide/understanding.hpp)
+  double cx = 3;          // box centre
+  double cy = 4;
+  double cz = 5;
+  double sx = 6;          // width, height, depth in the box frame
+  double sy = 7;
+  double sz = 8;
+  double yaw = 9;         // rotation about +Y, radians
+  double conf = 10;       // 0..1
+  uint32 n_obs = 11;
+}
+
+// A door or window found in a wall, footprint segment (x0,z0)-(x1,z1) and heights y0..y1 above the floor.
+message LabelOpening {
+  int32 kind = 1;         // 0 door, 1 window
+  string wall = 2;        // shell wall id ("W1"..), may be empty
+  double x0 = 3;
+  double z0 = 4;
+  double x1 = 5;
+  double z1 = 6;
+  double y0 = 7;
+  double y1 = 8;
+  double conf = 9;        // 0..1
+}
+
+// /guide/labels : objects and openings known at t_ns.
+message RoomLabels {
+  int64 t_ns = 1;
+  repeated LabelObject objects = 2;
+  repeated LabelOpening openings = 3;
+}
+
+message ShellWall {
+  string id = 1;          // stable id
+  double x0 = 2;
+  double z0 = 3;
+  double x1 = 4;
+  double z1 = 5;
+  bool inferred = 6;      // hypothesised, not observed
+}
+
+// /guide/shell : the room outline at t_ns.
+message RoomShell {
+  int64 t_ns = 1;
+  repeated ShellWall walls = 2;
+  repeated double corners = 3;   // packed x0,z0,x1,z1,...; closed polygon when `closed`
+  bool closed = 4;
+  bool low_confidence = 5;
+  double ceiling_h = 6;
+  bool ceiling_inferred = 7;
+}
+
+message RoomGap {
+  int32 type = 1;         // 0 missing_wall, 1 unseen_corner, 2 unseen_ceiling, 3 unseen_floor, 4 occluded, 5 weak
+  double x0 = 2;
+  double z0 = 3;
+  double x1 = 4;
+  double z1 = 5;
+  double pri = 6;         // 0..1
+  string why = 7;         // templated phrase, e.g. "behind the sofa"
+}
+
+// /guide/gaps : expected-but-unobserved areas at t_ns.
+message RoomGaps {
+  int64 t_ns = 1;
+  repeated RoomGap gaps = 2;
+}
