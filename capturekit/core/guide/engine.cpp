@@ -52,7 +52,11 @@ void GuideEngine::on_pose(const bundle::PoseSample& s) {
   }
   Vec3 pos = T.translation();
   double yaw = yaw_of(T), pitch = pitch_of(T);
-  if (have_pose_) {
+  const size_t n_rec = rec_events_.size();
+  rec_.on_pose(s.t_ns, st, int(s.tracking_reason), pos, yaw, rec_events_);
+  bool reset = false;
+  for (size_t k = n_rec; k < rec_events_.size(); ++k) reset |= rec_events_[k].kind == RecoveryEvent::Kind::Reset;
+  if (have_pose_ && !reset) {
     double dt = double(s.t_ns - last_pose_t_) / 1e9;
     if (dt > 0 && dt < 1.0) {
       double a = std::min(1.0, dt / 0.3);
@@ -63,6 +67,7 @@ void GuideEngine::on_pose(const bundle::PoseSample& s) {
     }
   }
   user_.pos = pos, user_.yaw = yaw, user_.pitch = pitch;
+  if (reset) reanchor(pos);
   if (!have_pose_) first_pose_t_ = s.t_ns;
   have_pose_ = true;
   last_pose_t_ = s.t_ns;
@@ -76,6 +81,17 @@ void GuideEngine::on_pose(const bundle::PoseSample& s) {
     if (h > 0.5 && h < 2.5) cam_height_ += 0.02 * (h - cam_height_);
   }
 }
+
+void GuideEngine::reanchor(const Vec3& pos) {
+  // The reported pose may have jumped across the loss: speed / turn-rate estimates spanning it are meaningless (they
+  // would trigger SLOW_DOWN), the traversal trail must not draw a line across the jump, and the plan was made from a
+  // drifted pose. The engine's map, coverage and nav stay: ARCore re-anchors its world, it does not restart it.
+  user_.speed = 0, user_.yaw_rate = 0;
+  last_trav_ = {pos.x() + 1e9, 0, pos.z() + 1e9};  // the re-anchored spot is marked traversed now, with no trail to it
+  last_plan_t_ = -1;  // replan on the next update()
+}
+
+void GuideEngine::on_gyro(const bundle::ImuSample& s) { rec_.on_gyro(s.t_ns, s.v[0], s.v[1], s.v[2]); }
 
 void GuideEngine::refresh_levels() {
   if (map_.version() == map_version_) return;
@@ -146,7 +162,9 @@ void GuideEngine::on_frame(const FrameObs& f) {
 }
 
 void GuideEngine::on_keyframe(uint32_t, int64_t t, double sharp) {
-  if (track_.size() == 0) return;
+  // While recovering the poses are not trusted: a view must not count as coverage (live, the session does not even
+  // select keyframes then; in replay the quality sink still does, so the engine gates it the same way).
+  if (track_.size() == 0 || rec_.active()) return;
   auto T = track_.interpolate_at(t, 100'000'000);
   if (!T) return;
   // Overlay v2: record the heading of this keyframe (needs only a pose, not intrinsics or planes). Looking nearly
@@ -170,7 +188,8 @@ void GuideEngine::update(int64_t t, std::vector<Instruction>& out) {
   refresh_layout(t);
   if (!have_pose_ || !have_K_) return;
   const int64_t period = int64_t(1e9 / std::max(0.05, p_.replan_hz * rate_scale_));
-  if (last_plan_t_ < 0 || t - last_plan_t_ >= period) {
+  // No planning from untrusted poses while recovering: the plan is frozen and recomputed right after the reset.
+  if (!rec_.active() && (last_plan_t_ < 0 || t - last_plan_t_ >= period)) {
     last_plan_t_ = t;
     int before = planner_.switches();
     PlanHints hints;
@@ -216,6 +235,7 @@ void GuideEngine::update(int64_t t, std::vector<Instruction>& out) {
   s.plan = plan_;
   s.too_close = too_close_;
   s.completeness = plan_.completeness;
+  s.recovering = rec_.active();
   scratch_.clear();
   life_.clear();
   gen_.update(s, scratch_, life_);
@@ -288,6 +308,12 @@ std::string GuideEngine::report_json() const {
       arr.push_back(j.dump());
     }
     o.raw("objects", json::array(arr.begin(), arr.end()));
+  }
+  if (rec_.losses() > 0) {  // absent when tracking never stayed degraded for enter_s: existing reports are unchanged
+    json::Object rj;
+    rj.set("losses", int64_t(rec_.losses())).set("resets", int64_t(rec_.resets()))
+        .set("max_drift_m", std::round(rec_.max_drift_m() * 1000) / 1000 + 0.0).set("active", rec_.active());
+    o.raw("recovery", rj.dump());
   }
   if (steer()) {  // absent at 0 and 1: their reports (and the replay baselines) are unchanged
     json::Object sj;
@@ -372,7 +398,10 @@ OverlayModel GuideEngine::overlay(int64_t t) const {
   // The one most useful reason right now, chosen in priority order.
   const char* why = "why.keep";
   const bool dark = underexp_seen_ && t - last_underexp_t_ < 2'000'000'000;
-  if (tracking_ == 3) {
+  m.recalibrating = rec_.active();
+  if (m.recalibrating) {
+    why = "why.recalibrating";
+  } else if (tracking_ == 3) {
     why = "why.tracking_lost";
   } else if (tracking_ == 2) {
     why = "why.limited";

@@ -18,6 +18,7 @@ const std::map<std::string, const char*>& catalog() {
       {"why.floor", "Floor not seen yet"},
       {"why.keep", "Keep scanning slowly"},
       {"why.limited", "Tracking weak: move slowly"},
+      {"why.recalibrating", "Recalibrating: turn the phone slowly"},
       {"why.sweep", "Looking for walls: sweep slowly"},
       {"why.too_dark", "Too dark here"},
       {"why.too_fast", "Moving too fast"},
@@ -111,6 +112,7 @@ std::string OverlayModel::to_json() const {
       .set("spans", sp).set("shell", sh).set("shell_closed", shell_closed && !sh.empty()).set("ceiling_seen", ceiling_seen);
   if (!os.empty()) o.set("objects", os);
   if (!ops.empty()) o.set("openings", ops);
+  if (recalibrating) o.set("recalibrating", true);  // absent otherwise: existing overlays (and goldens) are unchanged
   if (!gs.empty()) o.set("gaps", gs).set("gap_why_id", gap_why_id).set("gap_why_text", gap_why_text);
   return o.dump();
 }

@@ -32,7 +32,7 @@ SPEECH_BUDGET_PER_MIN = 8.0
 # Real-room fix: core-side rolling cap on spoken guidance (GuideParams max_prompts_per_min). Counts
 # every instruction except the safety/tracking ones (priority 3 in core instruction.cpp).
 PROMPT_CAP_PER_MIN = 6.0
-SAFETY_TYPES = frozenset({"SLOW_DOWN", "HOLD_STILL", "RELOCALIZE", "AIM_TEXTURED"})
+SAFETY_TYPES = frozenset({"SLOW_DOWN", "HOLD_STILL", "RELOCALIZE", "AIM_TEXTURED", "RECALIBRATE"})
 # Completeness may dip (re-ids, layout merges) but by at most this much below its running maximum.
 TIMELINE_MAX_DIP = 0.05
 

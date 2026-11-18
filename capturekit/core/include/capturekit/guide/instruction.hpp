@@ -19,8 +19,9 @@ enum class InstrType : int {
   SlowDown = 0, HoldStill, Relocalize, MoveTo, RotateToward, TiltUp, TiltDown, StepBack, Sweep, MoreLight, Finish,
   Progress,     // one-shot "N % done" prompt (priority 1)
   KeepTurning,  // sweep progress prompt (priority 1)
-  AimTextured   // tracking limited by INSUFFICIENT_FEATURES: aim at a textured wall (priority 3)
-};
+  AimTextured,  // tracking limited by INSUFFICIENT_FEATURES: aim at a textured wall (priority 3)
+  Recalibrate   // issue #1 / ADR 0031: tracking degraded > 2 s, turn the phone slowly in a small circle (priority 3)
+};  // append-only: the integer values are type ids that shells and logs may store
 const char* type_name(InstrType t);
 int type_priority(InstrType t);  // 3 safety/tracking, 2 guidance, 1 info
 
@@ -53,6 +54,9 @@ struct Situation {
   Plan plan;
   double too_close = 0;       // fraction of visible deficient cells nearer than range_min
   double completeness = 0;
+  // Tracking recovery is active (recovery.hpp, ADR 0031): only RECALIBRATE (or RELOCALIZE after a long loss) is spoken,
+  // active guidance is superseded and no navigation, info or quality prompt is issued.
+  bool recovering = false;
 };
 
 struct LifeEvent {

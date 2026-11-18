@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "capturekit/bundle/types.hpp"
@@ -20,6 +21,7 @@
 #include "capturekit/guide/overlay.hpp"
 #include "capturekit/guide/planner.hpp"
 #include "capturekit/guide/point_store.hpp"
+#include "capturekit/guide/recovery.hpp"
 #include "capturekit/guide/room_shell.hpp"
 #include "capturekit/guide/steer.hpp"
 
@@ -45,7 +47,9 @@ class GuideEngine {
   /// keyframe pose and tracked; published objects become obstacles in the NavGrid. Same call live and in replay.
   void on_detections(const bundle::DetectionsRecord& r);
   void on_frame(const FrameObs& f);
-  /// A keyframe was chosen: its view updates coverage (pose looked up at t_ns).
+  /// Gyro sample (rad/s): feeds the tracking-recovery steadiness check only (ADR 0031).
+  void on_gyro(const bundle::ImuSample& s);
+  /// A keyframe was chosen: its view updates coverage (pose looked up at t_ns). Ignored while recovering.
   void on_keyframe(uint32_t frame_id, int64_t t_ns, double sharpness_norm);
   /// Plans (at replan_hz) and generates instructions; new ones are appended to `out`.
   void update(int64_t t_ns, std::vector<Instruction>& out);
@@ -82,7 +86,19 @@ class GuideEngine {
   /// A ceiling plane was found or a keyframe looked up by at least pitch_up_deg.
   bool ceiling_seen() const { return ceiling_look_ || map_.has_ceiling(); }
 
+  /// Tracking recovery (issue #1, ADR 0031): true from the moment tracking has been degraded for enter_s until it has
+  /// settled again. While true the session pauses keyframe capture and only the recovery prompt is issued.
+  bool recovering() const { return rec_.active(); }
+  const TrackingRecovery& recovery() const { return rec_; }
+  /// Lost / Reset transitions since the last call (appended by on_pose), moved out to the caller.
+  std::vector<RecoveryEvent> take_recovery_events() { return std::exchange(rec_events_, {}); }
+  /// Test hook: replaces the recovery thresholds (call before the first pose).
+  void set_recovery_params(const RecoveryParams& rp) { rec_ = TrackingRecovery(rp); }
+
  private:
+  void reanchor(const Vec3& pos);  // after a Reset: drop motion estimates that span the pose jump, replan at once
+  TrackingRecovery rec_;
+  std::vector<RecoveryEvent> rec_events_;
   void refresh_levels();
   void assign_wall_ids();  // overlay wall numbers: 1-based, first-seen order, never reused or renumbered
   GuideParams p_;

@@ -398,9 +398,11 @@ void Session::process(Item& it) {
           if (state_.load() == State::Calibrating && normal_run_ >= cfg_.calib_normal_poses)
             set_state(State::Scanning, v.t_ns, "tracking_normal");
           guide_.on_pose(v);
+          publish_recovery();
           guide_tick(v.t_ns);
         } else if constexpr (std::is_same_v<T, Gyro>) {
           gyro_.push(v.s.t_ns, v.s.v[0], v.s.v[1], v.s.v[2]);
+          guide_.on_gyro(v.s);
           writer_.write_gyro(v.s);
         } else if constexpr (std::is_same_v<T, Accel>) {
           writer_.write_accel(v.s);
@@ -506,6 +508,13 @@ void Session::on_frame(FrameItem& f) {
                                                     int64_t(cfg_.quality.default_exposure_ms * 1e6))
                            : std::nan("");
   analyzer_.finish(m, tracking_);
+  if (guide_.recovering()) {
+    // ADR 0031: keyframe capture is paused while tracking recovers. The frame is still measured and recorded in
+    // /frame_index (the quality timeline stays complete) but it is a hard reject, so it can never become a keyframe.
+    m.reasons |= quality::kRecalibrating;
+    m.hard_reject = true;
+    m.quality = 0;
+  }
   {
     guide::FrameObs fo;
     fo.t_ns = t, fo.frame_id = f.meta.frame_id, fo.hard_reject = m.hard_reject;
@@ -627,6 +636,29 @@ void Session::governor_step(int64_t t) {
   if (pol.must_pause && (st == State::Calibrating || st == State::Scanning)) {
     set_state(State::Paused, t, "governor");
     write_event(t, "session", "SESSION_PAUSED", "governor");
+  }
+}
+
+// Tracking recovery transitions (ADR 0031) go to the shell as critical events and to the bundle's /events timeline:
+// TRACKING_LOST when recovery starts, TRACKING_RESET (with the drift delta) when tracking is re-anchored.
+void Session::publish_recovery() {
+  for (auto& e : guide_.take_recovery_events()) {
+    auto r3 = [](double v) { return std::round(v * 1000) / 1000 + 0.0; };
+    json::Object o;
+    if (e.kind == guide::RecoveryEvent::Kind::Lost) {
+      o.set("type", "tracking_lost").set("t_ns", e.t_ns).set("tracking_state", e.tracking_state)
+          .set("reason", e.tracking_reason).set("degraded_s", r3(e.degraded_s));
+      write_event(e.t_ns, "guide", "TRACKING_LOST", "tracking degraded: keyframes paused, recalibration prompt",
+                  {{"tracking_state", std::to_string(e.tracking_state)}, {"reason", std::to_string(e.tracking_reason)},
+                   {"degraded_s", json::num(r3(e.degraded_s))}});
+    } else {
+      o.set("type", "tracking_reset").set("t_ns", e.t_ns).set("lost_s", r3(e.lost_s)).set("drift_m", r3(e.drift_m))
+          .set("drift_deg", r3(e.drift_deg));
+      write_event(e.t_ns, "guide", "TRACKING_RESET", "tracking recovered: session re-anchored, keyframes resumed",
+                  {{"lost_s", json::num(r3(e.lost_s))}, {"drift_m", json::num(r3(e.drift_m))},
+                   {"drift_deg", json::num(r3(e.drift_deg))}});
+    }
+    emit(o.dump(), true);
   }
 }
 

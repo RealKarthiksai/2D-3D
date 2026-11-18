@@ -370,7 +370,7 @@ int word_count(const std::string& t) {
 
 TEST(GuideInstructions, ShortTextsAreShortAndAllMessagesExist) {
   for (auto id : {"slow_down", "hold_still", "relocalize", "move.to", "rotate.to", "tilt.up", "tilt.down", "step.back", "sweep", "more_light",
-                  "finish", "progress.25", "progress.50", "progress.75", "keep_turning", "aim_texture"}) {
+                  "finish", "progress.25", "progress.50", "progress.75", "keep_turning", "aim_texture", "recalibrate"}) {
     ASSERT_GE(InstructionGenerator::variant_count(id), 2) << id;  // 2-3 phrasings per id
     ASSERT_LE(InstructionGenerator::variant_count(id), 3) << id;
     for (int v = 0; v < InstructionGenerator::variant_count(id); ++v) {
@@ -771,4 +771,271 @@ TEST(GuideSim, AverageStepWithinBudget) {
 #ifdef NDEBUG
   EXPECT_LT(ms, std::getenv("CK_PERF_STRICT") ? 10.0 : 25.0);  // phase 8 budget: <= 10 ms average update
 #endif
+}
+
+// ---- Tracking recovery (issue #1, ADR 0031) ----
+namespace {
+constexpr int64_t kNs = 1'000'000'000LL;
+int64_t at30(int64_t i) { return kNs + i * kNs / 30; }  // 30 Hz poses, t_ns > 0
+
+struct RecFeed {
+  TrackingRecovery r;
+  std::vector<RecoveryEvent> ev;
+  void pose(int64_t i, int state, int reason = 0, Vec3 p = Vec3::Zero(), double yaw = 0) {
+    r.on_pose(at30(i), state, reason, p, yaw, ev);
+  }
+  // 200 Hz gyro over the pose interval ending at pose i; mag(k) = |omega| (rad/s) of global sample k.
+  template <class F>
+  void gyro(int64_t i, F mag) {
+    for (int64_t k = 0; k < 7; ++k) r.on_gyro(at30(i) - kNs / 30 + k * 5'000'000, mag(i * 7 + k), 0, 0);
+  }
+};
+
+bundle::PoseSample rpose(int64_t t, double x, double z, double yaw, int state, int reason = 0) {
+  auto T = pose_from_yaw_pitch({x, 1.4, z}, yaw, 0);
+  bundle::PoseSample p;
+  p.t_ns = t;
+  for (int i = 0; i < 3; ++i) p.t_world_from_camera[i] = T.translation()[i];
+  auto q = T.se3().unit_quaternion();
+  p.q_world_from_camera_wxyz[0] = q.w(), p.q_world_from_camera_wxyz[1] = q.x();
+  p.q_world_from_camera_wxyz[2] = q.y(), p.q_world_from_camera_wxyz[3] = q.z();
+  p.tracking_state = static_cast<bundle::TrackingState>(state);
+  p.tracking_reason = static_cast<bundle::TrackingReason>(reason);
+  return p;
+}
+}  // namespace
+
+TEST(GuideRecovery, ShortDipIsIgnoredSustainedLossEntersAndResetMeasuresDrift) {
+  RecFeed f;
+  int64_t i = 0;
+  for (; i < 30; ++i) f.pose(i, 1);
+  for (; i < 30 + 57; ++i) f.pose(i, 2, 3);  // 1.9 s PAUSED / INSUFFICIENT_FEATURES: below enter_s
+  for (; i < 120; ++i) f.pose(i, 1);
+  EXPECT_TRUE(f.ev.empty());
+  EXPECT_FALSE(f.r.active());
+  const int64_t loss0 = i;
+  for (; i < loss0 + 75; ++i) f.pose(i, 2, 3);  // 2.5 s
+  ASSERT_EQ(f.ev.size(), 1u);
+  EXPECT_EQ(f.ev[0].kind, RecoveryEvent::Kind::Lost);
+  EXPECT_EQ(f.ev[0].tracking_state, 2);
+  EXPECT_EQ(f.ev[0].tracking_reason, 3);
+  EXPECT_GE(f.ev[0].degraded_s, 2.0);
+  EXPECT_EQ(f.ev[0].t_ns, at30(loss0 + 60));  // the first pose at >= 2 s of degradation
+  EXPECT_TRUE(f.r.active());
+  // Tracking back with a jumped pose; no gyro data = no evidence against settling: reset after settle_s (1 s).
+  const int64_t back0 = i;
+  for (; i < back0 + 45; ++i) f.pose(i, 1, 0, {0.3, 0, 0.4}, deg2rad(10));
+  ASSERT_EQ(f.ev.size(), 2u);
+  const auto& r = f.ev[1];
+  EXPECT_EQ(r.kind, RecoveryEvent::Kind::Reset);
+  EXPECT_EQ(r.t_ns, at30(back0 + 30));
+  EXPECT_NEAR(r.drift_m, 0.5, 1e-9);
+  EXPECT_NEAR(r.drift_deg, 10, 1e-6);
+  EXPECT_NEAR(r.lost_s, 3.5, 1e-6);
+  EXPECT_FALSE(f.r.active());
+  EXPECT_EQ(f.r.losses(), 1);
+  EXPECT_EQ(f.r.resets(), 1);
+  EXPECT_NEAR(f.r.max_drift_m(), 0.5, 1e-9);
+}
+
+TEST(GuideRecovery, WarmUpBeforeFirstTrackingIsNotALoss) {
+  RecFeed f;
+  int64_t i = 0;
+  for (; i < 150; ++i) f.pose(i, 2, 1);  // 5 s PAUSED / INITIALIZING before ARCore first tracks
+  EXPECT_TRUE(f.ev.empty());
+  EXPECT_FALSE(f.r.active());
+  for (; i < 160; ++i) f.pose(i, 1);
+  for (; i < 160 + 61; ++i) f.pose(i, 2, 3);  // a real loss afterwards is detected
+  ASSERT_EQ(f.ev.size(), 1u);
+  EXPECT_EQ(f.ev[0].kind, RecoveryEvent::Kind::Lost);
+}
+
+TEST(GuideRecovery, NotAvailableCountsAndRelapseRestartsSettling) {
+  RecFeed f;
+  int64_t i = 0;
+  for (; i < 10; ++i) f.pose(i, 1);
+  for (; i < 10 + 61; ++i) f.pose(i, 3, 0);  // STOPPED-like loss
+  ASSERT_EQ(f.ev.size(), 1u);
+  EXPECT_EQ(f.ev[0].tracking_state, 3);
+  for (int64_t k = 0; k < 15; ++k, ++i) f.pose(i, 1);  // 0.5 s back ...
+  f.pose(i++, 2, 2);                                   // ... relapse
+  const int64_t back = i;
+  for (; i < back + 30; ++i) f.pose(i, 1);  // last one 0.97 s after the first NORMAL pose: still settling
+  EXPECT_EQ(f.ev.size(), 1u);
+  EXPECT_TRUE(f.r.active());
+  f.pose(i++, 1);  // 1.0 s
+  ASSERT_EQ(f.ev.size(), 2u);
+  EXPECT_EQ(f.ev[1].kind, RecoveryEvent::Kind::Reset);
+}
+
+TEST(GuideRecovery, GyroMustSettleButNeverTrapsTheUser) {
+  auto seconds_to_reset = [](auto mag) {
+    RecFeed f;
+    int64_t i = 0;
+    f.gyro(i, mag), f.pose(i++, 1);  // tracking once: detection is armed
+    for (; i < 71; ++i) f.gyro(i, mag), f.pose(i, 2, 3);
+    EXPECT_TRUE(f.r.active());
+    const int64_t back = i;
+    for (; i < back + 200 && f.ev.size() < 2; ++i) f.gyro(i, mag), f.pose(i, 1);
+    EXPECT_EQ(f.ev.size(), 2u);
+    return double(i - 1 - back) / 30.0;  // seconds of NORMAL tracking before the reset
+  };
+  // A slow, steady circle (|omega| ~0.8 rad/s with a small ripple): settled after settle_s.
+  EXPECT_NEAR(seconds_to_reset([](int64_t k) { return 0.8 + 0.02 * double(k % 3); }), 1.0, 0.04);
+  // Shaking (|omega| alternating 0 / 2 rad/s, std-dev 1): never steady, released by settle_max_s.
+  EXPECT_NEAR(seconds_to_reset([](int64_t k) { return k % 2 ? 2.0 : 0.0; }), 4.0, 0.04);
+  // The steadiness rule itself.
+  TrackingRecovery r;
+  EXPECT_TRUE(r.gyro_steady(kNs));  // no samples: no evidence, never blocks
+  for (int k = 0; k < 200; ++k) r.on_gyro(kNs + k * 5'000'000LL, k % 2 ? 2.0 : 0.0, 0, 0);
+  EXPECT_FALSE(r.gyro_steady(kNs + 199 * 5'000'000LL));
+  EXPECT_TRUE(r.gyro_steady(kNs + 199 * 5'000'000LL + 3 * kNs));  // outside the window: no evidence
+}
+
+TEST(GuideInstructions, RecoverySuppressesGuidanceAndSpeaksRecalibrate) {
+  GuideParams p = P();
+  InstructionGenerator g(p);
+  auto s = sit(0);
+  s.plan.target = {true, false, 0.0, 3.0, 0, 0, 10, 1, 0, 1};
+  ASSERT_EQ(run(g, s).size(), 1u);  // MOVE_TO active
+  auto rec = sit(1);
+  rec.plan = s.plan;
+  rec.tracking_state = 2, rec.tracking_reason = 3, rec.recovering = true;
+  std::vector<LifeEvent> ev;
+  auto out = run(g, rec, &ev);
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0].type, InstrType::Recalibrate);
+  EXPECT_EQ(out[0].priority, 3);
+  EXPECT_EQ(out[0].msg_id, "recalibrate");
+  EXPECT_EQ(out[0].overlay_hint, "recalibrate");
+  EXPECT_EQ(out[0].haptic, "double");
+  EXPECT_STREQ(type_name(InstrType::Recalibrate), "RECALIBRATE");
+  EXPECT_NE(out[0].long_text.find("small circle"), std::string::npos);
+  ASSERT_EQ(ev.size(), 1u);  // the stale MOVE_TO is superseded, not expired (no planner penalty)
+  EXPECT_EQ(ev[0].ins.type, InstrType::MoveTo);
+  EXPECT_EQ(ev[0].state, LifeState::Superseded);
+  // Navigation and info prompts stay silent while recovering, long after the min gap and every cooldown.
+  for (int64_t t = 2; t <= 11; ++t) {
+    auto r2 = rec;
+    r2.t_ns = t * kNs;
+    r2.completeness = 0.6;
+    EXPECT_TRUE(run(g, r2).empty()) << t;
+  }
+  // Tracking back but still settling: silence, the prompt stays active.
+  auto settle = rec;
+  settle.t_ns = 11'500'000'000LL, settle.tracking_state = 1, settle.tracking_reason = 0;
+  EXPECT_TRUE(run(g, settle, &ev).empty());
+  EXPECT_TRUE(ev.empty());
+  // Recovery over: RECALIBRATE completes and guidance resumes at once.
+  auto done = sit(12);
+  done.plan = s.plan;
+  out = run(g, done, &ev);
+  bool completed = false;
+  for (auto& e : ev) completed |= e.ins.type == InstrType::Recalibrate && e.state == LifeState::Completed;
+  EXPECT_TRUE(completed);
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0].type, InstrType::MoveTo);
+  // A long NOT_AVAILABLE loss escalates to RELOCALIZE (walk back) and never falls back to RECALIBRATE.
+  InstructionGenerator g2(p);
+  auto lost = sit(10);
+  lost.tracking_state = 3, lost.lost_since_ns = kNs, lost.recovering = true;
+  out = run(g2, lost);
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0].type, InstrType::Relocalize);
+  lost.t_ns = 15 * kNs;
+  EXPECT_TRUE(run(g2, lost).empty());
+}
+
+namespace {
+struct RecoveryRun {
+  std::vector<Instruction> out;
+  std::vector<RecoveryEvent> events;
+  std::vector<std::string> overlays;
+  double seen_before_kf = 0, seen_after_kf_recovering = 0, seen_after_kf_reset = 0;
+  double speed_at_reset = -1;
+  std::string report;
+};
+
+// 3 s NORMAL facing a wall, `loss_s` of PAUSED / INSUFFICIENT_FEATURES, then 2 s NORMAL with the pose jumped 0.3 m.
+RecoveryRun recovery_scene(double loss_s) {
+  RecoveryRun rr;
+  GuideEngine g;
+  bundle::IntrinsicsSample k;
+  k.t_ns = 1, k.width = 640, k.height = 480, k.fx = k.fy = 500, k.cx = 319.5, k.cy = 239.5;
+  g.on_intrinsics(k);
+  g.on_plane(back_wall());
+  int64_t i = 0;
+  auto step = [&](int st, int reason, double x) {
+    const int64_t t = at30(i++);
+    g.on_pose(rpose(t, x, 0.5, 0, st, reason));
+    for (auto& e : g.take_recovery_events()) {
+      rr.events.push_back(e);
+      if (e.kind == RecoveryEvent::Kind::Reset) rr.speed_at_reset = g.user().speed;
+    }
+    g.update(t, rr.out);
+    rr.overlays.push_back(g.overlay(t).to_json());
+    return t;
+  };
+  for (int n = 0; n < 90; ++n) step(1, 0, 2.0);
+  const int n_loss = int(std::lround(loss_s * 30));
+  int64_t t = 0;
+  for (int n = 0; n < n_loss; ++n) t = step(2, 3, 2.0);
+  rr.seen_before_kf = g.coverage().stats().seen_fraction();
+  if (g.recovering()) {
+    g.on_keyframe(1, t, 1.0);
+    rr.seen_after_kf_recovering = g.coverage().stats().seen_fraction();
+  }
+  for (int n = 0; n < 60; ++n) t = step(1, 0, 2.3);
+  g.on_keyframe(2, t, 1.0);
+  rr.seen_after_kf_reset = g.coverage().stats().seen_fraction();
+  rr.report = g.report_json();
+  return rr;
+}
+}  // namespace
+
+TEST(GuideRecovery, EngineSuppressesGuidancePausesCoverageAndReanchors) {
+  auto rr = recovery_scene(3.0);
+  ASSERT_EQ(rr.events.size(), 2u);
+  EXPECT_EQ(rr.events[0].kind, RecoveryEvent::Kind::Lost);
+  EXPECT_EQ(rr.events[1].kind, RecoveryEvent::Kind::Reset);
+  EXPECT_NEAR(rr.events[1].drift_m, 0.3, 1e-6);
+  EXPECT_DOUBLE_EQ(rr.speed_at_reset, 0.0);  // re-anchored: no speed spike across the jump
+  const int64_t lost_t = rr.events[0].t_ns, reset_t = rr.events[1].t_ns;
+  int recal = 0;
+  for (auto& ins : rr.out) {
+    if (ins.t_ns >= lost_t && ins.t_ns < reset_t) {
+      EXPECT_EQ(ins.type, InstrType::Recalibrate) << type_name(ins.type);  // nothing else while recovering
+      ++recal;
+    }
+    if (ins.t_ns >= reset_t) EXPECT_NE(ins.type, InstrType::SlowDown);  // the 0.3 m jump is not "too fast"
+  }
+  EXPECT_EQ(recal, 1);
+  // Coverage ignores keyframes while recovering and counts them again afterwards.
+  EXPECT_DOUBLE_EQ(rr.seen_after_kf_recovering, rr.seen_before_kf);
+  EXPECT_GT(rr.seen_after_kf_reset, rr.seen_before_kf);
+  // Overlay: recalibrating flag + why line exactly while recovering; gone afterwards.
+  bool flagged = false;
+  for (auto& o : rr.overlays)
+    if (o.find("\"recalibrating\":true") != std::string::npos) {
+      flagged = true;
+      EXPECT_NE(o.find("\"why_id\":\"why.recalibrating\""), std::string::npos);
+    }
+  EXPECT_TRUE(flagged);
+  EXPECT_EQ(rr.overlays.back().find("recalibrating"), std::string::npos);
+  EXPECT_NE(rr.report.find("\"recovery\":{\"active\":false,\"losses\":1,\"max_drift_m\":0.3,\"resets\":1}"), std::string::npos)
+      << rr.report;
+  // Deterministic.
+  auto again = recovery_scene(3.0);
+  ASSERT_EQ(again.out.size(), rr.out.size());
+  for (size_t k = 0; k < rr.out.size(); ++k) EXPECT_EQ(again.out[k].speak_text, rr.out[k].speak_text);
+  EXPECT_EQ(again.report, rr.report);
+  EXPECT_EQ(again.overlays, rr.overlays);
+}
+
+TEST(GuideRecovery, ShortLossKeepsEngineOutputUnchanged) {
+  auto rr = recovery_scene(1.0);
+  EXPECT_TRUE(rr.events.empty());
+  EXPECT_EQ(rr.report.find("\"recovery\""), std::string::npos);  // existing reports and replay baselines unchanged
+  for (auto& o : rr.overlays) EXPECT_EQ(o.find("recalibrating"), std::string::npos);
+  for (auto& ins : rr.out) EXPECT_NE(ins.type, InstrType::Recalibrate);
 }

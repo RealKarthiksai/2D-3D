@@ -61,6 +61,7 @@ struct OverlayModel {
   std::vector<OverlayWall> wall_list;    // v3: layout walls (incl. hypothesised sides), outline order, at most kMaxWalls
   std::vector<OverlaySpan> span_list;    // v3: "spans" = "id,x0,z0,x1,z1,state;..." (always emitted), at most kMaxSpans
   uint32_t yaw_mask = 0;                 // bit i = a keyframe looked along heading [30i, 30i+30) deg (positive yaw = left)
+  bool recalibrating = false;            // ADR 0031: tracking recovery active ("recalibrating":true, key absent when false)
 
   std::vector<OverlayObject> object_list;  // at most kMaxObjects; empty (and no JSON key) with understanding off
   // v3 (always emitted): the layout outline.

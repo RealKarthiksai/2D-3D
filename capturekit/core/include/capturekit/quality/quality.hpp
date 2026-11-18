@@ -28,7 +28,9 @@ enum Reason : uint32_t {
   kNotNovel = 1u << 10,         // selector: not enough motion since last keyframe
   kMinGap = 1u << 11,           // selector: too soon after last keyframe
   kNotBest = 1u << 12,          // selector: a better frame won the candidate window
+  kRecalibrating = 1u << 13,    // hard (session): tracking recovery active, keyframe capture paused (ADR 0031)
 };
+constexpr uint32_t kLastReason = kRecalibrating;  // highest bit, for iteration
 const char* reason_code(Reason r);
 std::vector<std::string> reason_codes(uint32_t mask);  // reporting only (allocates)
 
