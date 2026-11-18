@@ -9,6 +9,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import dev.capturekit.capture.EventParser
+import dev.capturekit.guidance.ObjectSummary
 import kotlin.math.max
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -132,6 +133,13 @@ class ReviewActivity : Activity() {
         left.addView(UiKit.chip(this).also { UiKit.setChip(it, vText, vColor) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(12) })
         left.addView(row("Duration", UiKit.mmss(elapsed)), lp(2))
         left.addView(row("Keyframes", kf.toString()), lp(2))
+        // What the scan recognised (issue #2 D): objects by class plus doors / windows, from the last room snapshot.
+        val found = ObjectSummary.text(
+            EventParser.parseObjects(intent.getStringExtra(EXTRA_OBJECTS) ?: ""),
+            EventParser.parseOpenings(intent.getStringExtra(EXTRA_OPENINGS) ?: ""),
+        )
+        if (found.isNotEmpty()) left.addView(row("Found", found, wrap = true).apply { contentDescription = "Found in the room: $found" }, lp(2))
+        else if (intent.getBooleanExtra(EXTRA_OBJECTS_EXPECTED, false)) left.addView(row("Found", "No objects recognised"), lp(2))
         left.addView(row("Size", UiKit.humanSize(size)), lp(2))
         left.addView(row("Folder", dir.name), lp(2))
         // Full path, wrapped (never clipped); selectable so it can be copied.
@@ -195,11 +203,13 @@ class ReviewActivity : Activity() {
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun lp(bottom: Int) = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(bottom) }
 
-    private fun row(label: String, value: String) = LinearLayout(this).apply {
+    /** Label + value row; [wrap] lets a long value use several lines (else one line, middle-ellipsised). */
+    private fun row(label: String, value: String, wrap: Boolean = false) = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         addView(TextView(context).apply { text = label; textSize = 16f; setTextColor(0xFFB0BEC5.toInt()) }, LinearLayout.LayoutParams(dp(110), ViewGroup.LayoutParams.WRAP_CONTENT))
         addView(TextView(context).apply {
-            text = value; textSize = 16f; setTextColor(Color.WHITE); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+            text = value; textSize = 16f; setTextColor(Color.WHITE)
+            if (!wrap) { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
     }
 
@@ -224,6 +234,8 @@ class ReviewActivity : Activity() {
         const val EXTRA_SPANS = "room_spans"
         const val EXTRA_OBJECTS = "room_objects"
         const val EXTRA_OPENINGS = "room_openings"
+        /** True when the scan lifted detections to objects (detector + understanding on): "No objects recognised" is then meaningful. */
+        const val EXTRA_OBJECTS_EXPECTED = "room_objects_expected"
 
         /** manifest.json: validation.verdict, counts.keyframes and WARN/ERROR messages from validation.issues (INFO hidden). */
         fun parseManifest(text: String): Parsed = try {

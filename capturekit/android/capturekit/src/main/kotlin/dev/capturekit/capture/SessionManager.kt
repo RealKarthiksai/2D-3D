@@ -33,7 +33,7 @@ class SessionManager(
     private val frameEveryN: Int = 3, // ARCore ~30 fps -> core candidates ~10 fps; doubled under pressure (FrameRateControl)
     private val listener: Listener? = null,
     private val faceDetector: FaceRegionDetector? = null,  // test seam only; redaction is on iff redaction_mode=faces
-    private val detectorEnabled: Boolean = false,          // 2D object detector (ADR 0017); off by default, U11-A adds the debug property
+    private val detectorEnabled: Boolean = false,          // 2D object detector (ADR 0017); the sample app turns it on by default (ADR 0030)
     private val uprightRotation: () -> Int = { defaultUprightRotation(context) },  // clockwise degrees that turn a stored keyframe upright
 ) : DetectionSink {
     private var redactor: Redactor? = null
@@ -43,6 +43,11 @@ class SessionManager(
         fun onEvent(e: CoreEvent) {}
         fun onPolicy(p: Policy) {}
         fun onState(state: Int) {}
+        /**
+         * 2D boxes of one keyframe, in stored-keyframe (= ARCore CPU image) pixels, after they went to the core. Called
+         * on the detector thread (never the AR or main thread); an empty list = "ran, saw nothing". Must not block.
+         */
+        fun onDetections(frameId: Int, tNs: Long, boxes: List<DetectedBox>) {}
     }
 
     /**
@@ -68,6 +73,8 @@ class SessionManager(
     @Volatile private var mustPause = false
     @Volatile private var trackingNormal = false
     @Volatile private var detector: DetectorWorker? = null
+    /** True while the 2D detector is running in this session (flag on and model loaded); false before start and after finish. */
+    val detectorActive: Boolean get() = detector?.let { !it.disabled } ?: false
     private val detectorSchedule = DetectorScheduler()   // ck-jpeg thread only
     private val nativeLock = Any()               // every native call that uses `handle` holds it (short JNI calls); destroy takes it too
     private val finishing = java.util.concurrent.atomic.AtomicBoolean(false)   // set by finish(); abandon() returns early
@@ -266,6 +273,7 @@ class SessionManager(
             flat[6 * i + 2] = b.x0; flat[6 * i + 3] = b.y0; flat[6 * i + 4] = b.x1; flat[6 * i + 5] = b.y1
         }
         note(nat(Status.STATE) { N.ingestDetections(it, tNs, frameId, flat, boxes.size) }, "detections")
+        try { listener?.onDetections(frameId, tNs, boxes) } catch (t: Throwable) { Log.w(TAG, "detections listener threw", t) }
     }
 
     fun pause(): Int = nat(Status.STATE) { N.pause(it, mono()) }

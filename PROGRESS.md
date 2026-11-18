@@ -12,6 +12,7 @@ Program = 2 parts (docs/program-spec/README.md). This whole repo = Part 1 only (
 - real-room-fix T0 (uncommitted, reviewed PASS 2026-11-18): DEV-CT finished (ingest t_ns<=0 reject, recover.cpp redaction.json, validator NO_KEYFRAMES/TIME_ZERO/pause-aware POSE_GAP, ADR 0025); U10-C gap steering compiles (active only at understanding>=2; folded into T2). ctest 191/191, pytest 129 passed/8 skipped, ruff clean, replay_golden 3x 0 diffs. Logs capturekit/build/t0-*.log
 - T1 layout (ADR 0026) + lane B sim realism T4.1-2 (ADR 0029) + U11-CT schema 1.3.0 (ADR 0028): reviewed, fix round 1 running. Combined clean run before fixes: ctest 208/208, pytest 141/8 skipped, ruff clean, frozen OK, replay_golden 9 expected diffs x3 (new layout/timeline keys + gp2 hash; baselines regen in lane D). Logs capturekit/build/combined-*.log
 - Device: docs/DEVICE_TEST_LOG.md. First real walk FAILED guidance (completeness stuck 3–7 %, 8 walls for 4, 16 prompts/min, no ceiling prompt, arrow suspect); data itself PASS. Evidence bundle capturekit/build/device/bundles/scan_20261117_215819.
+- Issue #2 objects (UNCOMMITTED, 2026-11-18, ADR 0030): core classes 8-16 (append-only ids) + priors/phrases; detector on by default and understanding 1 when the model is packaged; mini-map labels, camera-feed boxes (Boxes chip), review "Found" counts. Core ctest + new tests green (WSL); Android NOT compiled (no SDK/JDK on this PC).
 - NOT done: real-walk guidance fix (top priority), U11-CT (1.3.0), U11-A, real U12-D. iOS blocked (no Mac).
 
 ## Decisions

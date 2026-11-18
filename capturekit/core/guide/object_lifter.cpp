@@ -35,6 +35,15 @@ Vec3 ObjectLifter::class_prior(ObjectClass c) {  // (width, height, depth)
     case ObjectClass::Tv: return {1.0, 0.6, 0.1};
     case ObjectClass::PottedPlant: return {0.4, 0.7, 0.4};
     case ObjectClass::Laptop: return {0.35, 0.03, 0.25};
+    case ObjectClass::Bench: return {1.2, 0.45, 0.4};
+    case ObjectClass::Toilet: return {0.4, 0.75, 0.65};
+    case ObjectClass::Sink: return {0.55, 0.85, 0.45};
+    case ObjectClass::Refrigerator: return {0.7, 1.75, 0.7};
+    case ObjectClass::Oven: return {0.6, 0.9, 0.6};
+    case ObjectClass::Desk: return {1.2, 0.75, 0.6};
+    case ObjectClass::Shelf: return {0.8, 1.8, 0.35};
+    case ObjectClass::Cabinet: return {0.9, 0.9, 0.5};
+    case ObjectClass::Lamp: return {0.35, 1.5, 0.35};
     default: return {0.5, 0.8, 0.5};
   }
 }

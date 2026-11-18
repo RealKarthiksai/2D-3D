@@ -22,8 +22,8 @@ data class DetectedBox(val cls: Int, val score: Float, val x0: Float, val y0: Fl
 class DetectorJob(val frameId: Int, val tNs: Long, val file: File, val rotationDeg: Int)
 
 /**
- * Where detections go. U4-CAT wires this to the C API (ingest_detections); until then nothing is attached and the
- * detector stays off. Called on the detector thread; an empty list means "frame processed, nothing found".
+ * Where detections go: [SessionManager] forwards them to the C API (ingest_detections) and to its listener (camera-feed
+ * boxes). Called on the detector thread; an empty list means "frame processed, nothing found".
  */
 fun interface DetectionSink {
     fun onDetections(frameId: Int, tNs: Long, boxes: List<DetectedBox>)
@@ -284,6 +284,14 @@ class LiteRtKeyframeDetector private constructor(
     companion object {
         const val MODEL_ASSET = "efficientdet_lite0_detection.tflite"
         const val MIN_SCORE = 0.4f   // starting guess (hypothesis); tune on device recordings
+
+        /**
+         * True when the model file is packaged (scripts/fetch_models.sh puts it in the library assets; it is not
+         * committed). Cheap (opens and closes the asset stream, reads nothing); never throws. The host uses it to decide
+         * the session's understanding default before the session starts (ADR 0030).
+         */
+        fun available(context: Context): Boolean =
+            try { context.assets.open(MODEL_ASSET).close(); true } catch (_: Throwable) { false }
 
         /** Opens the model from the library assets, or null when it is absent or has an unexpected layout. */
         fun open(context: Context, numThreads: Int = 2, minScore: Float = MIN_SCORE): LiteRtKeyframeDetector? {

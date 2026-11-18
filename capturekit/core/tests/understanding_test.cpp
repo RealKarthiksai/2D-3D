@@ -17,6 +17,7 @@
 
 #include "capturekit/guide/coverage.hpp"
 #include "capturekit/guide/engine.hpp"
+#include "capturekit/guide/landmark.hpp"
 #include "capturekit/guide/live_map.hpp"
 #include "capturekit/guide/nav_grid.hpp"
 #include "capturekit/guide/object_lifter.hpp"
@@ -131,6 +132,36 @@ TEST(Understanding, ObjectClassNamesRoundTrip) {
   EXPECT_STREQ(object_class_name(ObjectClass(99)), "unknown");
   EXPECT_TRUE(object_class_wall_mounted(ObjectClass::Tv));
   EXPECT_FALSE(object_class_wall_mounted(ObjectClass::Chair));
+}
+
+// Class ids are recorded in bundles (/ar/detections, /guide/labels) and mapped by the shells (LabelMap.kt): they
+// are append-only (ADR 0030). This pins every id so a reorder or insertion fails here, not in a Part 2 reader.
+TEST(Understanding, ObjectClassIdsAreFrozen) {
+  const std::vector<std::pair<int, const char*>> ids = {
+      {0, "unknown"}, {1, "chair"}, {2, "couch"}, {3, "bed"}, {4, "dining_table"}, {5, "tv"}, {6, "potted_plant"},
+      {7, "laptop"}, {8, "bench"}, {9, "toilet"}, {10, "sink"}, {11, "refrigerator"}, {12, "oven"}, {13, "desk"},
+      {14, "shelf"}, {15, "cabinet"}, {16, "lamp"}};
+  ASSERT_EQ(int(ObjectClass::Count_), int(ids.size()));
+  for (auto& [id, name] : ids) EXPECT_STREQ(object_class_name(ObjectClass(id)), name) << id;
+  EXPECT_FALSE(object_class_wall_mounted(ObjectClass::Refrigerator));
+  EXPECT_FALSE(object_class_wall_mounted(ObjectClass::Lamp));
+}
+
+// Every real class has its own prior (never the generic default) that fits under the lifter's height cut, and its
+// own spoken phrase (never the generic "furniture").
+TEST(Understanding, EveryObjectClassHasAPriorAndAPhrase) {
+  const Vec3 generic = ObjectLifter::class_prior(ObjectClass::Unknown);
+  const LifterParams lp;
+  for (int i = 1; i < int(ObjectClass::Count_); ++i) {
+    const auto c = ObjectClass(i);
+    const Vec3 pr = ObjectLifter::class_prior(c);
+    EXPECT_GT(pr.x(), 0) << i;
+    EXPECT_GT(pr.y(), 0) << i;
+    EXPECT_GT(pr.z(), 0) << i;
+    EXPECT_LE(pr.y(), lp.max_h) << i;
+    EXPECT_FALSE(pr.isApprox(generic)) << object_class_name(c) << " falls back to the generic prior";
+    EXPECT_STRNE(LandmarkLabeler::class_phrase(c), "furniture") << object_class_name(c);
+  }
 }
 
 // ---- SurfaceClassifier rules ----
@@ -769,6 +800,20 @@ TEST(Understanding, LifterFloorRayFallback) {
   LiftContext nofloor = ctx;
   nofloor.has_floor = false;
   EXPECT_FALSE(lifter.lift(project_box(truth, ctx), nofloor, SparsePointStore()).has_value());
+}
+
+TEST(Understanding, LifterFloorRayFallbackUsesTheNewClassPriors) {
+  // A refrigerator (class 11, appended in ADR 0030) lifts through the same fallback with its own prior height.
+  const Object truth = make_obj(ObjectClass::Refrigerator, {2.5, 0.875, 3.5}, {0.7, 1.75, 0.7}, 0.0);
+  LiftContext ctx = lift_ctx({2.5, 1.4, 0.0}, 0.0, deg2rad(-10));
+  ObjectLifter lifter;
+  Detection d = project_box(truth, ctx);
+  ASSERT_LT(d.y1, 477) << "fixture: the bottom edge must be inside the image";
+  auto L = lifter.lift(d, ctx, SparsePointStore());
+  ASSERT_TRUE(L.has_value());
+  EXPECT_FALSE(L->from_points);
+  EXPECT_NEAR(L->size.y(), 1.75, 0.05);
+  EXPECT_LT(std::hypot(L->centre.x() - truth.centre.x(), L->centre.z() - truth.centre.z()), 0.4);
 }
 
 TEST(Understanding, LifterTracksAndPublishes) {

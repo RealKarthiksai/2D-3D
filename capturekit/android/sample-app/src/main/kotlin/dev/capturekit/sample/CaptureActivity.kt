@@ -12,6 +12,8 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import dev.capturekit.capture.ARAdapter
 import dev.capturekit.capture.CoreEvent
+import dev.capturekit.capture.DetectedBox
+import dev.capturekit.capture.LiteRtKeyframeDetector
 import dev.capturekit.capture.Policy
 import dev.capturekit.capture.SensorBridge
 import dev.capturekit.capture.SessionManager
@@ -28,7 +30,9 @@ import java.util.Locale
 
 /**
  * Guided scan screen: a real core session (quality, keyframe selection, governor, guidance) over the live
- * camera image with a friendly HUD. Core instructions are shown (speak_text as coaching, long_text as
+ * camera image with a friendly HUD. The 2D object detector runs by default when its model is packaged (ADR 0030):
+ * its boxes are drawn over the camera feed ([DetectionOverlayView], "Boxes" chip) and the core lifts them to the
+ * labelled objects of the mini-map and the review screen. Core instructions are shown (speak_text as coaching, long_text as
  * subtitle), spoken verbatim by [SpeechRenderer] and mapped to haptics. Finish hands over to [ReviewActivity].
  * Bundles land in getExternalFilesDir("bundles"); interrupted sessions are recovered on the next launch.
  * Pull with: adb pull /sdcard/Android/data/dev.capturekit.sample/files/bundles
@@ -36,6 +40,7 @@ import java.util.Locale
 class CaptureActivity : Activity(), SessionManager.Listener {
     private lateinit var ar: ArHost
     private lateinit var hud: Hud
+    private lateinit var boxView: DetectionOverlayView
     private lateinit var speech: SpeechRenderer
     private lateinit var voice: VoiceController
     private lateinit var research: ResearchLog
@@ -56,11 +61,13 @@ class CaptureActivity : Activity(), SessionManager.Listener {
     @Volatile private var trackState = "?"
     @Volatile private var trackFailure = "NONE"
     @Volatile private var corePaused = false
+    /** This scan lifts detections to objects (detector running AND understanding >= 1): the review may say "none found". */
+    private var objectsExpected = false
     private var recStartMs = 0L
     private var pausedAtMs = 0L
     private var pausedTotalMs = 0L
-    private var recording = false
-    private var finishing = false
+    @Volatile private var recording = false   // also read on the detector thread (onDetections)
+    @Volatile private var finishing = false
     private var reviewDialog: android.app.Dialog? = null
     private var arMessage: String? = null
     private var recovering = true
@@ -92,11 +99,13 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         speech = SpeechRenderer(this)
+        boxView = DetectionOverlayView(this)   // before ArHost: its frame callback maps the boxes
         ar = ArHost(this) { frame ->
             if (!arActive) return@ArHost   // no Frame use once onPause started tearing the Session down
             adapter?.onFrame(frame)
             trackState = frame.camera.trackingState.name
             trackFailure = frame.camera.trackingFailureReason.name
+            boxView.onArFrame(frame)   // cheap no-op unless a new keyframe's boxes arrived
         }
         ar.onError = { msg -> arMessage = msg; refresh() }
         hud = Hud(this)
@@ -104,6 +113,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         hud.button.setOnClickListener { if (session == null) start() else stop() }
         hud.pauseButton.setOnClickListener { togglePause() }
         hud.onVoiceToggle = { speech.enabled = !speech.enabled; hud.setVoice(speech.enabled) }
+        hud.onBoxesToggle = { boxView.showBoxes = !boxView.showBoxes; hud.setBoxes(boxView.showBoxes) }
         research = ResearchLog(this)
         voice = VoiceController(this, speech, voiceHost)
         voice.onIntent = { research.onIntent(it.name) }
@@ -113,6 +123,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         hud.setCoaching("Press Start, then move slowly around the room")
         setContentView(FrameLayout(this).apply {
             addView(ar.view, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            addView(boxView, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)   // same frame as ar.view
             addView(hud.root, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         })
         if (!CameraPermission.granted(this)) CameraPermission.request(this)
@@ -141,9 +152,12 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         } catch (t: Throwable) { "" } finally { p?.destroy() }
     }
 
-    /** (understanding override or null, detector on): read once, only in a debuggable build; (null, false) elsewhere. */
+    /**
+     * (understanding override or null, detector on). Properties are read once, only in a debuggable build; elsewhere
+     * there is no override and the detector is on (ADR 0030: on by default; it still needs the packaged model).
+     */
     private val debugFlags: Pair<Int?, Boolean> by lazy {
-        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE == 0) null to false
+        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE == 0) null to true
         else DebugFlags.understandingLevel(sysProp(DebugFlags.PROP_UNDERSTANDING)) to DebugFlags.detectorOn(sysProp(DebugFlags.PROP_DETECTOR))
     }
 
@@ -158,8 +172,12 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         }
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val dir = File(getExternalFilesDir("bundles"), "scan_$stamp")
-        // Debug builds only (U11-A): `adb shell setprop debug.capturekit.understanding 1|2` / `debug.capturekit.detector 1`. Off elsewhere.
-        val (understanding, detector) = debugFlags
+        // Detector on by default; debug builds can override (U11-A): `adb shell setprop debug.capturekit.detector 0` and
+        // `debug.capturekit.understanding 0|1|2`. With no understanding override, a running detector gets level 1 (objects).
+        val (understandingOverride, detector) = debugFlags
+        val detectorWillRun = detector && LiteRtKeyframeDetector.available(this)
+        // The unguided trial arm is the no-guidance control: no understanding by default (detections are still recorded).
+        val understanding = DebugFlags.understandingFor(understandingOverride, detectorWillRun && !research.unguided)
         val s = SessionManager(this, dir, listener = this, detectorEnabled = detector)
         // 8 core frame slots (default 4): absorbs ~800 ms worker stalls at 10 candidates/s before ErrFull.
         if (!s.start(mapOf<String, Any>("frame_slots" to 8) + consentCfg + DebugFlags.extraConfig(understanding))) {
@@ -168,6 +186,10 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         }
         session = s
         ar.stats = s.stats
+        objectsExpected = s.detectorActive && (understanding ?: 0) >= 1
+        if (detectorWillRun && !s.detectorActive) Log.w(TAG, "detector model packaged but the detector did not start")
+        boxView.clear()
+        hud.setBoxes(if (s.detectorActive && !research.unguided) boxView.showBoxes else null)
         ar.recording = true
         adapter = ARAdapter(s, 0L) { ar.session }
         sensors = SensorBridge(this, s).also { it.start() }
@@ -194,6 +216,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         if (!corePaused) {
             if (s.pause() == Status.OK) {
                 speech.stopNow()
+                boxView.clear()
                 hud.setCoaching("Paused. Press Resume when you are ready")
                 hud.haptic(false)
             }
@@ -244,6 +267,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         sensors?.stop(); thermal?.stop(); adapter = null
         hud.button.isEnabled = false
         hud.pauseButton.isEnabled = false
+        boxView.clear(); hud.setBoxes(null)
         val elapsed = elapsedMs()
         recording = false
         ar.recording = false
@@ -267,6 +291,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
                     .putExtra(ReviewActivity.EXTRA_STATUS, st)
                     .putExtra(ReviewActivity.EXTRA_ELAPSED_MS, elapsed)
                     .putExtra(ReviewActivity.EXTRA_KEYFRAMES, kf)
+                    .putExtra(ReviewActivity.EXTRA_OBJECTS_EXPECTED, objectsExpected)
                     .apply {
                         if (room != null) {
                             putExtra(ReviewActivity.EXTRA_SURFACES, roomSurfaces)
@@ -345,6 +370,11 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         }
     }
     override fun onPolicy(p: Policy) { lastPolicy = p; research.onThermal(p.level, SystemClock.elapsedRealtime()) }
+
+    // Detector thread: one keyframe's boxes (already sent to the core) for the camera-feed overlay.
+    override fun onDetections(frameId: Int, tNs: Long, boxes: List<DetectedBox>) {
+        if (recording && !corePaused && !finishing && !research.unguided) boxView.setDetections(boxes)
+    }
 
     override fun onState(state: Int) {
         val nowPaused = state == STATE_PAUSED

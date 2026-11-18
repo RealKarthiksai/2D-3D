@@ -9,6 +9,7 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import dev.capturekit.capture.CoreEvent
+import dev.capturekit.guidance.ObjectSummary
 import dev.capturekit.guidance.ScanStateSnapshot
 import dev.capturekit.sample.UiKit.dp
 import kotlin.math.max
@@ -54,6 +55,7 @@ object ReviewSheet {
         }
         val gapsText = if (empty) "Nothing of the room was captured yet." else if (weak.isEmpty()) "Nothing weak found." else
             "Needs more scanning: " + weak.joinToString(", ") { "Wall $it" } + "."
+        val found = o?.let { ObjectSummary.text(it.objects, it.openings) }.orEmpty()   // issue #2 D: what was recognised so far
         val root = LinearLayout(act).apply {
             orientation = LinearLayout.VERTICAL
             background = UiKit.rounded(0xFF101418.toInt(), act.dp(UiKit.RADIUS_DP).toFloat())
@@ -62,6 +64,8 @@ object ReviewSheet {
             addView(checklist, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = act.dp(8) })
             addView(text(gapsText, UiKit.TEXT_M).apply { contentDescription = "$gapsText ${checklist.description}" },
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = act.dp(8) })
+            if (found.isNotEmpty()) addView(text("Found: $found.", UiKit.TEXT_M),
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = act.dp(4) })
             val btns = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
             btns.addView(UiKit.bigButton(act, "Finish anyway", 0xFF455A64.toInt()).apply {
                 setOnClickListener { dlg.dismiss(); onFinish() }
