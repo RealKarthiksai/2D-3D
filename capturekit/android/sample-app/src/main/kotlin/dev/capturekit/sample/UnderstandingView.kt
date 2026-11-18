@@ -35,7 +35,7 @@ class ChecklistView(ctx: Context) : LinearLayout(ctx) {
     /** [found] walls seen so far, [done] of them at or above [RoomView.DONE_PCT], [scanning] in the scanning band. [pct] < 0 hides the caption. */
     fun set(floor: Boolean, ceiling: Boolean, found: Int, done: Int, scanning: Int, pct: Int) {
         mark(floorRow, floor, "Floor")
-        mark(ceilingRow, ceiling, "Ceiling")
+        mark(ceilingRow, ceiling, "Ceiling (optional)")
         val walls = wallsText(found, done, scanning)
         wallsRow.text = walls
         wallsRow.setTextColor(if (found > 0 && done == found) OK else if (found > 0) PROGRESS else DIM)
@@ -61,13 +61,19 @@ class ChecklistView(ctx: Context) : LinearLayout(ctx) {
         private const val PROGRESS = 0xFF4FC3F7.toInt()
         private const val DIM = 0xFFB0BEC5.toInt()
 
-        /** "Walls: 2 done, 1 scanning"; walls below the scanning band count as "just found". */
+        /** Layout wall count: `walls` from a v3 core (evidenced layout walls), else the older max(plane count, surfaces). */
+        fun foundWalls(o: CoreEvent.Overlay): Int = if (o.layoutV3) o.walls else max(o.walls, o.surfaces.size)
+
+        /** "Walls 4 (2 done, 1 scanning)"; walls below the scanning band count as "just found". */
         fun wallsText(found: Int, done: Int, scanning: Int): String {
             if (found <= 0) return "Walls: none yet"
-            val sb = StringBuilder("Walls: ")
-            var first = true
-            fun part(n: Int, label: String) { if (n > 0) { if (!first) sb.append(", "); sb.append(n).append(' ').append(label); first = false } }
-            part(done, "done"); part(scanning, "scanning"); part(found - done - scanning, "just found")
+            val sb = StringBuilder("Walls ").append(found)
+            val parts = ArrayList<String>(3)
+            if (done > 0) parts.add("$done done")
+            if (scanning > 0) parts.add("$scanning scanning")
+            val fresh = found - done - scanning
+            if (fresh > 0) parts.add("$fresh just found")
+            if (parts.isNotEmpty()) sb.append(" (").append(parts.joinToString(", ")).append(')')
             return sb.toString()
         }
     }
@@ -164,17 +170,18 @@ class UnderstandingView(private val ctx: Context) {
         shown = o
         val pct = Math.round((o.completeness * 100).coerceIn(0.0, 100.0)).toInt()
         var done = 0; var scanning = 0
-        val segs = o.surfaces
+        val segs = dev.capturekit.guidance.ScanStateSnapshot.evidencedWalls(o)
         for (i in 0 until segs.size) {
             val p = segs[i].pct
             if (p >= RoomView.DONE_PCT) done++ else if (p >= ChecklistView.SCANNING_PCT) scanning++
         }
-        val found = max(o.walls, segs.size)
+        val found = ChecklistView.foundWalls(o)
+        val ceilingSeen = o.ceilingFound || o.ceilingSeen
         // Text is rebuilt only when what it says changes (not on every 4 Hz render).
         val textChanged = found != shownFound || done != shownDone || scanning != shownScanning ||
-            o.floorFound != shownFloor || o.ceilingFound != shownCeiling
+            o.floorFound != shownFloor || ceilingSeen != shownCeiling
         if (textChanged) {
-            checklist.set(o.floorFound, o.ceilingFound, found, done, scanning, pct)
+            checklist.set(o.floorFound, ceilingSeen, found, done, scanning, pct)
             // Haptic tick only when the done count reaches a new maximum (not on the first snapshot, not on flicker).
             if (maxDone >= 0 && done > maxDone) UiKit.haptic(card, false)
             if (done > maxDone) maxDone = done
@@ -187,7 +194,7 @@ class UnderstandingView(private val ctx: Context) {
         checklist.visibility = if (collapsed) View.GONE else View.VISIBLE
         card.visibility = View.VISIBLE
         shownFound = found; shownDone = done; shownScanning = scanning
-        shownFloor = o.floorFound; shownCeiling = o.ceilingFound; shownPct = pct; shownCollapsed = collapsed
+        shownFloor = o.floorFound; shownCeiling = ceilingSeen; shownPct = pct; shownCollapsed = collapsed
         val t = o.whyText.ifEmpty { longText }
         if (t.isEmpty() || collapsed) caption.visibility = View.GONE
         else { if (caption.text.toString() != t) caption.text = t; caption.visibility = View.VISIBLE }

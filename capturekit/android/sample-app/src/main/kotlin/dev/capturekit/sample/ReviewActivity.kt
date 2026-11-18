@@ -14,12 +14,18 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import dev.capturekit.nativebridge.Status
+import dev.capturekit.sample.upload.UploadGate
+import dev.capturekit.upload.UploadState
+import dev.capturekit.upload.UploadStatus
+import dev.capturekit.upload.UploadWorker
+import dev.capturekit.verdict.VerdictText
 import java.io.File
 
 /**
  * Review screen after Finish: save status, the validator verdict the core wrote into manifest.json
- * (PASS / WARN / FAIL), keyframes, size, duration and the bundle path. Upload is not offered: it needs the
- * INTERNET permission and the user's consent, neither of which this build has.
+ * (PASS / WARN / FAIL) in plain language (assets/verdict_messages.json), keyframes, size, duration and the bundle
+ * path. Field flavour: queues the upload when the user allowed it and the verdict is not FAIL, and shows its state.
+ * Standard flavour has no INTERNET permission: nothing is queued and no upload state is shown.
  */
 class ReviewActivity : Activity() {
     data class Parsed(val verdict: String?, val keyframes: Int?, val issues: List<String>)
@@ -35,37 +41,71 @@ class ReviewActivity : Activity() {
         })
         // Disk reads (manifest, bundle size) stay off the UI thread.
         Thread {
-            val parsed = parseManifest(try { File(dir, "manifest.json").readText() } catch (t: Throwable) { "" })
+            val text = try { File(dir, "manifest.json").readText() } catch (t: Throwable) { "" }
+            val parsed = parseManifest(text)
+            val issues = VerdictText.issuesOf(text)
+            val vt = ScanUi.verdictText(applicationContext)
             val size = try { UiKit.dirSizeBytes(dir) } catch (t: Throwable) { 0L }
-            runOnUiThread { if (!isDestroyed) build(dir, status, elapsed, kfLive, parsed, size) }
+            // Upload only with the user's upload consent and a non-FAIL verdict (field flavour; a no-op in standard).
+            if (status == Status.OK && UploadGate.available) try {
+                // Only a never-queued scan is queued here; a failed one waits for the explicit Retry in My scans.
+                if (UploadWorker.status(applicationContext, dir).state == UploadState.NONE) UploadGate.enqueueIfAllowed(applicationContext, dir, parsed.verdict)
+            } catch (t: Throwable) { }
+            runOnUiThread { if (!isDestroyed) build(dir, status, elapsed, kfLive, parsed, size, vt, issues) }
         }.start()
     }
 
-    private fun build(dir: File, status: Int, elapsed: Long, kfLive: Int, manifest: Parsed, size: Long) {
+    private var uploadChip: TextView? = null
+
+    /** Polls WorkManager off the main thread until the upload reaches a final state or the screen closes. */
+    private fun watchUpload(dir: File) {
+        Thread {
+            while (!isDestroyed) {
+                val st = UploadWorker.status(applicationContext, dir)
+                runOnUiThread { if (!isDestroyed) uploadChip?.let { ScanUi.paintUpload(it, st) } }
+                if (st.state == UploadState.VERIFIED || st.state == UploadState.FAILED || st.state == UploadState.NONE) break
+                try { Thread.sleep(2000) } catch (e: InterruptedException) { break }
+            }
+        }.start()
+    }
+
+    private fun build(dir: File, status: Int, elapsed: Long, kfLive: Int, manifest: Parsed, size: Long, vt: VerdictText, issueList: List<VerdictText.Issue>) {
         val verdict = if (status == Status.OK) manifest.verdict else null
         val kf = manifest.keyframes ?: kfLive
         val ok = status == Status.OK
         val ready = ok && verdict != "FAIL"
 
-        // Two columns so the whole card, including the buttons, fits a landscape screen.
+        // Landscape: two columns; portrait: one column. The whole screen scrolls and the actions sit below the card,
+        // so they are reachable in both orientations.
+        val landscape = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
         val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL }
         val card = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+            orientation = if (landscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
             background = UiKit.rounded(0xFF1B222A.toInt(), dp(16).toFloat())
             setPadding(dp(24), dp(20), dp(24), dp(20))
-            addView(left, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(24) })
-            addView(right, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+            if (landscape) {
+                addView(left, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(24) })
+                addView(right, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            } else {
+                addView(left, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(12) })
+                addView(right, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            }
         }
         // Final room: the last live snapshot (walls inked, floor/ceiling) and the parts checklist, from Intent extras.
         if (intent.hasExtra(EXTRA_SURFACES)) {
             val segs = EventParser.parseSurfaces(intent.getStringExtra(EXTRA_SURFACES) ?: "")
             val floor = intent.getBooleanExtra(EXTRA_FLOOR, false)
             val ceiling = intent.getBooleanExtra(EXTRA_CEILING, false)
+            val shell = EventParser.parseShell(intent.getStringExtra(EXTRA_SHELL) ?: "")
+            val closed = intent.getBooleanExtra(EXTRA_SHELL_CLOSED, false)
+            val spans = EventParser.parseSpans(intent.getStringExtra(EXTRA_SPANS) ?: "")
+            val objects = EventParser.parseObjects(intent.getStringExtra(EXTRA_OBJECTS) ?: "")
+            val openings = EventParser.parseOpenings(intent.getStringExtra(EXTRA_OPENINGS) ?: "")
             var done = 0; var scanning = 0
             for (w in segs) if (w.pct >= RoomView.DONE_PCT) done++ else if (w.pct >= ChecklistView.SCANNING_PCT) scanning++
             val checklist = ChecklistView(this).apply {
-                set(floor, ceiling, max(intent.getIntExtra(EXTRA_WALLS_FOUND, 0), segs.size), done, scanning, -1)
+                set(floor, ceiling, max(intent.getIntExtra(EXTRA_WALLS_FOUND, 0), 0), done, scanning, -1)
             }
             val mid = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -73,7 +113,7 @@ class ReviewActivity : Activity() {
                 contentDescription = "Room parts. ${checklist.description}"
                 background = UiKit.glass(this@ReviewActivity)
                 setPadding(dp(6), dp(6), dp(6), dp(6))
-                if (segs.isNotEmpty()) addView(RoomView(this@ReviewActivity).also { it.setSnapshot(segs, floor, ceiling) }, LinearLayout.LayoutParams(dp(170), dp(130)))
+                if (segs.isNotEmpty() || shell.isNotEmpty()) addView(RoomView(this@ReviewActivity).also { it.setSnapshot(segs, floor, ceiling, shell, closed, spans, objects, openings) }, LinearLayout.LayoutParams(dp(170), dp(130)))
                 addView(checklist, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
             }
             card.addView(mid, 1, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(24); gravity = Gravity.CENTER_VERTICAL })
@@ -94,37 +134,58 @@ class ReviewActivity : Activity() {
         left.addView(row("Keyframes", kf.toString()), lp(2))
         left.addView(row("Size", UiKit.humanSize(size)), lp(2))
         left.addView(row("Folder", dir.name), lp(2))
-        left.addView(UiKit.pathText(this, dir.absolutePath, 2), lp(12))
-        val issues = manifest.issues
-        if (issues.isNotEmpty()) right.addView(TextView(this).apply {
-            text = issues.joinToString("\n") { "- $it" }
-            textSize = 15f; setTextColor(0xFFFFCC80.toInt()); maxLines = 4
-            ellipsize = android.text.TextUtils.TruncateAt.END
-        }, lp(12))
+        // Full path, wrapped (never clipped); selectable so it can be copied.
+        left.addView(UiKit.pathText(this, dir.absolutePath, Int.MAX_VALUE).apply { ellipsize = null; setTextIsSelectable(true) }, lp(12))
+        // Plain-language result: headline, then up to three notes (title, what happened, what to do), errors first.
+        if (ok && verdict != null) {
+            right.addView(TextView(this).apply { text = vt.headline(verdict); textSize = 17f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE) }, lp(6))
+            val notes = vt.describe(issueList)
+            for (n in notes.take(3)) right.addView(TextView(this).apply {
+                text = "${n.title}. ${n.text} ${n.action}"
+                textSize = 15f; setTextColor(if (n.severity == "ERROR") 0xFFFFAB91.toInt() else 0xFFFFCC80.toInt())
+                contentDescription = "${if (n.severity == "ERROR") "Problem" else "Note"}: ${n.title}. ${n.text} ${n.action}"
+            }, lp(4))
+            if (notes.size > 3) right.addView(TextView(this).apply { text = "and ${notes.size - 3} more"; textSize = 14f; setTextColor(0xFFB0BEC5.toInt()) }, lp(4))
+        }
         right.addView(TextView(this).apply {
             text = when {
-                ready -> "Ready for upload. Upload is turned off in this build: it needs network access and your consent. The bundle stays on this phone."
+                ready && UploadGate.available -> "The scan is stored on this phone."
+                ready -> "The scan is stored on this phone. Uploading is not part of this build."
                 ok -> "Not ready: the check failed. Scan again, moving slowly and covering the whole room."
                 else -> "Something went wrong while saving. Scan again."
             }
             textSize = 16f; setTextColor(Color.WHITE)
-        }, lp(16))
+        }, lp(8))
+        if (ready && UploadGate.available) {
+            val chip = UiKit.chip(this).also { uploadChip = it; it.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES; it.setPadding(dp(12), dp(6), dp(12), dp(6)) }
+            ScanUi.paintUpload(chip, UploadStatus(UploadState.NONE))
+            right.addView(chip, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(16) })
+            watchUpload(dir)
+        } else right.addView(View(this), lp(8))
 
         val newScan = UiKit.bigButton(this, "New scan").apply {
             setOnClickListener { startActivity(Intent(this@ReviewActivity, CaptureActivity::class.java)); finish() }
         }
         val home = UiKit.secondaryButton(this, "Home").apply { setOnClickListener { finish() } }
-        right.addView(LinearLayout(this).apply {
+        val scans = UiKit.secondaryButton(this, "My scans").apply {
+            contentDescription = "Open My scans"
+            setOnClickListener { startActivity(Intent(this@ReviewActivity, ScansActivity::class.java)); finish() }
+        }
+        // Actions live below the card inside the scrolling content (visible/reachable in both orientations).
+        val actions = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            addView(scans, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(12) })
             addView(home, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(12) })
-            addView(newScan, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2f))
-        })
+            addView(newScan, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.3f))
+        }
 
         val scroll = ScrollView(this).apply {
             isFillViewport = true
             addView(LinearLayout(context).apply {
-                gravity = Gravity.CENTER
-                addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(12) })
+                addView(actions, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             UiKit.applyInsets(this, 16)
         }
@@ -157,6 +218,12 @@ class ReviewActivity : Activity() {
         const val EXTRA_FLOOR = "room_floor"
         const val EXTRA_CEILING = "room_ceiling"
         const val EXTRA_WALLS_FOUND = "room_walls_found"
+        /** Layout outline and details of the last overlay (real-room-fix T3): same string formats as the overlay v3 keys. */
+        const val EXTRA_SHELL = "room_shell"
+        const val EXTRA_SHELL_CLOSED = "room_shell_closed"
+        const val EXTRA_SPANS = "room_spans"
+        const val EXTRA_OBJECTS = "room_objects"
+        const val EXTRA_OPENINGS = "room_openings"
 
         /** manifest.json: validation.verdict, counts.keyframes and WARN/ERROR messages from validation.issues (INFO hidden). */
         fun parseManifest(text: String): Parsed = try {

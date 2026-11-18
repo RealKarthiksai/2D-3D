@@ -32,6 +32,9 @@ android {
             val verifierUrl = esc((project.findProperty("VERIFIER_URL") as String?) ?: "")
             buildConfigField("String", "TUS_URL", "\"$tusUrl\"")
             buildConfigField("String", "VERIFIER_URL", "\"$verifierUrl\"")
+            // Empty DSN = Sentry off. Telemetry.kt additionally requires telemetry consent.
+            val sentryDsn = esc((project.findProperty("SENTRY_DSN") as String?) ?: "")
+            buildConfigField("String", "SENTRY_DSN", "\"$sentryDsn\"")
         }
     }
 
@@ -43,4 +46,6 @@ android {
 
 dependencies {
     implementation(project(":capturekit"))
+    // Crash reports exist only in the field flavour: the standard build has no Sentry classes and no INTERNET.
+    "fieldImplementation"(libs.sentry.android)
 }

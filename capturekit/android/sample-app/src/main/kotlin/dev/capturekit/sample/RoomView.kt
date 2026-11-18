@@ -2,22 +2,31 @@ package dev.capturekit.sample
 
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Path
 import android.view.View
 import dev.capturekit.capture.CoreEvent
+import dev.capturekit.capture.GapMark
+import dev.capturekit.capture.ObjectBox
+import dev.capturekit.capture.Opening
+import dev.capturekit.capture.PlanPt
+import dev.capturekit.capture.SpanSeg
 import dev.capturekit.capture.WallSeg
+import dev.capturekit.guidance.MiniMapMath
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
-import kotlin.math.sqrt
 
 /**
- * Live mini room (v1, overlay data only): an oblique floor plan, fixed north-up in the world frame (world -Z up,
- * +X right). Floor = convex hull of wall endpoints (or the user's path box before two walls exist); walls are
- * extruded quads of a fixed visual height inked bottom-up by their seen percentage; ceiling icon fills when the
- * ceiling is found; user arrow and target dot. Auto-fits with smoothing.
+ * Live mini-map (real-room-fix T3): a top-down plan, HEADING-UP (the user is fixed at the centre, their forward
+ * direction is screen up; [MiniMapMath] owns the sign conventions, yaw positive = left). Draws the closed room outline
+ * with corner dots, the layout walls (inked by the seen percentage, green from [DONE_PCT]), hatched spans for stretches
+ * hidden by furniture (never demanded), dashed spans for missing stretches, doors / windows, detected furniture and
+ * unseen-area marks when the core sends them, the 12-sector heading ring, the target dot and a ceiling icon.
+ * Elements the core did not send are simply not drawn (older core, or `guide.understanding` off).
  * [setData] copies the snapshot into preallocated arrays (call at <= 4 Hz, UI thread); onDraw never allocates.
  */
 class RoomView(ctx: Context) : View(ctx) {
@@ -26,30 +35,51 @@ class RoomView(ctx: Context) : View(ctx) {
     // ---- snapshot (preallocated) ----
     private val wx0 = FloatArray(MAX_WALLS); private val wz0 = FloatArray(MAX_WALLS)
     private val wx1 = FloatArray(MAX_WALLS); private val wz1 = FloatArray(MAX_WALLS)
-    private val wpct = IntArray(MAX_WALLS); private val order = IntArray(MAX_WALLS)
+    private val wpct = IntArray(MAX_WALLS); private val wid = IntArray(MAX_WALLS)
     private var nWalls = 0
-    private val px = FloatArray(MAX_PTS); private val pz = FloatArray(MAX_PTS); private val pIdx = IntArray(MAX_PTS)
-    private val hx = FloatArray(MAX_PTS + 1); private val hz = FloatArray(MAX_PTS + 1)
-    private var nHull = 0
-    private var pathMinX = 0f; private var pathMaxX = 0f; private var pathMinZ = 0f; private var pathMaxZ = 0f
-    private var hasPath = false
-    private var userX = 0f; private var userZ = 0f; private var yawRad = 0f
+    private val sa = FloatArray(MAX_SPANS * 4); private val sId = IntArray(MAX_SPANS); private val sSt = CharArray(MAX_SPANS)
+    private var nSpans = 0
+    private val shx = FloatArray(MAX_SHELL); private val shz = FloatArray(MAX_SHELL)
+    private var nShell = 0
+    private var shellClosed = false
+    private val ob = FloatArray(MAX_OBJ * 5)   // x, z, w, d, yaw(rad)
+    private var nObj = 0
+    private val op = FloatArray(MAX_OPEN * 4); private val opDoor = BooleanArray(MAX_OPEN)
+    private var nOpen = 0
+    private val gp = FloatArray(MAX_GAPS * 2)
+    private var nGaps = 0
+    private var userX = 0f; private var userZ = 0f; private var yawDeg = 0.0
     private var hasTarget = false; private var targetX = 0f; private var targetZ = 0f
     private var floorFound = false; private var ceilingFound = false; private var tracking = true
     private var hasData = false
     private var showUser = true
     private var yawMask = 0                  // overlay v2: 12 x 30 deg heading sectors with a keyframe (bit i = [30i, 30i+30) deg)
+    private var refYawDeg = 0.0              // frame of the plan: the user's heading (live) or 180 = north-up, -z up (review snapshot)
+    private var refX = 0f; private var refZ = 0f
 
-    // ---- view transform (screen = o + s * (x, K*z - H*h)), smoothed ----
-    private var s = 0f; private var ox = 0f; private var oy = 0f
+    // ---- view transform: screen = (cx, cy) + s * MiniMapMath(world), smoothed ----
+    private var s = 0f; private var radius = MIN_R_M
     private var snap = true
+    private val tmp = FloatArray(2)
 
     // ---- drawing resources ----
     private val floorFill = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val floorEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = 0x99FFFFFF.toInt() }
-    private val wallGhost = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x26FFFFFF }
-    private val wallEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.2f * d; color = 0xAAFFFFFF.toInt(); strokeJoin = Paint.Join.ROUND }
-    private val wallInk = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = 0x99FFFFFF.toInt(); strokeJoin = Paint.Join.ROUND }
+    private val wallInk = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 4f * d; strokeCap = Paint.Cap.BUTT }
+    private val blockedLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = 0xFFFFB74D.toInt() }
+    private val missingLine = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE; strokeWidth = 2.5f * d; color = 0x66FFFFFF
+        pathEffect = DashPathEffect(floatArrayOf(4f * d, 4f * d), 0f)
+    }
+    private val cornerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt() }
+    private val doorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 5f * d; color = 0xFFFFB74D.toInt() }
+    private val windowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 5f * d; color = 0xFF80DEEA.toInt() }
+    private val objFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x66B0BEC5 }
+    private val objEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.2f * d; color = 0xCCCFD8DC.toInt() }
+    private val gapRing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = 0xCCFFB74D.toInt()
+        pathEffect = DashPathEffect(floatArrayOf(3f * d, 3f * d), 0f)
+    }
     private val userPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val userEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = 0xFF000000.toInt() }
     private val targetPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFD54F.toInt() }
@@ -62,134 +92,118 @@ class RoomView(ctx: Context) : View(ctx) {
 
     init { importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO }
 
-    /** Forget the session (path box, fit). */
-    fun reset() { yawMask = 0; hasData = false; hasPath = false; nWalls = 0; nHull = 0; snap = true; invalidate() }
+    /** Forget the session (fit and all elements). */
+    fun reset() {
+        yawMask = 0; hasData = false; nWalls = 0; nSpans = 0; nShell = 0; nObj = 0; nOpen = 0; nGaps = 0
+        shellClosed = false; radius = MIN_R_M; snap = true; invalidate()
+    }
 
     /**
-     * Static snapshot for the Review screen: walls plus floor/ceiling flags, no user arrow or target. Call on the UI
-     * thread; the view must be (or become) laid out, [onSizeChanged] refits.
+     * Static snapshot for the Review screen: outline, corners, walls, spans, objects and openings, north-up (-z up), no user
+     * arrow or target. Call on the UI thread; the view must be (or become) laid out, [onSizeChanged] refits.
      */
-    fun setSnapshot(segs: List<WallSeg>, floor: Boolean, ceiling: Boolean) {
-        nWalls = min(segs.size, MAX_WALLS)
-        var sx0 = 0f; var sz0 = 0f
-        for (i in 0 until nWalls) {
-            val w = segs[i]
-            wx0[i] = w.x0.toFloat(); wz0[i] = w.z0.toFloat(); wx1[i] = w.x1.toFloat(); wz1[i] = w.z1.toFloat()
-            wpct[i] = w.pct.coerceIn(0, 100)
-            sx0 += wx0[i] + wx1[i]; sz0 += wz0[i] + wz1[i]
-        }
-        // The fit always includes the "user" point: park it at the wall centroid so it never widens the view.
-        userX = if (nWalls > 0) sx0 / (2 * nWalls) else 0f; userZ = if (nWalls > 0) sz0 / (2 * nWalls) else 0f
-        pathMinX = userX; pathMaxX = userX; pathMinZ = userZ; pathMaxZ = userZ; hasPath = true
+    fun setSnapshot(
+        segs: List<WallSeg>, floor: Boolean, ceiling: Boolean,
+        shell: List<PlanPt> = emptyList(), closed: Boolean = false, spans: List<SpanSeg> = emptyList(),
+        objects: List<ObjectBox> = emptyList(), openings: List<Opening> = emptyList(),
+    ) {
+        copyWalls(segs); copyShell(shell, closed); copySpans(spans); copyObjects(objects); copyOpenings(openings); nGaps = 0
+        // Reference = centroid of everything drawn, so the fit is symmetric around it.
+        var sx = 0f; var sz = 0f; var n = 0
+        for (i in 0 until nWalls) { sx += wx0[i] + wx1[i]; sz += wz0[i] + wz1[i]; n += 2 }
+        for (i in 0 until nShell) { sx += shx[i]; sz += shz[i]; n++ }
+        refX = if (n > 0) sx / n else 0f; refZ = if (n > 0) sz / n else 0f; refYawDeg = 180.0
+        userX = refX; userZ = refZ
         showUser = false; hasTarget = false; tracking = true; yawMask = 0
         floorFound = floor; ceilingFound = ceiling
         hasData = true; snap = true
-        buildFloor(); sortWalls(); fit(); invalidate()
+        fit(); invalidate()
     }
 
     fun setData(o: CoreEvent.Overlay) {
         showUser = true; yawMask = o.yawMask
-        val segs = o.surfaces
-        nWalls = min(segs.size, MAX_WALLS)
-        for (i in 0 until nWalls) {
-            val w = segs[i]
-            wx0[i] = w.x0.toFloat(); wz0[i] = w.z0.toFloat(); wx1[i] = w.x1.toFloat(); wz1[i] = w.z1.toFloat()
-            wpct[i] = w.pct.coerceIn(0, 100)
-        }
-        userX = o.userX.toFloat(); userZ = o.userZ.toFloat(); yawRad = Math.toRadians(o.userYawDeg).toFloat()
+        copyWalls(o.surfaces); copyShell(o.shell, o.shellClosed); copySpans(o.spans)
+        copyObjects(o.objects); copyOpenings(o.openings); copyGaps(o.gaps)
+        userX = o.userX.toFloat(); userZ = o.userZ.toFloat(); yawDeg = o.userYawDeg
+        refX = userX; refZ = userZ; refYawDeg = yawDeg
         hasTarget = o.hasTarget; targetX = o.targetX.toFloat(); targetZ = o.targetZ.toFloat()
-        floorFound = o.floorFound; ceilingFound = o.ceilingFound; tracking = o.tracking == 1
-        if (!hasPath) { pathMinX = userX; pathMaxX = userX; pathMinZ = userZ; pathMaxZ = userZ; hasPath = true }
-        else { pathMinX = min(pathMinX, userX); pathMaxX = max(pathMaxX, userX); pathMinZ = min(pathMinZ, userZ); pathMaxZ = max(pathMaxZ, userZ) }
+        floorFound = o.floorFound; ceilingFound = o.ceilingFound || o.ceilingSeen; tracking = o.tracking == 1
         hasData = true
-        buildFloor()
-        sortWalls()
         fit()
         invalidate()
     }
 
-    /** Floor polygon: hull of wall endpoints when it has area, else the path box (plus wall endpoints) padded. */
-    private fun buildFloor() {
-        var n = 0
-        for (i in 0 until nWalls) { px[n] = wx0[i]; pz[n] = wz0[i]; n++; px[n] = wx1[i]; pz[n] = wz1[i]; n++ }
-        nHull = if (nWalls >= 2) hull(n) else 0
-        if (nHull >= 3 && hullArea() > 0.25f) return
-        var x0 = pathMinX; var x1 = pathMaxX; var z0 = pathMinZ; var z1 = pathMaxZ
-        for (i in 0 until n) { x0 = min(x0, px[i]); x1 = max(x1, px[i]); z0 = min(z0, pz[i]); z1 = max(z1, pz[i]) }
-        x0 -= PAD_M; x1 += PAD_M; z0 -= PAD_M; z1 += PAD_M
-        hx[0] = x0; hz[0] = z0; hx[1] = x1; hz[1] = z0; hx[2] = x1; hz[2] = z1; hx[3] = x0; hz[3] = z1
-        nHull = 4
-    }
-
-    /** Andrew's monotone chain over px/pz[0, n) into hx/hz (counter-clockwise, no repeat). Allocation-free. */
-    private fun hull(n: Int): Int {
-        if (n < 3) return 0
-        for (i in 0 until n) pIdx[i] = i
-        for (i in 1 until n) {   // insertion sort by (x, z); n <= 24
-            val k = pIdx[i]; var j = i - 1
-            while (j >= 0 && (px[pIdx[j]] > px[k] || (px[pIdx[j]] == px[k] && pz[pIdx[j]] > pz[k]))) { pIdx[j + 1] = pIdx[j]; j-- }
-            pIdx[j + 1] = k
-        }
-        var m = 0
-        for (t in 0 until n) {
-            val p = pIdx[t]
-            while (m >= 2 && cross(hx[m - 2], hz[m - 2], hx[m - 1], hz[m - 1], px[p], pz[p]) <= 0f) m--
-            hx[m] = px[p]; hz[m] = pz[p]; m++
-        }
-        val lower = m + 1
-        for (t in n - 2 downTo 0) {
-            val p = pIdx[t]
-            while (m >= lower && cross(hx[m - 2], hz[m - 2], hx[m - 1], hz[m - 1], px[p], pz[p]) <= 0f) m--
-            hx[m] = px[p]; hz[m] = pz[p]; m++
-        }
-        return m - 1
-    }
-
-    private fun cross(ax: Float, az: Float, bx: Float, bz: Float, cx: Float, cz: Float) = (bx - ax) * (cz - az) - (bz - az) * (cx - ax)
-
-    private fun hullArea(): Float {
-        var a = 0f
-        for (i in 0 until nHull) { val j = (i + 1) % nHull; a += hx[i] * hz[j] - hx[j] * hz[i] }
-        return kotlin.math.abs(a) * 0.5f
-    }
-
-    /** Far (small z, top of screen) walls first so near walls are drawn over them. */
-    private fun sortWalls() {
-        for (i in 0 until nWalls) order[i] = i
-        for (i in 1 until nWalls) {
-            val k = order[i]; val zk = wz0[k] + wz1[k]; var j = i - 1
-            while (j >= 0 && wz0[order[j]] + wz1[order[j]] > zk) { order[j + 1] = order[j]; j-- }
-            order[j + 1] = k
+    private fun copyWalls(segs: List<WallSeg>) {
+        nWalls = min(segs.size, MAX_WALLS)
+        for (i in 0 until nWalls) {
+            val w = segs[i]
+            wx0[i] = w.x0.toFloat(); wz0[i] = w.z0.toFloat(); wx1[i] = w.x1.toFloat(); wz1[i] = w.z1.toFloat()
+            wpct[i] = w.pct.coerceIn(0, 100); wid[i] = w.id
         }
     }
 
-    private var bu0 = 0f; private var bu1 = 0f; private var bv0 = 0f; private var bv1 = 0f
-    private fun grow(u: Float, v: Float) { bu0 = min(bu0, u); bu1 = max(bu1, u); bv0 = min(bv0, v); bv1 = max(bv1, v) }
+    private fun copyShell(shell: List<PlanPt>, closed: Boolean) {
+        nShell = min(shell.size, MAX_SHELL); shellClosed = closed && nShell >= 3
+        for (i in 0 until nShell) { shx[i] = shell[i].x.toFloat(); shz[i] = shell[i].z.toFloat() }
+    }
 
-    /** Fits floor, wall tops, user and target into the view; eases toward the new fit (snaps the first time). */
+    private fun copySpans(spans: List<SpanSeg>) {
+        nSpans = min(spans.size, MAX_SPANS)
+        for (i in 0 until nSpans) {
+            val p = spans[i]
+            sa[4 * i] = p.x0.toFloat(); sa[4 * i + 1] = p.z0.toFloat(); sa[4 * i + 2] = p.x1.toFloat(); sa[4 * i + 3] = p.z1.toFloat()
+            sId[i] = p.id; sSt[i] = p.state
+        }
+    }
+
+    private fun copyObjects(objs: List<ObjectBox>) {
+        nObj = min(objs.size, MAX_OBJ)
+        for (i in 0 until nObj) {
+            val o = objs[i]
+            ob[5 * i] = o.x.toFloat(); ob[5 * i + 1] = o.z.toFloat(); ob[5 * i + 2] = o.w.toFloat(); ob[5 * i + 3] = o.d.toFloat()
+            ob[5 * i + 4] = Math.toRadians(o.yawDeg.toDouble()).toFloat()
+        }
+    }
+
+    private fun copyOpenings(ops: List<Opening>) {
+        nOpen = min(ops.size, MAX_OPEN)
+        for (i in 0 until nOpen) {
+            val o = ops[i]
+            op[4 * i] = o.x0.toFloat(); op[4 * i + 1] = o.z0.toFloat(); op[4 * i + 2] = o.x1.toFloat(); op[4 * i + 3] = o.z1.toFloat()
+            opDoor[i] = o.kind == "door"
+        }
+    }
+
+    private fun copyGaps(gaps: List<GapMark>) {
+        nGaps = min(gaps.size, MAX_GAPS)
+        for (i in 0 until nGaps) { gp[2 * i] = gaps[i].x.toFloat(); gp[2 * i + 1] = gaps[i].z.toFloat() }
+    }
+
+    // ---- fit: the user is the centre, the scale shows everything within [radius] metres (stable while turning) ----
+
+    private var far = 0f
+    private fun reach(x: Float, z: Float) { far = max(far, hypot(x - refX, z - refZ)) }
+
     private fun fit() {
         val w = width.toFloat(); val h = height.toFloat()
         if (w <= 0f || h <= 0f || !hasData) return
-        bu0 = userX; bu1 = userX; bv0 = K * userZ; bv1 = K * userZ
-        for (i in 0 until nHull) grow(hx[i], K * hz[i])
-        for (i in 0 until nWalls) {
-            grow(wx0[i], K * wz0[i] - H * WALL_H); grow(wx1[i], K * wz1[i] - H * WALL_H)
-            grow(wx0[i], K * wz0[i]); grow(wx1[i], K * wz1[i])
-        }
-        if (hasTarget) grow(targetX, K * targetZ)
-        val spanU = max(bu1 - bu0, MIN_SPAN_M); val spanV = max(bv1 - bv0, MIN_SPAN_M * K)
-        val pad = 12 * d
-        val ts = min(min((w - 2 * pad) / spanU, (h - 2 * pad) / spanV), MAX_PX_PER_M * d)
-        val tox = w / 2 - ts * (bu0 + bu1) / 2
-        val toy = h / 2 - ts * (bv0 + bv1) / 2
-        if (snap) { s = ts; ox = tox; oy = toy; snap = false }
-        else { s += SMOOTH * (ts - s); ox += SMOOTH * (tox - ox); oy += SMOOTH * (toy - oy) }
+        far = 0f
+        for (i in 0 until nWalls) { reach(wx0[i], wz0[i]); reach(wx1[i], wz1[i]) }
+        for (i in 0 until nShell) reach(shx[i], shz[i])
+        for (i in 0 until nObj) reach(ob[5 * i], ob[5 * i + 1])
+        if (hasTarget) reach(targetX, targetZ)
+        val tr = max(far, MIN_R_M)
+        val ts = min((min(w, h) / 2f - 12f * d) / tr, MAX_PX_PER_M * d)
+        if (snap) { s = ts; radius = tr; snap = false } else { s += SMOOTH * (ts - s); radius += SMOOTH * (tr - radius) }
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) { snap = true; fit() }
 
-    private fun sx(x: Float) = ox + s * x
-    private fun sy(z: Float, hM: Float) = oy + s * (K * z - H * hM)
+    // world -> screen (into tmp)
+    private fun pt(x: Float, z: Float, into: FloatArray = tmp) {
+        MiniMapMath.toScreen(x.toDouble(), z.toDouble(), refX.toDouble(), refZ.toDouble(), refYawDeg, 0, true, into)
+        into[0] = width / 2f + s * into[0]; into[1] = height / 2f + s * into[1]
+    }
 
     override fun onDraw(c: Canvas) {
         val w = width.toFloat(); val h = height.toFloat()
@@ -197,59 +211,93 @@ class RoomView(ctx: Context) : View(ctx) {
         c.save()
         c.clipRect(0f, 0f, w, h)
 
-        // Floor
-        path.reset()
-        for (i in 0 until nHull) { val x = sx(hx[i]); val y = sy(hz[i], 0f); if (i == 0) path.moveTo(x, y) else path.lineTo(x, y) }
-        path.close()
-        floorFill.color = if (floorFound) 0x5566BB6A else 0x22FFFFFF
-        c.drawPath(path, floorFill)
-        c.drawPath(path, floorEdge)
-
-        // Target dot (on the floor, under the walls' near faces)
-        if (hasTarget) {
-            val tx = sx(targetX); val ty = sy(targetZ, 0f)
-            c.drawCircle(tx, ty, 3.5f * d, targetPaint)
-            c.drawCircle(tx, ty, 7f * d, targetRing)
+        // Floor + outline (the closed shell polygon; open while a side is still hypothesised)
+        if (nShell >= 3) {
+            path.reset()
+            for (i in 0 until nShell) { pt(shx[i], shz[i]); if (i == 0) path.moveTo(tmp[0], tmp[1]) else path.lineTo(tmp[0], tmp[1]) }
+            if (shellClosed) path.close()
+            if (shellClosed) { floorFill.color = if (floorFound) 0x5566BB6A else 0x22FFFFFF; c.drawPath(path, floorFill) }
+            outline.color = if (shellClosed) 0xDDFFFFFF.toInt() else 0x66FFFFFF
+            c.drawPath(path, outline)
         }
 
-        // Walls: ghost quad full height, ink bottom-up by pct
-        for (k in 0 until nWalls) {
-            val i = order[k]
-            quad(wx0[i], wz0[i], wx1[i], wz1[i], WALL_H)
-            c.drawPath(path, wallGhost)
-            val p = wpct[i]
-            if (p > 0) {
-                wallInk.color = if (p >= DONE_PCT) INK_DONE else INK_SCANNING
-                quad(wx0[i], wz0[i], wx1[i], wz1[i], WALL_H * p / 100f)
-                c.drawPath(path, wallInk)
+        // Wall spans when the core sends them (v3); else the layout walls themselves, inked by pct.
+        if (nSpans > 0) {
+            for (i in 0 until nSpans) {
+                pt(sa[4 * i], sa[4 * i + 1]); val x0 = tmp[0]; val y0 = tmp[1]
+                pt(sa[4 * i + 2], sa[4 * i + 3]); val x1 = tmp[0]; val y1 = tmp[1]
+                when (sSt[i]) {
+                    'b' -> blockedSpan(c, x0, y0, x1, y1)
+                    'm' -> c.drawLine(x0, y0, x1, y1, missingLine)
+                    else -> { wallInk.color = inkFor(pctOfWall(sId[i])); c.drawLine(x0, y0, x1, y1, wallInk) }
+                }
             }
-            quad(wx0[i], wz0[i], wx1[i], wz1[i], WALL_H)
-            c.drawPath(path, wallEdge)
+        } else {
+            for (i in 0 until nWalls) {
+                pt(wx0[i], wz0[i]); val x0 = tmp[0]; val y0 = tmp[1]
+                pt(wx1[i], wz1[i])
+                wallInk.color = inkFor(wpct[i])
+                c.drawLine(x0, y0, tmp[0], tmp[1], wallInk)
+            }
         }
 
-        // User arrow: heading (sin yaw, cos yaw) in x/z, projected onto the oblique floor
+        // Corners
+        if (nShell > 0) {
+            val r = (if (shellClosed) 3.2f else 2.4f) * d
+            for (i in 0 until nShell) { pt(shx[i], shz[i]); c.drawCircle(tmp[0], tmp[1], r, cornerPaint) }
+        }
+
+        // Openings
+        for (i in 0 until nOpen) {
+            pt(op[4 * i], op[4 * i + 1]); val x0 = tmp[0]; val y0 = tmp[1]
+            pt(op[4 * i + 2], op[4 * i + 3])
+            c.drawLine(x0, y0, tmp[0], tmp[1], if (opDoor[i]) doorPaint else windowPaint)
+        }
+
+        // Objects: oriented footprints (local x axis (cos y, -sin y), local z axis (sin y, cos y) in world x/z)
+        for (i in 0 until nObj) {
+            val cx = ob[5 * i]; val cz = ob[5 * i + 1]; val hw = ob[5 * i + 2] / 2f; val hd = ob[5 * i + 3] / 2f
+            val ca = cos(ob[5 * i + 4]); val sn = sin(ob[5 * i + 4])
+            path.reset()
+            for (k in 0 until 4) {
+                val lx = if (k == 0 || k == 3) -hw else hw; val lz = if (k < 2) -hd else hd
+                pt(cx + lx * ca + lz * sn, cz - lx * sn + lz * ca)
+                if (k == 0) path.moveTo(tmp[0], tmp[1]) else path.lineTo(tmp[0], tmp[1])
+            }
+            path.close()
+            c.drawPath(path, objFill); c.drawPath(path, objEdge)
+        }
+
+        // Unseen-area marks
+        for (i in 0 until nGaps) { pt(gp[2 * i], gp[2 * i + 1]); c.drawCircle(tmp[0], tmp[1], 6f * d, gapRing) }
+
+        // Target dot
+        if (hasTarget) {
+            pt(targetX, targetZ)
+            c.drawCircle(tmp[0], tmp[1], 3.5f * d, targetPaint)
+            c.drawCircle(tmp[0], tmp[1], 7f * d, targetRing)
+        }
+
+        // User arrow: fixed at the centre, always pointing up. Heading ring: world sector [30i, 30i+30) deg drawn at its
+        // bearing relative to the user (positive = left = screen left).
         if (showUser) {
-            val ux = sx(userX); val uy = sy(userZ, 0f)
-            // Heading ring (ADR 0022): one 30 deg arc per sector that has a keyframe, ghost arcs for the rest. Heading
-            // (sin yaw, cos yaw) in x/z, squashed like the floor; moves with the user even when no wall plane exists.
+            val ux = w / 2f; val uy = h / 2f
             val rr = 15f * d
             for (sec in 0 until 12) {
                 path.reset()
                 for (j in 0..3) {
-                    val a = Math.toRadians((sec * 30 + 1 + j * 9.33).toDouble())
-                    val px0 = ux + rr * sin(a).toFloat(); val py0 = uy + rr * K * cos(a).toFloat()
-                    if (j == 0) path.moveTo(px0, py0) else path.lineTo(px0, py0)
+                    val rel = Math.toRadians(sec * 30 + 1 + j * 9.33 - yawDeg)
+                    val px = ux - rr * sin(rel).toFloat(); val py = uy - rr * cos(rel).toFloat()
+                    if (j == 0) path.moveTo(px, py) else path.lineTo(px, py)
                 }
                 c.drawPath(path, if ((yawMask shr sec) and 1 != 0) ringDone else ringGhost)
             }
-            var fx = sin(yawRad); var fy = K * cos(yawRad)
-            val len = sqrt(fx * fx + fy * fy).coerceAtLeast(1e-3f); fx /= len; fy /= len
             val a = 9f * d; val b = 5.5f * d
             path.reset()
-            path.moveTo(ux + fx * a, uy + fy * a)
-            path.lineTo(ux - fx * b * 0.6f - fy * b, uy - fy * b * 0.6f + fx * b)
-            path.lineTo(ux - fx * b * 0.1f, uy - fy * b * 0.1f)
-            path.lineTo(ux - fx * b * 0.6f + fy * b, uy - fy * b * 0.6f - fx * b)
+            path.moveTo(ux, uy - a)
+            path.lineTo(ux - b, uy + b * 0.6f)
+            path.lineTo(ux, uy + b * 0.1f)
+            path.lineTo(ux + b, uy + b * 0.6f)
             path.close()
             userPaint.color = if (tracking) 0xFF4FC3F7.toInt() else UiKit.AMBER
             c.drawPath(path, userPaint)
@@ -257,7 +305,7 @@ class RoomView(ctx: Context) : View(ctx) {
         }
         c.restore()
 
-        // Ceiling icon (top-right): a flat slab, filled once the ceiling is found
+        // Ceiling icon (top-right): a flat slab, filled once the ceiling is seen (optional for completeness)
         val iw = 22f * d; val ih = 8f * d; val m = 8f * d
         val right = w - m; val top = m
         path.reset()
@@ -267,26 +315,45 @@ class RoomView(ctx: Context) : View(ctx) {
         c.drawPath(path, ceilEdge)
     }
 
-    /** Sets [path] to the wall quad from floor to [topM] metres. */
-    private fun quad(x0: Float, z0: Float, x1: Float, z1: Float, topM: Float) {
-        path.reset()
-        path.moveTo(sx(x0), sy(z0, 0f)); path.lineTo(sx(x1), sy(z1, 0f))
-        path.lineTo(sx(x1), sy(z1, topM)); path.lineTo(sx(x0), sy(z0, topM)); path.close()
+    /** Percentage of the wall with this id; -1 when no wall has it (the span is then drawn in the scanning colour). */
+    private fun pctOfWall(id: Int): Int {
+        for (i in 0 until nWalls) if (wid[i] == id) return wpct[i]
+        return -1
+    }
+
+    private fun inkFor(pct: Int) = if (pct >= DONE_PCT) INK_DONE else INK_SCANNING
+
+    /** Hatched span: an amber centre line with diagonal ticks (hidden behind furniture; never demanded). */
+    private fun blockedSpan(c: Canvas, x0: Float, y0: Float, x1: Float, y1: Float) {
+        c.drawLine(x0, y0, x1, y1, blockedLine)
+        val dx = x1 - x0; val dy = y1 - y0
+        val len = hypot(dx, dy)
+        if (len < 1f) return
+        val ux = dx / len; val uy = dy / len
+        val nx = -uy; val ny = ux
+        val step = 5f * d; val half = 3.5f * d
+        var t = 0f
+        while (t <= len) {
+            val px = x0 + ux * t; val py = y0 + uy * t
+            // tick leans 45 degrees along the span
+            c.drawLine(px - (nx + ux) * half * 0.7f, py - (ny + uy) * half * 0.7f, px + (nx + ux) * half * 0.7f, py + (ny + uy) * half * 0.7f, blockedLine)
+            t += step
+        }
     }
 
     companion object {
-        /** "x0,z0,x1,z1,pct;..." (the overlay surfaces format, 5 fields) for the Review hand-over; parse with EventParser.parseSurfaces. */
+        /** Review hand-over encoders (overlay string formats; parse with EventParser). */
         fun encodeSurfaces(segs: List<WallSeg>): String = segs.joinToString(";") {
-            String.format(java.util.Locale.ROOT, "%.3f,%.3f,%.3f,%.3f,%d", it.x0, it.z0, it.x1, it.z1, it.pct)
+            String.format(java.util.Locale.ROOT, "%.3f,%.3f,%.3f,%.3f,%d,%d", it.x0, it.z0, it.x1, it.z1, it.pct, it.id)
         }
 
         private const val MAX_WALLS = 12             // core overlay caps surfaces at 12
-        const val MAX_PTS = 2 * MAX_WALLS
-        const val WALL_H = 2.4f               // fixed visual wall height (m); guess until wall height is in the overlay
-        const val K = 0.55f                   // oblique depth squash
-        const val H = 0.45f                   // screen units per metre of height
-        const val PAD_M = 0.5f                // floor padding around the path box (m)
-        const val MIN_SPAN_M = 3f             // never zoom in tighter than 3 m
+        private const val MAX_SPANS = 24             // core overlay caps spans at 24
+        private const val MAX_SHELL = 12
+        private const val MAX_OBJ = 12
+        private const val MAX_OPEN = 6
+        private const val MAX_GAPS = 4
+        const val MIN_R_M = 2.0f              // never zoom in tighter than 2 m around the user
         const val MAX_PX_PER_M = 40f          // dp per metre cap
         const val SMOOTH = 0.35f              // fit easing per update (4 Hz)
         const val DONE_PCT = 80               // guess until Gate 0 data

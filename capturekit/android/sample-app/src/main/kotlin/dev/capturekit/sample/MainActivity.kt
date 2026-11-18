@@ -1,6 +1,8 @@
 package dev.capturekit.sample
 
 import android.app.Activity
+import android.app.AlertDialog
+import dev.capturekit.consent.ConsentStore
 import android.app.ActivityManager
 import android.app.ApplicationExitInfo
 import android.content.Intent
@@ -33,6 +35,9 @@ class MainActivity : Activity() {
     private var home = false
     private val ui = Handler(Looper.getMainLooper())
     private val prefs by lazy { getSharedPreferences("ck_prefs", MODE_PRIVATE) }
+    private val consent by lazy { ConsentStore.get(this) }
+    private var consentLine: TextView? = null
+    private var revoke: Button? = null
 
     private var recoveryLine: TextView? = null
     @Volatile private var recoveryNote: String? = null
@@ -126,7 +131,7 @@ class MainActivity : Activity() {
             }
             else -> {
                 root.addView(title("Before you start"), lp(12))
-                root.addView(body("- Use a well lit room.\n- Hold the phone in landscape and walk slowly.\n- Turn the volume up for spoken guidance (you can switch it off at any time)."), lp(24))
+                root.addView(body("- Use a well lit room.\n- Hold the phone in landscape and walk slowly.\n- Turn the volume up for spoken guidance (you can switch it off at any time).\n- Switch screens off and ask other people to leave the room: a scan can capture them."), lp(24))
             }
         }
         val next = UiKit.bigButton(this, if (page == last) (if (CameraPermission.granted(this)) "Continue" else "Allow camera and continue") else "Next").apply {
@@ -145,6 +150,7 @@ class MainActivity : Activity() {
     private fun finishOnboarding() {
         prefs.edit().putBoolean(KEY_ONBOARDED, true).apply()
         showHome()
+        if (!consent.hasConsent()) startActivity(Intent(this, ConsentActivity::class.java))   // consent screen right after onboarding
     }
 
     // ---- home ----
@@ -164,17 +170,29 @@ class MainActivity : Activity() {
 
         root.addView(UiKit.bigButton(this, "Start guided scan").apply {
             setOnClickListener {
-                if (CameraPermission.granted(this@MainActivity)) startActivity(Intent(this@MainActivity, CaptureActivity::class.java))
-                else showOnboarding(1)
+                if (!CameraPermission.granted(this@MainActivity)) showOnboarding(1)
+                else if (!consent.hasConsent()) startActivity(Intent(this@MainActivity, ConsentActivity::class.java).putExtra(ConsentActivity.EXTRA_START_SCAN, true))
+                else startActivity(Intent(this@MainActivity, CaptureActivity::class.java))
             }
         }, lp(4))
         root.addView(body("Voice and on-screen prompts, quality checks, and a saved bundle").apply { textSize = 14f }, lp(16))
+
+        root.addView(UiKit.secondaryButton(this, "My scans").apply {
+            setOnClickListener { startActivity(Intent(this@MainActivity, ScansActivity::class.java)) }
+        }, lp(16))
 
         val voice = UiKit.secondaryButton(this, "")
         fun paintVoice() { voice.text = if (SpeechRenderer.savedEnabled(this)) "Voice guidance: on" else "Voice guidance: off" }
         paintVoice()
         voice.setOnClickListener { SpeechRenderer.saveEnabled(this, !SpeechRenderer.savedEnabled(this)); paintVoice() }
-        root.addView(voice, lp(24))
+        root.addView(voice, lp(16))
+
+        consentLine = UiKit.statusText(this, 16f).also { root.addView(it, lp(8)) }
+        revoke = UiKit.secondaryButton(this, "Withdraw consent").apply {
+            contentDescription = "Withdraw consent. Asks for confirmation first."
+            setOnClickListener { confirmRevoke() }
+        }.also { root.addView(it, lp(24)) }
+        paintConsent()
 
         root.addView(body("Developer tools").apply { textSize = 14f; setTextColor(0xFF78909C.toInt()) }, lp(6))
         for ((label, cls) in listOf("Raw recorder" to RecorderActivity::class.java, "Clock check" to ClockCheckActivity::class.java)) {
@@ -186,8 +204,28 @@ class MainActivity : Activity() {
         refresh()
     }
 
+    private fun paintConsent() {
+        Telemetry.sync(this)   // field flavour: starts or stops crash reports to match the current consent; no-op in standard
+        val c = consent.current()
+        consentLine?.let {
+            if (c == null) UiKit.setChip(it, "Consent: not given. Needed before scanning.", UiKit.AMBER)
+            else UiKit.setChip(it, "Consent given. Upload: ${if (c.upload) "on" else "off"}. Anonymous reports: ${if (c.telemetry) "on" else "off"}.", UiKit.GREEN)
+        }
+        revoke?.visibility = if (c == null) View.GONE else View.VISIBLE
+    }
+
+    private fun confirmRevoke() {
+        AlertDialog.Builder(this)
+            .setTitle("Withdraw consent?")
+            .setMessage("Scanning will be blocked until you accept again. Uploading and anonymous reports stop, and your recorded choices are removed from this phone. Scans already saved or uploaded are not deleted.")
+            .setPositiveButton("Withdraw") { _, _ -> consent.revoke(); dev.capturekit.upload.UploadWorker.cancelAll(this); paintConsent() /* paintConsent -> Telemetry.sync closes Sentry */ }
+            .setNegativeButton("Keep consent", null)
+            .show()
+    }
+
     private fun refresh() {
         if (!home) return
+        paintConsent()
         val ok = CameraPermission.granted(this)
         permLine?.let { UiKit.setChip(it, if (ok) "Camera permission: granted" else
             "Camera permission: NOT granted. The camera is needed to see the room and track motion.", if (ok) UiKit.GREEN else UiKit.RED) }

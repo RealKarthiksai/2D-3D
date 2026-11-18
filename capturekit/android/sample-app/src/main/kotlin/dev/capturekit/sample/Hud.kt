@@ -29,6 +29,8 @@ class Hud(private val ctx: Activity) {
     private val pill = UiKit.chip(ctx).apply { textSize = UiKit.TEXT_M }
     private val understanding = UnderstandingView(ctx)
     private val detail = glassText(UiKit.TEXT_M).apply { visibility = View.GONE }
+    /** Voice-command feedback ("Paused.", answers, notes): its own line so it never overwrites [detail]. */
+    private val voiceLine = glassText(UiKit.TEXT_M).apply { visibility = View.GONE; maxLines = 3; ellipsize = android.text.TextUtils.TruncateAt.END }
     /** Ingest counters line (trk/frm/kf/pts/pl); hidden until the status pill is long-pressed. */
     private val debug = glassText(UiKit.TEXT_S).apply { visibility = View.GONE; typeface = Typeface.MONOSPACE }
     var debugOn = false
@@ -46,6 +48,16 @@ class Hud(private val ctx: Activity) {
         addView(recText)
     }
     private val voice = UiKit.chip(ctx).apply { visibility = View.GONE; textSize = UiKit.TEXT_S }
+    /** Push-to-talk chip (top-right zone, left of the voice toggle). Hidden unless voice commands are available. */
+    private val mic = UiKit.chip(ctx).apply {
+        visibility = View.GONE; textSize = UiKit.TEXT_S; gravity = Gravity.CENTER
+        minimumHeight = dp(48); minimumWidth = dp(48)   // 48 dp touch target
+    }
+    /** Field research chip (trial setup); hidden unless [setTrial] is given a label (field flavour, not recording). */
+    private val trial = UiKit.chip(ctx).apply {
+        visibility = View.GONE; textSize = UiKit.TEXT_S; gravity = Gravity.CENTER
+        minimumHeight = dp(48)
+    }
     private val coaching = glassText(UiKit.TEXT_L).apply { gravity = Gravity.CENTER; typeface = Typeface.DEFAULT_BOLD; maxLines = 2 }
     private val bannerText = TextView(ctx)
     private val bannerButton = UiKit.bigButton(ctx, "Retry", 0x33FFFFFF).apply { textSize = UiKit.TEXT_M; minimumHeight = 0; minHeight = 0 }
@@ -74,8 +86,10 @@ class Hud(private val ctx: Activity) {
     init {
         pill.maxWidth = (longSide * 0.34).toInt()
         val mid = (longSide * 0.55).toInt()
-        coaching.maxWidth = (longSide * 0.6).toInt(); detail.maxWidth = mid; result.maxWidth = mid; debug.maxWidth = mid
+        coaching.maxWidth = (longSide * 0.6).toInt(); detail.maxWidth = mid; voiceLine.maxWidth = mid; result.maxWidth = mid; debug.maxWidth = mid
         voice.setOnClickListener { onVoiceToggle() }
+        mic.setOnClickListener { onMicClick() }
+        trial.setOnClickListener { onTrialClick() }
         pill.setOnLongClickListener { debugOn = !debugOn; if (!debugOn) debug.visibility = View.GONE; true }
         UiKit.setChip(pill, StatusPill.STARTING.text, StatusPill.STARTING.tone.argb)
     }
@@ -107,6 +121,8 @@ class Hud(private val ctx: Activity) {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
             addView(recRow, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
+            addView(trial, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
+            addView(mic, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
             addView(voice)
         }
         val topBar = LinearLayout(ctx).apply {
@@ -119,7 +135,7 @@ class Hud(private val ctx: Activity) {
         val msgs = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            addView(detail, lp(bottom = 6)); addView(debug, lp(bottom = 6)); addView(result)
+            addView(detail, lp(bottom = 6)); addView(voiceLine, lp(bottom = 6)); addView(debug, lp(bottom = 6)); addView(result)
         }
         val middle = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -162,6 +178,12 @@ class Hud(private val ctx: Activity) {
 
     /** Latest core overlay snapshot (null hides it). Rendered at most 4 Hz; UI thread only. */
     fun setUnderstanding(o: dev.capturekit.capture.CoreEvent.Overlay?) = understanding.update(o)
+
+    /** Voice-command feedback line; null hides it. Independent of [setDetail]. */
+    fun setVoiceLine(text: String?) {
+        voiceLine.visibility = if (text == null) View.GONE else View.VISIBLE
+        if (text != null && voiceLine.text.toString() != text) voiceLine.text = text
+    }
 
     fun setDetail(text: String?) {
         detail.visibility = if (text == null) View.GONE else View.VISIBLE
@@ -213,6 +235,38 @@ class Hud(private val ctx: Activity) {
         voice.visibility = View.VISIBLE
         UiKit.setChip(voice, if (on) "Voice on" else "Voice off", if (on) UiKit.GREEN else 0xFF546E7A.toInt())
         voice.contentDescription = if (on) "Voice guidance on. Tap to turn off." else "Voice guidance off. Tap to turn on."
+    }
+
+    /** Set to handle taps on the trial chip (field flavour: opens the trial setup). */
+    var onTrialClick: () -> Unit = {}
+
+    /** Trial chip text; null hides it (standard flavour, or while recording). */
+    fun setTrial(label: String?) {
+        if (label == null) { trial.visibility = View.GONE; return }
+        trial.visibility = View.VISIBLE
+        UiKit.setChip(trial, label, 0xFF6A1B9A.toInt())
+        trial.contentDescription = "Research trial: $label. Tap to change participant or guided arm."
+    }
+
+    /** Set to handle taps on the mic chip (push-to-talk). */
+    var onMicClick: () -> Unit = {}
+
+    /**
+     * Push-to-talk chip. null hides it (no voice commands here). Listening is unmistakable: red chip, "Listening"
+     * text and a spoken-by-TalkBack description; idle is the quiet HUD blue-grey.
+     */
+    fun setMic(state: MicState?) {
+        if (state == null) { mic.visibility = View.GONE; return }
+        mic.visibility = View.VISIBLE
+        val (text, color, desc) = when (state) {
+            MicState.IDLE -> Triple("Mic", 0xFF455A64.toInt(), "Voice commands. Tap, then say pause, resume, repeat, what is missing, finish, louder or quieter.")
+            MicState.LISTENING -> Triple("Listening...", UiKit.RED, "Listening for a command. Tap to cancel.")
+            MicState.THINKING -> Triple("Working...", UiKit.AMBER, "Understanding the command.")
+            MicState.NEEDS_PERMISSION -> Triple("Mic off", 0xFF546E7A.toInt(), "Voice commands need microphone permission. Tap to learn more.")
+        }
+        UiKit.setChip(mic, text, color)
+        if (mic.contentDescription != desc) mic.contentDescription = desc
+        mic.isEnabled = state != MicState.THINKING
     }
 
     /** Full-width strip under the top bar; reserved for errors and blocking conditions. */

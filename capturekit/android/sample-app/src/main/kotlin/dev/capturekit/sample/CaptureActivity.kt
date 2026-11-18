@@ -15,9 +15,12 @@ import dev.capturekit.capture.CoreEvent
 import dev.capturekit.capture.Policy
 import dev.capturekit.capture.SensorBridge
 import dev.capturekit.capture.SessionManager
+import dev.capturekit.guidance.ScanStateSnapshot
 import dev.capturekit.nativebridge.Status
 import dev.capturekit.platform.PlatformSignals
 import dev.capturekit.platform.ThermalAdapter
+import dev.capturekit.capture.DebugFlags
+import dev.capturekit.sample.research.ResearchLog
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -34,6 +37,8 @@ class CaptureActivity : Activity(), SessionManager.Listener {
     private lateinit var ar: ArHost
     private lateinit var hud: Hud
     private lateinit var speech: SpeechRenderer
+    private lateinit var voice: VoiceController
+    private lateinit var research: ResearchLog
     private var session: SessionManager? = null
     @Volatile private var adapter: ARAdapter? = null
     @Volatile private var arActive = true
@@ -61,6 +66,28 @@ class CaptureActivity : Activity(), SessionManager.Listener {
     private var recovering = true
     private var recoveredNote: String? = null
 
+    /** What voice commands may do on this screen (main thread only). */
+    private val voiceHost = object : VoiceController.Host {
+        override fun isPaused() = corePaused
+        override fun pauseScan() { if (recording && !corePaused) togglePause() }
+        override fun resumeScan() { if (recording && corePaused) togglePause() }
+        override fun finishConfirmed() { stop() }   // same path as the Finish button (review sheet when a wall is weak)
+        override fun snapshot() = overlay?.let { ScanStateSnapshot.fromOverlay(it) }
+        override fun feedback(text: String?) { hud.setVoiceLine(text) }
+        override fun voiceStateChanged() = refreshMic()
+    }
+
+    private fun refreshMic() = hud.setMic(if (voice.available && recording && !finishing && !research.unguided) voice.micState else null)
+
+    /** Trial chip (field flavour, not while recording) and the voice chip (hidden in the unguided arm). */
+    private fun applyTrial() {
+        hud.setTrial(if (research.enabled && !recording) research.label else null)
+        hud.setVoice(if (research.unguided) null else speech.enabled)
+        refreshMic()
+    }
+
+    private fun scanPrompt() = if (research.unguided) "Scan the room" else "Move slowly and keep the camera steady"
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -77,7 +104,12 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         hud.button.setOnClickListener { if (session == null) start() else stop() }
         hud.pauseButton.setOnClickListener { togglePause() }
         hud.onVoiceToggle = { speech.enabled = !speech.enabled; hud.setVoice(speech.enabled) }
-        hud.setVoice(speech.enabled)
+        research = ResearchLog(this)
+        voice = VoiceController(this, speech, voiceHost)
+        voice.onIntent = { research.onIntent(it.name) }
+        hud.onMicClick = { voice.onMicTapped() }
+        hud.onTrialClick = { if (!recording) research.showSetup { applyTrial() } }
+        applyTrial()
         hud.setCoaching("Press Start, then move slowly around the room")
         setContentView(FrameLayout(this).apply {
             addView(ar.view, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
@@ -97,12 +129,40 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         }.start()
     }
 
-    private fun start() {
+    /** Start pressed: ask for the microphone first (rationale), then begin; a refusal only turns voice commands off. */
+    private fun start() = voice.ensurePermissionThen { startScan() }
+
+    /** One `getprop` call (a short child process; streams closed, process destroyed). Debug builds only, read once per activity. */
+    private fun sysProp(n: String): String {
+        var p: Process? = null
+        return try {
+            p = Runtime.getRuntime().exec(arrayOf("getprop", n))
+            p.inputStream.bufferedReader().use { it.readText().trim() }
+        } catch (t: Throwable) { "" } finally { p?.destroy() }
+    }
+
+    /** (understanding override or null, detector on): read once, only in a debuggable build; (null, false) elsewhere. */
+    private val debugFlags: Pair<Int?, Boolean> by lazy {
+        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE == 0) null to false
+        else DebugFlags.understandingLevel(sysProp(DebugFlags.PROP_UNDERSTANDING)) to DebugFlags.detectorOn(sysProp(DebugFlags.PROP_DETECTOR))
+    }
+
+    private fun startScan() {
+        if (session != null || finishing) return
+        // Consent keys (consent_version + consent_at + redaction_mode) are always passed together; no consent, no scan.
+        val consentCfg = dev.capturekit.consent.ConsentStore.get(this).sessionConfig()
+        if (consentCfg == null) {
+            startActivity(Intent(this, ConsentActivity::class.java).putExtra(ConsentActivity.EXTRA_START_SCAN, true))
+            finish()
+            return
+        }
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val dir = File(getExternalFilesDir("bundles"), "scan_$stamp")
-        val s = SessionManager(this, dir, listener = this)
+        // Debug builds only (U11-A): `adb shell setprop debug.capturekit.understanding 1|2` / `debug.capturekit.detector 1`. Off elsewhere.
+        val (understanding, detector) = debugFlags
+        val s = SessionManager(this, dir, listener = this, detectorEnabled = detector)
         // 8 core frame slots (default 4): absorbs ~800 ms worker stalls at 10 candidates/s before ErrFull.
-        if (!s.start(mapOf("frame_slots" to 8))) {
+        if (!s.start(mapOf<String, Any>("frame_slots" to 8) + consentCfg + DebugFlags.extraConfig(understanding))) {
             hud.setBanner("Could not start the capture session. Check free storage and try again.", UiKit.Kind.ERROR)
             return
         }
@@ -115,10 +175,13 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         keyframes = 0; instruction = ""; instructionLong = ""; overlay = null; lastQuality = -1.0; lastReasons = emptyList()
         corePaused = false; pausedTotalMs = 0; pausedAtMs = 0
         recStartMs = SystemClock.elapsedRealtime(); recording = true
+        speech.stats.reset(); speech.stats.begin(recStartMs)
+        research.begin(s.stats, speech.stats, recStartMs)
+        applyTrial()
         hud.setResult(null)
         hud.setRecording(true)
         hud.setDetail(null)
-        hud.setCoaching("Move slowly and keep the camera steady")
+        hud.setCoaching(scanPrompt())
         hud.haptic(false)
     }
 
@@ -136,7 +199,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
             }
         } else {
             val st = s.resume()
-            if (st == Status.OK) hud.setCoaching("Move slowly and keep the camera steady")
+            if (st == Status.OK) hud.setCoaching(scanPrompt())
             else hud.setBanner("Cannot resume yet: the phone needs to cool down or charge (status ${UiKit.statusName(st)}).", UiKit.Kind.WARN)
         }
     }
@@ -149,7 +212,8 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         val s = session ?: return
         if (finishing || reviewDialog != null) return
         val room = overlay
-        if (!recording || room == null || !ReviewSheet.needed(room)) { finishScan(); return }
+        // Unguided trial arm: no review sheet (it is guidance); finish straight away.
+        if (!recording || research.unguided || !ReviewSheet.needed(room)) { finishScan(); return }
         if (!corePaused) {
             if (s.pause() != Status.OK) {
                 hud.setBanner("Could not pause the scan to review it. Press Finish again.", UiKit.Kind.WARN)
@@ -165,7 +229,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
                 if (reviewDialog == null) return@show   // one-shot: resume runs once
                 reviewDialog = null
                 val st = s.resume()
-                if (st == Status.OK) hud.setCoaching("Move slowly and keep the camera steady")
+                if (st == Status.OK) hud.setCoaching(scanPrompt())
                 else hud.setBanner("Cannot resume yet: the phone needs to cool down or charge (status ${UiKit.statusName(st)}). Press Resume when it is ready.", UiKit.Kind.WARN)
             },
             onFinish = { reviewDialog = null; finishScan() })
@@ -175,6 +239,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         val s = session ?: return
         if (finishing) return
         finishing = true
+        voice.onPause()
         speech.stopNow()
         sensors?.stop(); thermal?.stop(); adapter = null
         hud.button.isEnabled = false
@@ -184,6 +249,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         ar.recording = false
         hud.setRecording(false)
         hud.setDetail(null)
+        hud.setVoiceLine(null)
         hud.setResult("Saving the scan...", UiKit.Kind.INFO)
         hud.setCoaching("Saving. Keep the app open")
         hud.haptic(true)
@@ -193,6 +259,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         val roomSurfaces = room?.let { RoomView.encodeSurfaces(it.surfaces) }
         Thread {
             val st = s.finish()
+            research.end(s.dir, st, kf, elapsed, SystemClock.elapsedRealtime())   // field only; sibling file, after the bundle is closed
             runOnUiThread {
                 session = null
                 startActivity(Intent(this, ReviewActivity::class.java)
@@ -204,8 +271,13 @@ class CaptureActivity : Activity(), SessionManager.Listener {
                         if (room != null) {
                             putExtra(ReviewActivity.EXTRA_SURFACES, roomSurfaces)
                             putExtra(ReviewActivity.EXTRA_FLOOR, room.floorFound)
-                            putExtra(ReviewActivity.EXTRA_CEILING, room.ceilingFound)
-                            putExtra(ReviewActivity.EXTRA_WALLS_FOUND, room.walls)
+                            putExtra(ReviewActivity.EXTRA_CEILING, room.ceilingFound || room.ceilingSeen)
+                            putExtra(ReviewActivity.EXTRA_WALLS_FOUND, ChecklistView.foundWalls(room))
+                            putExtra(ReviewActivity.EXTRA_SHELL, dev.capturekit.capture.EventParser.encodeShell(room.shell))
+                            putExtra(ReviewActivity.EXTRA_SHELL_CLOSED, room.shellClosed)
+                            putExtra(ReviewActivity.EXTRA_SPANS, dev.capturekit.capture.EventParser.encodeSpans(room.spans))
+                            putExtra(ReviewActivity.EXTRA_OBJECTS, dev.capturekit.capture.EventParser.encodeObjects(room.objects))
+                            putExtra(ReviewActivity.EXTRA_OPENINGS, dev.capturekit.capture.EventParser.encodeOpenings(room.openings))
                         }
                     })
                 finish()
@@ -233,11 +305,12 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         hud.setStatus(trackState, trackFailure, if (recording && !corePaused && lastQuality >= 0) lastReasons else emptyList(),
             if (recording && p != null) p.level else 0, ar.live() || ar.lastFrameMs == 0L || ar.state != ArState.READY)
         if (hud.debugOn) session?.let { hud.setDebug(it.stats.hudLine()) }
-        hud.setUnderstanding(if (recording) overlay else null)
+        hud.setUnderstanding(if (recording && !research.unguided) overlay else null)
+        refreshMic()
         if (recording) {
             hud.setPaused(corePaused)
             hud.setRecInfo(elapsedMs())
-            if (!corePaused && instruction.isNotEmpty()) hud.setCoaching(instruction, instructionLong)
+            if (!corePaused && instruction.isNotEmpty() && !research.unguided) hud.setCoaching(instruction, instructionLong)
         }
         // Banner is for errors only: a forced thermal/battery pause blocks capture, so it stays here.
         val thermalMsg = if (recording && p != null && p.mustPause) "Capture paused: the phone is too hot or the battery is low. Let it rest." else null
@@ -247,7 +320,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
                 hud.setBanner("Camera permission is needed to scan the room.", UiKit.Kind.ERROR, CameraPermission.retryLabel()) { CameraPermission.retry(this) }
             am != null && ar.state != ArState.READY ->
                 hud.setBanner(am, UiKit.Kind.ERROR, "Retry") { arMessage = null; ar.retry(); refresh() }
-            !speech.available && recording -> hud.setBanner("Voice guidance is unavailable: no offline text-to-speech voice. On-screen prompts still work.", UiKit.Kind.INFO)
+            !speech.available && recording && !research.unguided -> hud.setBanner("Voice guidance is unavailable: no offline text-to-speech voice. On-screen prompts still work.", UiKit.Kind.INFO)
             thermalMsg != null -> hud.setBanner(thermalMsg, UiKit.Kind.WARN)
             else -> hud.setBanner(null)
         }
@@ -260,7 +333,8 @@ class CaptureActivity : Activity(), SessionManager.Listener {
             is CoreEvent.KeyframeRequest -> keyframes++
             is CoreEvent.Instruction -> {
                 instruction = e.speakText; instructionLong = e.longText
-                if (!corePaused) {
+                research.onInstruction()
+                if (!corePaused && !research.unguided) {
                     speech.onInstruction(e.id, e.speakText, e.priority)
                     hud.hapticFor(e.haptic, e.priority)
                 }
@@ -270,7 +344,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
             else -> {}
         }
     }
-    override fun onPolicy(p: Policy) { lastPolicy = p }
+    override fun onPolicy(p: Policy) { lastPolicy = p; research.onThermal(p.level, SystemClock.elapsedRealtime()) }
 
     override fun onState(state: Int) {
         val nowPaused = state == STATE_PAUSED
@@ -295,6 +369,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == VoiceController.REQ_CODE) { voice.onPermissionResult(grantResults); return }
         if (CameraPermission.onResult(this, grantResults)) { arMessage = null; ar.resume() }
         else { arMessage = "Camera permission is needed to scan the room."; refresh() }
     }
@@ -304,6 +379,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         ui.removeCallbacks(tick)
         // Leaving the screen mid-scan: pause the core session so no gap is recorded as tracking data.
         if (recording && !corePaused && !finishing) session?.pause()
+        voice.onPause()
         speech.stopNow()
         val t1 = SystemClock.elapsedRealtime()
         arActive = false
@@ -325,12 +401,17 @@ class CaptureActivity : Activity(), SessionManager.Listener {
             sensors?.stop(); thermal?.stop(); adapter = null
             session = null
             Log.w(TAG, "destroyed mid-scan: finishing ${s.dir.name} so the scan is kept")
+            val kf = keyframes
+            val elapsed = elapsedMs()
+            val r = research
             Thread {
                 val st = s.finish()
+                r.end(s.dir, st, kf, elapsed, SystemClock.elapsedRealtime())
                 Log.w(TAG, "mid-scan finish of ${s.dir.name}: status ${UiKit.statusName(st)}")
             }.start()
         }
         hud.release()
+        voice.release()
         speech.release()
         ar.close()
         super.onDestroy()

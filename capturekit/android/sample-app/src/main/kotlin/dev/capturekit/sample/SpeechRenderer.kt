@@ -4,13 +4,16 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
+import dev.capturekit.capture.VoiceStats
 import dev.capturekit.guidance.SpeechScheduler
+import dev.capturekit.guidance.VolumeSteps
 import java.util.Locale
 
 /**
@@ -28,6 +31,9 @@ class SpeechRenderer(
     private val audio = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val sched = SpeechScheduler(SpeechScheduler.Config(speakTimeoutMs = speakTimeoutMs))
     private val main = Handler(Looper.getMainLooper())
+
+    /** Per-scan spoken-guidance counters (prompts, drops, repeats, TTS latency); the field research log reads them. */
+    val stats = VoiceStats()
     private var released = false
     private val watchdog = Runnable { onWatchdog() }
     private val prefs = app.getSharedPreferences("ck_prefs", Context.MODE_PRIVATE)
@@ -49,12 +55,22 @@ class SpeechRenderer(
             if (!v) stopNow()
         }
 
+    /**
+     * True while the microphone is listening for a command: guidance is dropped (logged) so the recogniser never
+     * hears the app's own voice, and nothing speaks over the user.
+     */
+    @Volatile var holdOff = false
+
+    private val volume = VolumeSteps(prefs.getInt(KEY_VOLUME, VolumeSteps.DEFAULT_INDEX))
+    private val speakParams: Bundle get() = Bundle().apply { putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume.volume) }
+
     /** False when the device has no usable TTS engine/voice (reported once; we never fall back to cloud TTS). */
     @Volatile var available = true
         private set
 
     init {
         sched.enabled = prefs.getBoolean(KEY_ENABLED, true)
+        sched.onStale = { stats.onStale() }
         // Assigned under the lock: onInit (synchronized) can never observe tts == null from another thread.
         synchronized(this) { tts = TextToSpeech(app) { status -> onInit(status) } }
     }
@@ -85,20 +101,49 @@ class SpeechRenderer(
     /** Entry point for CoreEvent.Instruction (speakText is the template output, spoken as is). */
     @Synchronized fun onInstruction(id: Int, speakText: String, priority: Int) {
         if (!ready) { Log.i(TAG, "instruction $id not spoken: TTS not ready"); return }
+        if (holdOff) { Log.i(TAG, "instruction $id dropped: listening"); return }
         val now = clock()
-        when (val a = sched.onInstruction(id, speakText, priority, now)) {
+        val a = sched.onInstruction(id, speakText, priority, now)
+        stats.onAction(a, now)
+        when (a) {
             is SpeechScheduler.Action.Speak -> play(a, now)
             SpeechScheduler.Action.Queued -> Log.d(TAG, "instruction $id queued")
             is SpeechScheduler.Action.Drop -> Log.i(TAG, "instruction $id dropped: ${a.reason}")
         }
     }
 
+    /** Speaks a voice-command answer now (cuts current speech, outside the guidance budget). False = not spoken (muted, TTS not ready). */
+    @Synchronized fun say(text: String, remember: Boolean = true): Boolean {
+        if (!ready) return false
+        val now = clock()
+        return when (val a = sched.speakNow(text, now, remember)) {
+            is SpeechScheduler.Action.Speak -> { play(a, now); true }
+            else -> false
+        }
+    }
+
+    /** "Repeat that": the last spoken line again. False = nothing to repeat, muted or TTS not ready. */
+    @Synchronized fun repeatLast(): Boolean {
+        stats.onRepeatRequest()
+        if (!ready) return false
+        val now = clock()
+        return when (val a = sched.repeatLast(now)) {
+            is SpeechScheduler.Action.Speak -> { play(a, now); true }
+            else -> false
+        }
+    }
+
+    /** One step louder / quieter (persisted). Returns false at the limit. Speaks nothing: the caller confirms. */
+    @Synchronized fun louder(): Boolean = volume.louder().also { saveVolume() }
+    @Synchronized fun quieter(): Boolean = volume.quieter().also { saveVolume() }
+    private fun saveVolume() { prefs.edit().putInt(KEY_VOLUME, volume.index).apply() }
+
     private fun play(a: SpeechScheduler.Action.Speak, now: Long) {
         val t = tts ?: return
         issuedAt[a.utteranceId] = now
         requestFocus()
         val mode = if (a.flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
-        if (t.speak(a.text, mode, null, a.utteranceId) != TextToSpeech.SUCCESS) {
+        if (t.speak(a.text, mode, speakParams, a.utteranceId) != TextToSpeech.SUCCESS) {
             Log.w(TAG, "speak() failed for ${a.utteranceId}")
             sched.onDone(a.utteranceId, clock()); issuedAt.remove(a.utteranceId); abandonFocus()
         } else {
@@ -114,13 +159,14 @@ class SpeechRenderer(
             Log.w(TAG, "TTS gave no callback for ${speakTimeoutMs} ms: clearing the stuck utterance")
             tts?.stop(); issuedAt.clear()
             val next = sched.nextPending(now)
-            if (next != null) play(next, now) else abandonFocus()
+            if (next != null) { stats.onAction(next, now); play(next, now) } else abandonFocus()
         } else main.postDelayed(watchdog, 1000)   // started recently: keep watching
     }
 
     @Synchronized private fun started(uid: String) {
         val now = clock()
         sched.onStart(uid, now)
+        stats.onTtsStart(uid, now)
         val t0 = issuedAt.remove(uid) ?: return
         val ms = now - t0
         latencies.add(ms)
@@ -132,8 +178,9 @@ class SpeechRenderer(
         val now = clock()
         sched.onDone(uid, now)
         issuedAt.remove(uid)
+        stats.onUtteranceEnd(uid)
         val next = sched.nextPending(now)
-        if (next != null) play(next, now) else if (!sched.isSpeaking()) { main.removeCallbacks(watchdog); abandonFocus() }
+        if (next != null) { stats.onAction(next, now); play(next, now) } else if (!sched.isSpeaking()) { main.removeCallbacks(watchdog); abandonFocus() }
     }
 
     /** Stops speaking immediately and forgets queued lines (pause, finish, mute). */
@@ -164,6 +211,7 @@ class SpeechRenderer(
     companion object {
         const val TAG = "CK/Voice"
         const val KEY_ENABLED = "voice_enabled"
+        const val KEY_VOLUME = "voice_volume_step"
 
         fun savedEnabled(context: Context) =
             context.getSharedPreferences("ck_prefs", Context.MODE_PRIVATE).getBoolean(KEY_ENABLED, true)
