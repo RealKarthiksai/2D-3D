@@ -106,3 +106,41 @@ def test_e2e_on_golden_bundle(golden, tmp_path):
     assert 0.0 <= rep["sfm"]["registered_ratio"] <= 1.0
     j, h = write(rep, tmp_path)
     assert json.loads(j.read_text())["bundle"] == "bundle" and h.exists()
+
+
+def test_score_gaps_recall_and_false_rate():
+    from ckit.e2e import score_gaps
+
+    truth = [{"x0": 0, "z0": 0, "x1": 1, "z1": 0}, {"x0": 10, "z0": 10, "x1": 11, "z1": 10}]
+    gaps = [{"x0": 0.4, "z0": 0.3, "x1": 1.2, "z1": 0.3}, {"x0": 5, "z0": 5, "x1": 6, "z1": 5}]
+    s = score_gaps(gaps, truth)
+    assert (s["n_truth"], s["recalled"], s["recall"]) == (2, 1, 0.5)
+    assert (s["n_gaps"], s["false_gaps"], s["false_gap_rate"]) == (2, 1, 0.5)
+    assert score_gaps([], truth)["recall"] == 0.0 and score_gaps([], [])["recall"] is None
+
+
+def test_e2e_understanding_from_guide_channels_and_truth(tmp_path):
+    try:
+        from ckit.core import load
+
+        ck = load()
+    except ImportError as e:
+        pytest.skip(f"_ckcore not built: {e}")
+    b = _fake_bundle(tmp_path)
+    w = ck.bundle.StreamWriter()
+    assert w.open(str(b / "streams.mcap"))
+    w.write_labels(10, [(1, 1, 0.0, 0.4, 0.0, 1.0, 0.8, 1.0, 0.0, 0.7, 3)], [])
+    w.write_shell(
+        10, [("W1", 0.0, 0.0, 4.0, 0.0, False)], [0.0, 0.0, 4.0, 0.0], False, True, 2.5, True
+    )
+    w.write_gaps(10, [(0, 4.0, 0.0, 4.0, 3.0, 0.8, "window wall")])
+    w.close()
+    (tmp_path / "scan_a.truth.json").write_text(
+        json.dumps({"missing_areas": [{"x0": 4, "z0": 1, "x1": 4, "z1": 2}]})
+    )
+    rep = e2e(b, sfm=False, guide=False)
+    u = rep["understanding"]
+    assert u["present"] and u["objects"] == 1 and u["walls"] == 1 and u["gaps"] == 1
+    assert u["gaps_by_type"] == {"missing_wall": 1}
+    assert rep["missing_area_recall"] == 1.0 and u["gap_score"]["false_gap_rate"] == 0.0
+    assert "understanding" in to_html(rep)

@@ -111,6 +111,7 @@
             "ROTATE_TOWARD": 1,
             "SLOW_DOWN": 1
           },
+          "info_prompts": 0,
           "instructions": 2,
           "median_time_to_compliance_s": 2.1,
           "plans": 8,
@@ -143,7 +144,7 @@
         },
         {
           "t_s": 3.033,
-          "text": "Turn around toward the unscanned area.",
+          "text": "Face around to scan more.",
           "type": "ROTATE_TOWARD"
         }
       ]

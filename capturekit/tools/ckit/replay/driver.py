@@ -27,6 +27,7 @@ RANK = {
     "event": 5,
     "points": 6,
     "planes": 7,
+    "detections": 8,
 }
 NOT_AVAILABLE, REASON_OTHER = 3, 8
 THERMAL_STATES = ("nominal", "fair", "serious", "critical")
@@ -129,6 +130,8 @@ def load_events(bundle: Path) -> tuple[list[tuple], dict]:
         ev.append((p[0], RANK["points"], i, "points", p))
     for i, p in enumerate(s["planes"]):
         ev.append((p["t_ns"], RANK["planes"], i, "planes", p))
+    for i, d in enumerate(s.get("detections", [])):
+        ev.append((d["t_ns"], RANK["detections"], i, "detections", d))
     meta = {"finalized": s["finalized"], "undecodable": s["undecodable"]}
     return ev, meta
 
@@ -214,6 +217,8 @@ def dispatch(sink, kind: str, p, luma) -> None:
         sink.on_event(p[0], p[1], p[2], p[3], list(p[4]))
     elif kind == "points":
         sink.on_points(p[0], list(p[1]))
+    elif kind == "detections":
+        sink.on_detections(p["t_ns"], p["frame_id"], [tuple(b) for b in p["boxes"]])
     elif kind == "planes":
         sink.on_plane(
             p["t_ns"],

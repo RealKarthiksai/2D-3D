@@ -104,14 +104,14 @@
         },
         "log": {
           "by_state": {
-            "ACTIVE": 1,
             "COMPLETED": 1
           },
           "by_type": {
             "HOLD_STILL": 1,
-            "SWEEP": 1
+            "PROGRESS": 1
           },
-          "instructions": 2,
+          "info_prompts": 1,
+          "instructions": 1,
           "median_time_to_compliance_s": 0.533,
           "plans": 8,
           "plans_with_target": 1,
@@ -143,8 +143,8 @@
         },
         {
           "t_s": 3,
-          "text": "Turn slowly left to scan the room.",
-          "type": "SWEEP"
+          "text": "Quarter done. Keep going.",
+          "type": "PROGRESS"
         }
       ]
     },

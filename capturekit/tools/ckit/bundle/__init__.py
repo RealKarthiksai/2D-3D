@@ -7,6 +7,7 @@ from ckit.core import CAPTUREKIT_ROOT
 SPEC_DIR = CAPTUREKIT_ROOT / "spec" / "scanbundle"
 DESC_PATH = SPEC_DIR / "messages" / "capturekit.desc"
 SUPPORTED_MAJOR = 1
-SUPPORTED_MINOR = 0
+# 1.1.0: /ar/detections (ADR 0016); 1.2.0: consent + privacy (ADR 0020); 1.3.0: /guide/* (ADR 0028)
+SUPPORTED_MINOR = 3
 
 __all__ = ["SPEC_DIR", "DESC_PATH", "SUPPORTED_MAJOR", "SUPPORTED_MINOR", "Path"]

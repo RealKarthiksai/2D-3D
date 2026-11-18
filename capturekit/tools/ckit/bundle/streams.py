@@ -22,6 +22,10 @@ TOPICS = {
     "/events": "capturekit.v1.Event",
     "/ar/points": "capturekit.v1.PointCloud",
     "/ar/planes": "capturekit.v1.PlaneAnchor",
+    "/ar/detections": "capturekit.v1.Detections",
+    "/guide/labels": "capturekit.v1.RoomLabels",
+    "/guide/shell": "capturekit.v1.RoomShell",
+    "/guide/gaps": "capturekit.v1.RoomGaps",
 }
 REQUIRED_TOPICS = ["/pose", "/imu/gyro", "/imu/accel", "/intrinsics", "/frame_index", "/events"]
 

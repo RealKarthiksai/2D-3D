@@ -69,7 +69,8 @@ def test_critical_thermal_pauses_session_and_bundle_stays_valid(source, tmp_path
     s = read_streams(out / "streams.mcap")
     codes = [e.code for e in s.get("/events")]
     assert "GOVERNOR_LEVEL" in codes and codes.count("SESSION_PAUSED") >= 1
-    assert validate(out, "quality").verdict != "FAIL"
+    # paused before the first keyframe: structurally valid, but 0 keyframes is ERROR NO_KEYFRAMES
+    assert validate(out, "quality").codes("ERROR") <= {"NO_KEYFRAMES"}
 
 
 def test_invalid_config_and_double_create(source, tmp_path):
@@ -103,7 +104,8 @@ def test_forced_kill_then_recover_gives_valid_partial_bundle(source, tmp_path, k
     assert rep["ok"] and rep["poses"] > 0
     assert rep["poses"] >= 0.3 * kill_after / 12  # at most about 1 s of data lost
     v = validate(out, "quality")
-    assert v.verdict != "FAIL", v.summary()
+    # killed before any keyframe landed: structurally valid, 0 keyframes is the only ERROR allowed
+    assert v.codes("ERROR") <= {"NO_KEYFRAMES"}, v.summary()
     assert "PARTIAL_BUNDLE" in v.codes()
     assert not (out / "session.json").exists()
     kfs = {f.file for f in read_streams(out / "streams.mcap").get("/frame_index") if f.keyframe}
@@ -111,3 +113,41 @@ def test_forced_kill_then_recover_gives_valid_partial_bundle(source, tmp_path, k
     assert kfs == on_disk  # no dangling references, no orphan files
     st2, rep2 = capi.recover(out)
     assert st2 == 0 and rep2["already_complete"]
+
+
+def test_ingest_detections_via_capi_reaches_bundle(tmp_path):
+    import ctypes as C
+
+    L = capi.lib()
+    out = tmp_path / "det"
+    err = C.c_int(0)
+    s = L.ck_session_create(str(out).encode(), b'{"threaded":0}', C.byref(err))
+    assert s
+    boxes = (capi.Detection * 2)(
+        capi.Detection(3, 0.75, 10, 20, 110, 220), capi.Detection(1, 0.5, 0, 0, 50, 60)
+    )
+    assert L.ck_ingest_detections(s, 1, 0, boxes, 2) == capi.ERR_STATE
+    assert L.ck_session_start(s, 0) == capi.OK
+    assert L.ck_session_pump(s) == capi.OK
+    assert L.ck_ingest_detections(s, 100, 7, boxes, 2) == capi.OK
+    assert L.ck_ingest_detections(s, 200, 8, None, 0) == capi.OK
+    assert L.ck_ingest_detections(s, 300, 9, None, 2) == capi.ERR_ARG
+    assert L.ck_session_pump(s) == capi.OK
+    L.ck_session_finalize(s)
+    L.ck_session_destroy(s)
+    dets = read_streams(out / "streams.mcap").get("/ar/detections")
+    assert len(dets) == 2
+    assert dets[0].frame_id == 7 and len(dets[0].boxes) == 2 and dets[0].boxes[0].cls == 3
+    assert len(dets[1].boxes) == 0
+
+
+def test_understanding_on_bundle_validates_with_placeholder_consent(source, tmp_path):
+    """ADR 0028: 1.3.0 bundles need consent; simulate() stamps placeholders for synthetic runs."""
+    out = tmp_path / "und"
+    r = simulate(source, out, {"guide.understanding": 1})
+    assert r["state"] == "COMPLETE"
+    m = json.loads((out / "manifest.json").read_text())
+    assert m["schema_version"] == "1.3.0" and m["counts"]["guide_shell"] > 0, m["counts"]
+    assert m["consent"]["version"] == "synthetic" and m["privacy"]["redaction_mode"] == "none"
+    rep = validate(out, "quality")
+    assert rep.codes("ERROR") == set(), rep.summary()

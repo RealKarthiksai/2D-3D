@@ -290,6 +290,19 @@ def verdict_docs_cmd(out: Path | None = None) -> None:
         typer.echo(text, nl=False)
 
 
+@app.command("verdict-export")
+def verdict_export_cmd(out: Path | None = None) -> None:
+    """Write the verdict table as JSON (sample-app assets/verdict_messages.json)."""
+    from ckit.verdict import to_json
+
+    text = to_json()
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text, encoding="utf-8", newline="\n")
+    else:
+        typer.echo(text, nl=False)
+
+
 @app.command("upload")
 def upload_cmd(
     bundle: Path,
@@ -323,7 +336,9 @@ def guide_eval_cmd(
     bundles: Annotated[
         list[Path] | None, typer.Argument(help="Replay these bundles instead.")
     ] = None,
-    rooms: Annotated[str, typer.Option(help="comma list: box,L,furniture")] = "box,L,furniture",
+    rooms: Annotated[
+        str, typer.Option(help="comma list: box,L,furniture,furnished4,furnishedL")
+    ] = "box,L,furniture",
     policies: Annotated[
         str, typer.Option(help="comma list: planner,scripted,wander")
     ] = "planner,scripted,wander",
@@ -374,13 +389,17 @@ def e2e_cmd(
     out: Annotated[
         Path | None, typer.Option(help="Output dir for <bundle>.e2e.json/.html (default: beside).")
     ] = None,
+    truth: Annotated[
+        Path | None,
+        typer.Option(help="Labelled missing areas (default: <bundle>.truth.json beside it)."),
+    ] = None,
     no_sfm: Annotated[bool, typer.Option("--no-sfm", help="Skip pycolmap.")] = False,
     no_guide: Annotated[bool, typer.Option("--no-guide", help="Skip guidance replay.")] = False,
 ) -> None:
     """End-to-end scan report: verdict, guidance, pycolmap registration/reprojection, research."""
     from ckit.e2e import e2e, write
 
-    rep = e2e(bundle, research, sfm=not no_sfm, guide=not no_guide)
+    rep = e2e(bundle, research, sfm=not no_sfm, guide=not no_guide, truth=truth)
     j, h = write(rep, out or bundle.parent)
     v, s, g = rep["verdict"], rep["sfm"], rep["guidance"]
     typer.echo(

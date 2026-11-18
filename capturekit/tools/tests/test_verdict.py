@@ -5,13 +5,14 @@ import re
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
 from ckit.bundle.import_raw import import_raw
 from ckit.bundle.validate import validate
 from ckit.cli import app
 from ckit.core import CAPTUREKIT_ROOT
 from ckit.simulate import simulate
-from ckit.verdict import MESSAGES, for_report, to_markdown
+from ckit.verdict import MESSAGES, for_report, to_json, to_markdown
 
 RAW = Path(__file__).parent / "fixtures" / "raw_small"
 SPEC = (CAPTUREKIT_ROOT / "spec" / "scanbundle" / "SPEC.md").read_text()
@@ -22,6 +23,8 @@ def test_every_spec_and_validator_code_has_a_message():
     spec_codes = set(re.findall(r"^\| ([A-Z][A-Z0-9_]+) \| (?:ERROR|WARN|INFO) \|", SPEC, re.M))
     src_codes = set(re.findall(r'"([A-Z][A-Z0-9_]{5,})"', VALIDATOR_SRC)) - {
         "ERROR", "WARN", "INFO", "PASS", "FAIL",
+        # /events codes read by the pause-aware POSE_GAP check, not validation issue codes
+        "SESSION_PAUSED", "SESSION_RESUMED", "SESSION_STOPPED", "SESSION_RECOVERED",
     }  # fmt: skip
     assert len(spec_codes) >= 24
     assert (spec_codes | src_codes) <= set(MESSAGES), (spec_codes | src_codes) - set(MESSAGES)
@@ -43,6 +46,22 @@ def test_severity_policy():
 def test_docs_are_generated_from_table():
     doc = (CAPTUREKIT_ROOT / "docs" / "verdict-messages.md").read_text()
     assert doc == to_markdown(), "run: ckit verdict-docs --out capturekit/docs/verdict-messages.md"
+
+
+def test_android_asset_is_generated_from_table():
+    asset = CAPTUREKIT_ROOT / "android/sample-app/src/main/assets/verdict_messages.json"
+    assert asset.read_bytes().decode("utf-8") == to_json(), (
+        "run: ckit verdict-export --out ../android/sample-app/src/main/assets/verdict_messages.json"
+    )
+    d = json.loads(to_json())
+    assert set(d["codes"]) == set(MESSAGES) and set(d["headlines"]) == {"FAIL", "WARN", "PASS"}
+
+
+def test_verdict_export_cli(tmp_path):
+    out = tmp_path / "v.json"
+    r = CliRunner().invoke(app, ["verdict-export", "--out", str(out)])
+    assert r.exit_code == 0, r.output
+    assert out.read_bytes().decode("utf-8") == to_json()
 
 
 def test_for_report_orders_and_decides():
@@ -110,7 +129,6 @@ def test_recovered_bundle_carries_partial_warning_and_matches_python(source, tmp
 
 
 def test_verdict_cli(source, tmp_path):
-    from typer.testing import CliRunner
 
     from ckit.cli import app
 

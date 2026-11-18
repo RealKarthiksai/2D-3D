@@ -112,6 +112,7 @@
             "ROTATE_TOWARD": 1,
             "SLOW_DOWN": 1
           },
+          "info_prompts": 0,
           "instructions": 3,
           "median_time_to_compliance_s": 1.4,
           "plans": 8,
@@ -144,12 +145,12 @@
         },
         {
           "t_s": 1.533,
-          "text": "Slow down.",
+          "text": "Easy, move slower.",
           "type": "SLOW_DOWN"
         },
         {
           "t_s": 2.933,
-          "text": "Turn right toward the unscanned area.",
+          "text": "Turn right to the unscanned part.",
           "type": "ROTATE_TOWARD"
         }
       ]

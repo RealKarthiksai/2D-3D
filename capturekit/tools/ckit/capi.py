@@ -75,6 +75,17 @@ class Plane(C.Structure):
     ]
 
 
+class Detection(C.Structure):
+    _fields_ = [
+        ("cls", C.c_int32),
+        ("score", C.c_float),
+        ("x0", C.c_float),
+        ("y0", C.c_float),
+        ("x1", C.c_float),
+        ("y1", C.c_float),
+    ]
+
+
 class Policy(C.Structure):
     _fields_ = [
         ("level", C.c_int32),
@@ -123,12 +134,23 @@ def _load() -> C.CDLL:
         getattr(lib, f"ck_ingest_{n}").argtypes = [S, C.POINTER(t)]
     lib.ck_ingest_points.argtypes = [S, C.c_int64, C.POINTER(C.c_float), C.c_size_t]
     lib.ck_ingest_platform.argtypes = [S, C.c_int64, C.POINTER(Platform)]
+    lib.ck_ingest_detections.argtypes = [S, C.c_int64, C.c_uint32, C.POINTER(Detection), C.c_size_t]
     lib.ck_keyframe_written.argtypes = [S, C.c_uint32, C.c_int32]
     lib.ck_poll_events.argtypes = [S, C.c_char_p, C.c_size_t]
     lib.ck_poll_events.restype = C.c_size_t
     lib.ck_policy_get.argtypes = [S, C.POINTER(Policy)]
     lib.ck_recover.argtypes = [C.c_char_p, C.c_char_p, C.c_size_t]
-    for n in ("pose", "gyro", "accel", "intrinsics", "frame", "points", "plane", "platform"):
+    for n in (
+        "pose",
+        "gyro",
+        "accel",
+        "intrinsics",
+        "frame",
+        "points",
+        "plane",
+        "platform",
+        "detections",
+    ):
         getattr(lib, f"ck_ingest_{n}").restype = C.c_int
     lib.ck_keyframe_written.restype = C.c_int
     lib.ck_policy_get.restype = C.c_int
