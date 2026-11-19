@@ -9,6 +9,7 @@ package dev.capturekit.capture
  *  - `detector`: 2D detector, camera boxes chip, object labels, review "Found" counts (supersedes ADR 0030 "on")
  *  - `voice_commands`: push-to-talk mic chip, VoiceController, StateAnswers
  *  - `recalibrate_card`: the issue #1 recalibration card (the core keyframe pause always stays)
+ *  - `segmentation`: issue #8 camera mask overlay + Masks chip (also needs the packaged SAM 2.1 model files)
  *  - `understanding 0|1|2`: core `guide.understanding` override (unchanged from U11-A)
  * The core still records every instruction in /events; only display, speech and haptics are gated.
  */
@@ -18,6 +19,7 @@ object FeatureFlags {
     const val PROP_GUIDANCE = "debug.capturekit.guidance"
     const val PROP_VOICE_COMMANDS = "debug.capturekit.voice_commands"
     const val PROP_RECALIBRATE_CARD = "debug.capturekit.recalibrate_card"
+    const val PROP_SEGMENTATION = "debug.capturekit.segmentation"
 
     /** Understanding level when the detector runs and no property overrides it: objects only, no gap steering. */
     const val DEFAULT_UNDERSTANDING_WITH_DETECTOR = 1
@@ -35,6 +37,7 @@ object FeatureFlags {
         val guidance: Boolean = false,
         val voiceCommands: Boolean = false,
         val recalibrateCard: Boolean = false,
+        val segmentation: Boolean = false,
     ) {
         companion object { val DEFAULTS = Flags() }
     }
@@ -55,6 +58,7 @@ object FeatureFlags {
             guidance = switchOn(get(PROP_GUIDANCE), d.guidance),
             voiceCommands = switchOn(get(PROP_VOICE_COMMANDS), d.voiceCommands),
             recalibrateCard = switchOn(get(PROP_RECALIBRATE_CARD), d.recalibrateCard),
+            segmentation = switchOn(get(PROP_SEGMENTATION), d.segmentation),
         )
     }
 

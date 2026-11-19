@@ -24,6 +24,8 @@ import dev.capturekit.platform.PlatformSignals
 import dev.capturekit.platform.ThermalAdapter
 import dev.capturekit.capture.FeatureFlags
 import dev.capturekit.sample.research.ResearchLog
+import dev.capturekit.segment.SegmentationFeed
+import dev.capturekit.segment.SegmentationScheduler
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -33,8 +35,9 @@ import java.util.Locale
  * Guided scan screen: a real core session (quality, keyframe selection, governor, guidance) over the live
  * camera image with a friendly HUD. Features not yet verified on a device are switched off by [FeatureFlags]
  * (ADR 0032; debug builds can switch them on): with `detector` on, the 2D detector's boxes are drawn over the camera feed
- * ([DetectionOverlayView], "Boxes" chip) and the core lifts them to the labelled objects of the mini-map and the review
- * screen. Core instructions (only safety/tracking ones unless `guidance` is on) are shown (speak_text as coaching,
+ * ([DetectionOverlayView], "Boxes" chip) and the core lifts them to the labelled objects of the review screen; with
+ * `segmentation` on (and the model packaged) translucent object / surface masks replace the boxes ([MaskOverlayView],
+ * "Masks" chip; issue #8, never saved). Core instructions (only safety/tracking ones unless `guidance` is on) are shown (speak_text as coaching,
  * long_text as subtitle), spoken verbatim by [SpeechRenderer] and mapped to haptics. Finish hands over to [ReviewActivity].
  * Bundles land in getExternalFilesDir("bundles"); interrupted sessions are recovered on the next launch.
  * Pull with: adb pull /sdcard/Android/data/dev.capturekit.sample/files/bundles
@@ -43,6 +46,10 @@ class CaptureActivity : Activity(), SessionManager.Listener {
     private lateinit var ar: ArHost
     private lateinit var hud: Hud
     private lateinit var boxView: DetectionOverlayView
+    private lateinit var maskView: MaskOverlayView
+    /** Issue #8 segmentation for this scan; null when the flag is off, the model is missing, or not scanning. */
+    private var segmentation: SegmentationScheduler? = null
+    @Volatile private var segFeed: SegmentationFeed? = null   // read on the GL and core event threads
     private lateinit var speech: SpeechRenderer
     /** Null when voice commands are switched off (ADR 0032): no recognizer, no mic permission request. */
     private var voice: VoiceController? = null
@@ -119,12 +126,17 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         speech = SpeechRenderer(this)
         boxView = DetectionOverlayView(this)   // before ArHost: its frame callback maps the boxes
+        maskView = MaskOverlayView(this)       // same: its frame callback warps the masks
         ar = ArHost(this) { frame ->
             if (!arActive) return@ArHost   // no Frame use once onPause started tearing the Session down
             adapter?.onFrame(frame)
             trackState = frame.camera.trackingState.name
             trackFailure = frame.camera.trackingFailureReason.name
             boxView.onArFrame(frame)   // cheap no-op unless a new keyframe's boxes arrived
+            // Segmentation (issue #8): one rate check per frame; a due frame is copied and handed to the worker.
+            val p = lastPolicy
+            if (recording && !corePaused && !finishing && p?.mustPause != true) segFeed?.onArFrame(frame, ar.session, p?.mlRateScale ?: 1.0)
+            maskView.onArFrame(frame)  // cheap no-op without masks
         }
         ar.onError = { msg -> arMessage = msg; refresh() }
         hud = Hud(this, features)
@@ -134,6 +146,8 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         hud.onVoiceToggle = { speech.enabled = !speech.enabled; hud.setVoice(speech.enabled) }
         if (features.detector) hud.onBoxesToggle = { boxView.showBoxes = !boxView.showBoxes; hud.setBoxes(boxView.showBoxes) }
         else boxView.visibility = android.view.View.GONE
+        if (features.segmentation) hud.onMasksToggle = { maskView.showMasks = !maskView.showMasks; hud.setMasks(maskView.showMasks) }
+        else maskView.visibility = android.view.View.GONE
         research = ResearchLog(this)
         if (features.voiceCommands) {
             val v = VoiceController(this, speech, voiceHost)
@@ -146,6 +160,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         hud.setCoaching("Press Start, then move slowly around the room")
         setContentView(FrameLayout(this).apply {
             addView(ar.view, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            addView(maskView, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)   // same frame as ar.view
             addView(boxView, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)   // same frame as ar.view
             addView(hud.root, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         })
@@ -202,6 +217,17 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         if (detectorWillRun && !s.detectorActive) Log.w(TAG, "detector model packaged but the detector did not start")
         boxView.clear()
         hud.setBoxes(if (s.detectorActive && !research.unguided) boxView.showBoxes else null)
+        // Issue #8: off by default and off when the model files are missing (create returns null); not in the unguided arm.
+        // Objects need the detector (core overlay objects); without it the masks show floor / walls / ceiling only.
+        var seg: SegmentationScheduler? = null
+        seg = if (research.unguided) null else SegmentationScheduler.create(this, features.segmentation,
+            sink = { r -> if (recording && !corePaused && !finishing) maskView.setResult(r) },
+            // The worker turned itself off (model would not load / kept failing): drop the masks chip, bring the boxes back.
+            onDisabled = { runOnUiThread { if (segmentation != null && segmentation === seg) segmentationFailed() } })
+        segmentation = seg
+        segFeed = seg?.let { SegmentationFeed(it) }
+        maskView.clear()
+        hud.setMasks(if (seg != null) maskView.showMasks else null)   // replaces the boxes chip while shown
         ar.recording = true
         adapter = ARAdapter(s, 0L) { ar.session }
         sensors = SensorBridge(this, s).also { it.start() }
@@ -229,7 +255,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         if (!corePaused) {
             if (s.pause() == Status.OK) {
                 speech.stopNow()
-                boxView.clear()
+                boxView.clear(); maskView.clear()
                 hud.setCoaching("Paused. Press Resume when you are ready")
                 hud.haptic(false)
             }
@@ -282,6 +308,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         hud.button.isEnabled = false
         hud.pauseButton.isEnabled = false
         boxView.clear(); hud.setBoxes(null)
+        closeSegmentation()
         synchronized(recalLock) { recal = Recalibration() }
         hud.setRecalibrate(null)
         val elapsed = elapsedMs()
@@ -324,6 +351,21 @@ class CaptureActivity : Activity(), SessionManager.Listener {
                 finish()
             }
         }.start()
+    }
+
+    /** Stops feeding frames, releases the model on its worker and hides the masks + chip. Main thread; idempotent. */
+    private fun closeSegmentation() {
+        segFeed = null
+        segmentation?.close(); segmentation = null
+        maskView.clear(); hud.setMasks(null)
+    }
+
+    /** Main thread: segmentation disabled itself mid-scan. Masks + chip go; boxes return (onDetections feeds them again once segFeed is null). */
+    private fun segmentationFailed() {
+        Log.w(TAG, "segmentation disabled itself: masks off, detector boxes back")
+        closeSegmentation()
+        val s = session
+        if (recording && !finishing) hud.setBoxes(if (s != null && s.detectorActive && !research.unguided) boxView.showBoxes else null)
     }
 
     private fun elapsedMs(): Long {
@@ -419,16 +461,16 @@ class CaptureActivity : Activity(), SessionManager.Listener {
                     }
                 }
             }
-            is CoreEvent.Overlay -> overlay = e
+            is CoreEvent.Overlay -> { overlay = e; segFeed?.overlay = e }
             is CoreEvent.Governor -> lastGovernor = "${e.from}->${e.to} (${e.reason})"
             else -> {}
         }
     }
     override fun onPolicy(p: Policy) { lastPolicy = p; research.onThermal(p.level, SystemClock.elapsedRealtime()) }
 
-    // Detector thread: one keyframe's boxes (already sent to the core) for the camera-feed overlay.
+    // Detector thread: one keyframe's boxes (already sent to the core) for the camera-feed overlay (masks replace them, issue #8).
     override fun onDetections(frameId: Int, tNs: Long, boxes: List<DetectedBox>) {
-        if (recording && !corePaused && !finishing && !research.unguided) boxView.setDetections(boxes)
+        if (recording && !corePaused && !finishing && !research.unguided && segFeed == null) boxView.setDetections(boxes)
     }
 
     override fun onState(state: Int) {
@@ -495,6 +537,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
                 Log.w(TAG, "mid-scan finish of ${s.dir.name}: status ${UiKit.statusName(st)}")
             }.start()
         }
+        segFeed = null; segmentation?.close(); segmentation = null
         hud.release()
         voice?.release()
         speech.release()

@@ -18,7 +18,8 @@ Rule: ON only if it PASSed on the phone ([DEVICE_TEST_LOG.md](DEVICE_TEST_LOG.md
 | HUD pill, REC timer, reticle, debug line | ON | H9 row | — |
 | Safety/tracking prompts (slow down, hold still, relocalize, more light, aim at texture, recalibrate), text + TTS | ON | H8 dark-room row ("More light") | — |
 | Navigation, Progress and Finish prompts + their haptics | OFF `guidance` | walked scan FAIL (H9/H22) | H9, H22 |
-| Live room card (mini-map, arrow, checklist, %) | OFF `guidance` (removed for good by issue #8) | walked scan FAIL | H9, H11 |
+| Live room card (checklist, %) | OFF `guidance`; mini-map removed from the capture screen by issue #8a (Review keeps it) | walked scan FAIL | H9, H11 |
+| Segmentation mask overlay + Masks chip (issue #8) | OFF `segmentation`; also off without the model files (`fetch_models.sh --with-segmentation`) | never device-tested (8b) | H37, H38 |
 | Weak-wall review sheet; Review room drawing + walls | OFF `guidance` (empty-scan notice stays, B5) | walked scan FAIL (8 walls for 4) | H10, H9 |
 | Detector, camera boxes chip, object labels, review "Found" | OFF `detector` | never device-tested | H18, H19, H33 |
 | Voice commands (mic chip, VoiceController, StateAnswers) | OFF `voice_commands` (no mic permission asked) | never device-tested | H12, H31 |

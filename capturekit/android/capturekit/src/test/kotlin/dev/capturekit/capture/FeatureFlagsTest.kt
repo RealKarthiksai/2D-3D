@@ -37,7 +37,7 @@ class FeatureFlagsTest {
 
     @Test fun defaultsAreAllOffWithoutAnyProperty() {
         val d = FeatureFlags.Flags.DEFAULTS
-        assertFalse(d.guidance); assertFalse(d.detector); assertFalse(d.voiceCommands); assertFalse(d.recalibrateCard)
+        assertFalse(d.guidance); assertFalse(d.detector); assertFalse(d.voiceCommands); assertFalse(d.recalibrateCard); assertFalse(d.segmentation)
         assertNull(d.understanding)
         // Release build (no props read) and a debuggable build with every property unset / junk give the defaults.
         assertEquals(d, FeatureFlags.fromProps { null })
@@ -52,10 +52,11 @@ class FeatureFlagsTest {
         assertEquals(FeatureFlags.Flags.DEFAULTS.copy(voiceCommands = true), only(FeatureFlags.PROP_VOICE_COMMANDS))
         assertEquals(FeatureFlags.Flags.DEFAULTS.copy(recalibrateCard = true), only(FeatureFlags.PROP_RECALIBRATE_CARD))
         assertEquals(FeatureFlags.Flags.DEFAULTS.copy(understanding = 1), only(FeatureFlags.PROP_UNDERSTANDING))
+        assertEquals(FeatureFlags.Flags.DEFAULTS.copy(segmentation = true), only(FeatureFlags.PROP_SEGMENTATION))
         val all = FeatureFlags.fromProps { if (it == FeatureFlags.PROP_UNDERSTANDING) "2" else "1" }
-        assertEquals(FeatureFlags.Flags(understanding = 2, detector = true, guidance = true, voiceCommands = true, recalibrateCard = true), all)
+        assertEquals(FeatureFlags.Flags(understanding = 2, detector = true, guidance = true, voiceCommands = true, recalibrateCard = true, segmentation = true), all)
         val names = listOf(FeatureFlags.PROP_GUIDANCE, FeatureFlags.PROP_DETECTOR, FeatureFlags.PROP_VOICE_COMMANDS,
-            FeatureFlags.PROP_RECALIBRATE_CARD, FeatureFlags.PROP_UNDERSTANDING)
+            FeatureFlags.PROP_RECALIBRATE_CARD, FeatureFlags.PROP_UNDERSTANDING, FeatureFlags.PROP_SEGMENTATION)
         assertEquals(names.size, names.toSet().size)
         for (n in names) assertTrue(n, n.startsWith("debug.capturekit."))
     }
