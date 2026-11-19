@@ -14,7 +14,7 @@ object StatusPill {
     /** Every reason code the core quality module emits (core/quality/quality.cpp reason_code). */
     val REASON_CODES = listOf(
         "TRACKING_LOST", "TRACKING_LIMITED", "MOTION_BLUR", "BLUR", "SOFT_FOCUS", "OVEREXPOSED", "UNDEREXPOSED",
-        "LOW_TEXTURE", "POOR_SPREAD", "NO_IMAGE", "NOT_NOVEL", "MIN_GAP", "NOT_BEST", "RECALIBRATING",
+        "LOW_TEXTURE", "POOR_SPREAD", "NO_IMAGE", "NOT_NOVEL", "MIN_GAP", "NOT_BEST", "RECALIBRATING", "DUPLICATE",
     )
 
     val LOST = Pill("Tracking lost", Tone.BAD)
@@ -37,7 +37,7 @@ object StatusPill {
 
     /**
      * Plain phrase for one core quality reason code; null = the reason never affects the pill. Unknown codes fall
-     * back to "Keep going". Deviation from the brief's "others Keep going": NOT_NOVEL, MIN_GAP and NOT_BEST are
+     * back to "Keep going". Deviation from the brief's "others Keep going": NOT_NOVEL, MIN_GAP, NOT_BEST and DUPLICATE are
      * keyframe-selection reasons (normal while scanning), not image problems, so they are ignored.
      */
     fun forReason(code: String): Pill? = when (code) {
@@ -46,7 +46,7 @@ object StatusPill {
         "MOTION_BLUR" -> TOO_FAST
         "SOFT_FOCUS", "BLUR" -> HOLD
         "UNDEREXPOSED" -> LIGHT
-        "NOT_NOVEL", "MIN_GAP", "NOT_BEST" -> null
+        "NOT_NOVEL", "MIN_GAP", "NOT_BEST", "DUPLICATE" -> null
         else -> KEEP_GOING
     }
 

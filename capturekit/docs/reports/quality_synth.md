@@ -13,7 +13,7 @@ frames picked at a fixed interval (the rejected alternative).
 | G5 low light | 218 | 19 | 1.3 | 173 motion blur | 0.00 | 0.00 |
 | G6 blank walls | 218 | 61 | 4.3 | 33 motion blur | 0.13 | 0.11 |
 | G7 fast motion | 89 | 13 | 1.1 | 71 motion blur, 4 blur | 0.23 | 0.00 |
-| G8 tracking loss | 200 | 50 | 4.0 | 53 motion, 30 lost, 30 dark | 0.98 | 0.84 |
+| G8 tracking loss | 200 | 50 | 4.0 | 53 motion, 30 lost, 30 dark | 1.00 | 0.84 |
 
 ## Reading it
 - Selection wins where the faults are real in the images or poses (G7 blur, G8 tracking loss), ties on G1/G3/G5.

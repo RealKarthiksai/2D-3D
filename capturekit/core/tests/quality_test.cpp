@@ -274,6 +274,170 @@ TEST(KeyframeSelector, MinGapAndBestInWindow) {
   }
 }
 
+// ---- Keyframe selector: novelty against all saved keyframes (issue #9, ADR 0033) ----
+namespace {
+std::vector<uint32_t> keyframe_ids(const std::vector<KeyframeSelector::Decision>& d) {
+  std::vector<uint32_t> kf;
+  for (auto& x : d) if (x.keyframe) kf.push_back(x.frame_id);
+  return kf;
+}
+}  // namespace
+
+TEST(KeyframeSelector, RevisitAtoBtoAGivesNoSecondKeyframe) {
+  KeyframeSelector ks(QualityConfig{});  // depth 2 m, ratio 0.1 -> 0.2 m
+  std::vector<KeyframeSelector::Decision> d;
+  constexpr int kLeg = 120;  // 30 fps, 0.5 m/s: A (x = 0) -> B (x = 2) -> A, same viewing direction
+  uint32_t id = 0;
+  for (int i = 0; i <= kLeg; ++i, ++id) ks.push(id, int64_t(id) * 33 * kMs, good_metrics(), at(2.0 * i / kLeg), d);
+  const uint32_t first_return = id;
+  for (int i = 1; i <= kLeg; ++i, ++id) ks.push(id, int64_t(id) * 33 * kMs, good_metrics(), at(2.0 - 2.0 * i / kLeg), d);
+  ks.flush(d);
+  auto kf = keyframe_ids(d);
+  ASSERT_GE(kf.size(), 8u);  // outbound leg is covered
+  for (auto k : kf) EXPECT_LT(k, first_return) << "revisit frame " << k << " became a second keyframe";
+  int dup = 0;
+  for (auto& x : d)
+    if (x.frame_id >= first_return) {
+      // NOT_BEST: the first return frames can fall inside the last outbound candidate window and lose it.
+      EXPECT_TRUE(x.reasons & (kDuplicate | kNotNovel | kMinGap | kNotBest)) << x.frame_id;
+      dup += (x.reasons & kDuplicate) != 0;
+    }
+  EXPECT_GT(dup, kLeg / 2);  // most of the way back is a revisit of older keyframes, not the last one
+  EXPECT_EQ(d.size(), size_t(id));
+}
+
+TEST(KeyframeSelector, Slow360TurnKeepsOnePerRotDegAndSecondLapNone) {
+  QualityConfig cfg;  // rot_deg 10
+  KeyframeSelector ks(cfg);
+  std::vector<KeyframeSelector::Decision> d;
+  constexpr double kStep = 0.7;  // deg per frame at 30 fps = 21 deg/s, turning in place
+  const int lap = int(std::ceil(360.0 / kStep));
+  for (int i = 0; i < 2 * lap; ++i) ks.push(uint32_t(i), int64_t(i) * 33 * kMs, good_metrics(), at(0, kStep * i), d);
+  ks.flush(d);
+  auto kf = keyframe_ids(d);
+  const auto lo = size_t(std::floor(360.0 / (cfg.rot_deg + kStep)));
+  const auto hi = size_t(std::ceil(360.0 / cfg.rot_deg));
+  EXPECT_GE(kf.size(), lo);
+  EXPECT_LE(kf.size(), hi);
+  for (auto k : kf) EXPECT_LT(k, uint32_t(lap)) << "second lap frame " << k << " became a keyframe";
+  for (size_t i = 1; i < kf.size(); ++i) {
+    const double sep = kStep * double(kf[i] - kf[i - 1]);
+    EXPECT_GE(sep, cfg.rot_deg - 1e-6);
+    EXPECT_LE(sep, cfg.rot_deg + kStep + 1e-6);  // one keyframe per rot_deg, no gaps
+  }
+  int dup = 0;
+  for (auto& x : d) dup += x.frame_id >= uint32_t(lap) && (x.reasons & kDuplicate);
+  EXPECT_GT(dup, lap / 2);
+}
+
+TEST(KeyframeSelector, BlurredFramesNeverWinTheWindow) {
+  KeyframeSelector ks(QualityConfig{});  // window 300 ms
+  std::vector<KeyframeSelector::Decision> d;
+  auto hard_blur = [] {  // a hard reject must lose even if its quality field were high
+    FrameMetrics m = rejected_metrics();
+    m.quality = 0.99;
+    return m;
+  };
+  FrameMetrics soft = good_metrics(0.4);
+  soft.reasons = kMotionBlur;  // soft blur penalty already folded into quality
+  ks.push(0, 0, good_metrics(0.6), at(0), d);         // opens window [0, 300]
+  ks.push(1, 100 * kMs, hard_blur(), at(0), d);       // blurred: never a candidate
+  ks.push(2, 200 * kMs, soft, at(0), d);              // soft blur: loses to the sharp frame
+  for (int i = 3; i < 8; ++i) ks.push(uint32_t(i), i * 400 * kMs, hard_blur(), at(0.5 * i), d);  // novel but blurred
+  ks.push(8, 3400 * kMs, good_metrics(0.5), at(4.0), d);  // first sharp novel frame
+  ks.flush(d);
+  EXPECT_EQ(keyframe_ids(d), std::vector<uint32_t>({0, 8}));
+  for (auto& x : d) {
+    if (x.frame_id == 1 || (x.frame_id >= 3 && x.frame_id < 8)) {
+      EXPECT_FALSE(x.keyframe);
+      EXPECT_TRUE(x.reasons & kMotionBlur);
+    }
+    if (x.frame_id == 2) EXPECT_TRUE(x.reasons & kNotBest);
+  }
+}
+
+TEST(KeyframeSelector, WindowFrameDuplicatingOlderKeyframeCannotWin) {
+  KeyframeSelector ks(QualityConfig{});
+  std::vector<KeyframeSelector::Decision> d;
+  ks.push(0, 0, good_metrics(), at(0), d);                    // keyframe A
+  ks.push(1, 1000 * kMs, good_metrics(), at(1.0), d);         // keyframe B
+  ks.push(2, 2000 * kMs, good_metrics(0.5), at(0.4), d);      // novel vs A and B: opens window
+  ks.push(3, 2100 * kMs, good_metrics(0.95), at(0.05), d);    // better, but a revisit of A
+  ks.push(4, 2200 * kMs, good_metrics(0.9), at(0.95), d);     // better, but a revisit of B (the last keyframe)
+  ks.flush(d);
+  EXPECT_EQ(keyframe_ids(d), std::vector<uint32_t>({0, 1, 2}));
+  for (auto& x : d) {
+    if (x.frame_id == 3) EXPECT_TRUE(x.reasons & kDuplicate);
+    if (x.frame_id == 4) EXPECT_TRUE(x.reasons & kNotNovel);
+  }
+}
+
+TEST(KeyframeSelector, PoseIndexMemoryBound) {
+  KeyframeSelector ks(QualityConfig{});
+  std::vector<KeyframeSelector::Decision> d;
+  const size_t n = KeyframeSelector::kPoseIndexCap + 500;
+  d.reserve(n + 8);
+  ks.push(0, 0, good_metrics(), at(0), d);  // first keyframe; the index storage exists from construction
+  long before = g_allocs.load();
+  for (size_t i = 1; i < n; ++i) ks.push(uint32_t(i), int64_t(i) * 1000 * kMs, good_metrics(), at(double(i)), d);
+  ks.flush(d);
+  long allocs = g_allocs.load() - before;
+  EXPECT_EQ(ks.keyframes(), n);
+  EXPECT_EQ(ks.indexed_keyframes(), KeyframeSelector::kPoseIndexCap);  // ring: newest cap poses kept
+#ifndef CK_NO_ALLOC_HOOK
+  EXPECT_EQ(allocs, 0);
+#endif
+  (void)allocs;
+  // A recent keyframe pose is still a duplicate; the oldest one was evicted and may be kept again.
+  int64_t t = int64_t(n + 1) * 1000 * kMs;
+  ks.push(uint32_t(n), t, good_metrics(), at(double(n - 10)), d);
+  ks.push(uint32_t(n + 1), t + 1000 * kMs, good_metrics(), at(0), d);
+  ks.flush(d);
+  bool recent_dup = false, oldest_kept = false;
+  for (auto& x : d) {
+    if (x.frame_id == uint32_t(n)) recent_dup = !x.keyframe && (x.reasons & kDuplicate);
+    if (x.frame_id == uint32_t(n + 1)) oldest_kept = x.keyframe;
+  }
+  EXPECT_TRUE(recent_dup);
+  EXPECT_TRUE(oldest_kept);
+  EXPECT_EQ(ks.indexed_keyframes(), KeyframeSelector::kPoseIndexCap);
+}
+
+TEST(KeyframeSelector, ReanchorClearsIndexOnlyAboveDedupThresholds) {
+  auto run = [](double drift_m, double drift_deg, bool& cleared) {
+    KeyframeSelector ks(QualityConfig{});  // 0.2 m at the 2 m default depth, 10 deg
+    std::vector<KeyframeSelector::Decision> d;
+    ks.push(0, 0, good_metrics(), at(0), d);              // keyframe A
+    ks.push(1, 1000 * kMs, good_metrics(), at(1.0), d);   // keyframe B
+    ks.push(2, 2000 * kMs, good_metrics(), at(2.0), d);   // keyframe C (closes B's window)
+    ks.push(3, 3000 * kMs, good_metrics(), at(3.0), d);   // keyframe D
+    cleared = ks.reanchor(drift_m, drift_deg);            // TRACKING_RESET with this drift
+    ks.push(4, 4000 * kMs, good_metrics(), at(0.0), d);   // view at A's old pose after the reset
+    ks.flush(d);
+    for (auto& x : d)
+      if (x.frame_id == 4) return x;
+    return KeyframeSelector::Decision{};
+  };
+  bool cleared = false;
+  auto big = run(0.5, 0, cleared);  // 0.5 m drift: old poses are in another frame
+  EXPECT_TRUE(cleared);
+  EXPECT_TRUE(big.keyframe);
+  EXPECT_FALSE(big.reasons & kDuplicate);
+  auto turned = run(0, 20, cleared);  // 20 deg yaw drift
+  EXPECT_TRUE(cleared);
+  EXPECT_TRUE(turned.keyframe);
+  auto small = run(0.05, 2, cleared);  // below thresholds: index kept, the revisit is still a duplicate
+  EXPECT_FALSE(cleared);
+  EXPECT_FALSE(small.keyframe);
+  EXPECT_TRUE(small.reasons & kDuplicate);
+}
+
+TEST(KeyframeSelector, DuplicateReasonCode) {
+  EXPECT_STREQ(reason_code(kDuplicate), "DUPLICATE");
+  auto codes = reason_codes(kDuplicate | kNotBest);
+  EXPECT_EQ(codes, std::vector<std::string>({"NOT_BEST", "DUPLICATE"}));
+}
+
 // ---- Config ----
 TEST(QualityConfigTest, OverridesHashAndVersion) {
   auto a = QualityConfig::from_json("{}");

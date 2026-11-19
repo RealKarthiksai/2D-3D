@@ -24,7 +24,15 @@ clip_high (>=250), FAST-9 corners and 4x4-grid spread, tracking state.
 quality gate -> min gap (200 ms after last keyframe) -> novelty (translation / scene depth >= 0.1,
 depth = median sparse-point depth or 2 m default; or rotation >= 10 deg) -> 300 ms candidate window ->
 best quality frame becomes the keyframe. Every frame gets one decision with reason codes
-(NOT_NOVEL, MIN_GAP, NOT_BEST plus metric reasons) written to /frame_index.
+(NOT_NOVEL, MIN_GAP, NOT_BEST, DUPLICATE plus metric reasons) written to /frame_index.
+
+Novelty is checked against every saved keyframe, not only the last one (issue #9, ADR 0033): a saved
+keyframe covers a candidate when it is within translation / depth < trans_ratio AND rotation < rot_deg.
+Covered by the last keyframe = NOT_NOVEL; covered by an older one (a revisit) = DUPLICATE, skipped (saved
+photos are never replaced). A better frame inside the candidate window that a saved keyframe covers cannot
+win it. The pose index is a ring of the newest 2048 keyframe poses (oldest evicted, no per-frame allocation).
+On a tracking re-anchor (TRACKING_RESET, ADR 0031) the index is cleared when the drift exceeds the dedup thresholds.
+"Why kept / skipped" for every frame = /frame_index `reasons` + metrics; no extra debug channel.
 
 ## Performance (desktop proxy)
 `QualityPerf.DesktopProxyTiming`: 1.43 ms per 1920x1440 frame (Release, x86-64 dev machine, one

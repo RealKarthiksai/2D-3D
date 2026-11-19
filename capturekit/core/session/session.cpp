@@ -652,6 +652,7 @@ void Session::publish_recovery() {
                   {{"tracking_state", std::to_string(e.tracking_state)}, {"reason", std::to_string(e.tracking_reason)},
                    {"degraded_s", json::num(r3(e.degraded_s))}});
     } else {
+      selector_.reanchor(e.drift_m, e.drift_deg);  // ADR 0033: saved poses are in the pre-reset frame
       o.set("type", "tracking_reset").set("t_ns", e.t_ns).set("lost_s", r3(e.lost_s)).set("drift_m", r3(e.drift_m))
           .set("drift_deg", r3(e.drift_deg));
       write_event(e.t_ns, "guide", "TRACKING_RESET", "tracking recovered: session re-anchored, keyframes resumed",

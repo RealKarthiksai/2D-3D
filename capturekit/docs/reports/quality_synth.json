@@ -804,8 +804,8 @@
       "sfm": {
         "images": 50,
         "models": 1,
-        "registered": 49,
-        "registration_rate": 0.98
+        "registered": 50,
+        "registration_rate": 1.0
       },
       "sfm_uniform_same_count": {
         "images": 50,
