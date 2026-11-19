@@ -92,8 +92,10 @@ class ReviewActivity : Activity() {
                 addView(right, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }
         }
+        // Feature switches (ADR 0032): room drawing + walls = guidance, "Found" counts = detector.
+        val features = Features.get(this)
         // Final room: the last live snapshot (walls inked, floor/ceiling) and the parts checklist, from Intent extras.
-        if (intent.hasExtra(EXTRA_SURFACES)) {
+        if (features.guidance && intent.hasExtra(EXTRA_SURFACES)) {
             val segs = EventParser.parseSurfaces(intent.getStringExtra(EXTRA_SURFACES) ?: "")
             val floor = intent.getBooleanExtra(EXTRA_FLOOR, false)
             val ceiling = intent.getBooleanExtra(EXTRA_CEILING, false)
@@ -129,12 +131,14 @@ class ReviewActivity : Activity() {
         if (durationMs != null && durationMs > 0) left.addView(row("Duration", UiKit.mmss(durationMs)), lp(6))
         left.addView(row("Keyframes", kf.toString()), lp(6))
         // What the scan recognised (issue #2 D): objects by class plus doors / windows, from the last room snapshot.
-        val found = ObjectSummary.text(
-            EventParser.parseObjects(intent.getStringExtra(EXTRA_OBJECTS) ?: ""),
-            EventParser.parseOpenings(intent.getStringExtra(EXTRA_OPENINGS) ?: ""),
-        )
-        if (found.isNotEmpty()) left.addView(row("Found", found, wrap = true).apply { contentDescription = "Found in the room: $found" }, lp(6))
-        else if (intent.getBooleanExtra(EXTRA_OBJECTS_EXPECTED, false)) left.addView(row("Found", "No objects recognised"), lp(6))
+        if (features.detector) {
+            val found = ObjectSummary.text(
+                EventParser.parseObjects(intent.getStringExtra(EXTRA_OBJECTS) ?: ""),
+                EventParser.parseOpenings(intent.getStringExtra(EXTRA_OPENINGS) ?: ""),
+            )
+            if (found.isNotEmpty()) left.addView(row("Found", found, wrap = true).apply { contentDescription = "Found in the room: $found" }, lp(6))
+            else if (intent.getBooleanExtra(EXTRA_OBJECTS_EXPECTED, false)) left.addView(row("Found", "No objects recognised"), lp(6))
+        }
         left.addView(row("Size", UiKit.humanSize(size)), lp(6))
         left.addView(row("Folder", dir.name), lp(6))
         // Full path, wrapped (never clipped); selectable so it can be copied.

@@ -6,6 +6,28 @@ See also [NEXT_SESSION.md](NEXT_SESSION.md) for the copy-paste start kit for a n
 
 Updated 2026-11-17 (end of unattended run) · branch `main` · last commit `b3d39f0` + a large UNCOMMITTED tree (see PROGRESS.md; history was rewritten, older hashes no longer exist) · tests only you can run: [HUMAN_TESTS.md](HUMAN_TESTS.md)
 
+## 0. What the default build shows (issue #6, ADR 0032)
+
+Rule: ON only if it PASSed on the phone ([DEVICE_TEST_LOG.md](DEVICE_TEST_LOG.md)); everything else is OFF behind `FeatureFlags` (debug builds: `adb shell setprop debug.capturekit.<switch> 1`, then force-stop the app). Device acceptance of this build (walked scan on CPH2381 showing only kept features): **pending** (no phone attached when it was made).
+
+| Feature | Default | Evidence | To switch back on (pass first, log it, then change the default) |
+|---|---|---|---|
+| Consent screen, withdraw | ON | DEVICE_TEST_LOG 2026-11-17 (H13) | — |
+| Pause/Resume, Home/Back mid-scan, force-kill recovery | ON | H9, H5, H4 rows | — |
+| My scans; Review verdict + buttons, bundle validation | ON | H29 row; first walked scan (validate PASS) | — |
+| HUD pill, REC timer, reticle, debug line | ON | H9 row | — |
+| Safety/tracking prompts (slow down, hold still, relocalize, more light, aim at texture, recalibrate), text + TTS | ON | H8 dark-room row ("More light") | — |
+| Navigation, Progress and Finish prompts + their haptics | OFF `guidance` | walked scan FAIL (H9/H22) | H9, H22 |
+| Live room card (mini-map, arrow, checklist, %) | OFF `guidance` (removed for good by issue #8) | walked scan FAIL | H9, H11 |
+| Weak-wall review sheet; Review room drawing + walls | OFF `guidance` (empty-scan notice stays, B5) | walked scan FAIL (8 walls for 4) | H10, H9 |
+| Detector, camera boxes chip, object labels, review "Found" | OFF `detector` | never device-tested | H18, H19, H33 |
+| Voice commands (mic chip, VoiceController, StateAnswers) | OFF `voice_commands` (no mic permission asked) | never device-tested | H12, H31 |
+| Recalibration card | OFF `recalibrate_card` (core keyframe pause stays) | cover/uncover check not run | H36 |
+| Face redaction | ON, **unverified** | never device-tested | H14 (keep ON: off ships unblurred faces) |
+| Upload/tus, Sentry, research/trial chip | field flavour only | standard build has none | H16, H17, H30, H32 |
+| Raw recorder, Clock check | ON | needed for golden recordings | H1, H2 |
+| iOS | BLOCKED: never compiled | no Mac | H27 |
+
 ## 1. Overall progress
 
 Nine of the thirteen phases (0–8, minus device acceptance) are done in software; Phase 9 is about 50 % done in software (uncommitted: detections in the bundle, shell, gaps, detector worker; engine wiring and steering pending) and Phases 10–11 are mostly built on Android only (voice, consent, upload UI added uncommitted). Phases 9–11 were added when the program became two parts, to cover room understanding (furniture, openings, missing areas), the voice assistant, and the overlay/review/privacy UI. Ordered plan of every open item: `.claude/agent-memory/planner/briefs/remaining-work-audit.md`. Every phase has acceptance items that need real phones, a Mac, or people (section 3). Those items stay open even after the software is written.
