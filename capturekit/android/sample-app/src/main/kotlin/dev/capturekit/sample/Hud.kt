@@ -14,13 +14,13 @@ import android.widget.TextView
 import dev.capturekit.guidance.StatusPill
 
 /**
- * Shared capture HUD over the camera preview. One vertical column, so zones can shrink but never overlap:
- *  - top bar: ONE status pill (tracking + quality + thermal, [StatusPill]) left; REC time + voice toggle right
- *  - banner (errors only), full width under the top bar
- *  - middle row (takes the remaining height, clips rather than overlaps): room card left-centre
- *    ([UnderstandingView]: mini room, checklist, core caption); result / debug messages centred beside it
- *  - bottom: ONE coaching sentence (core speak_text), then the bottom bar (Pause, Start/Finish)
- * Long-press the status pill to toggle the ingest debug line. Everything is clamped by system bar / cutout insets.
+ * Shared capture HUD over the camera preview:
+ *  - Top bar: Dynamic Now Bar status pill (tracking + quality + thermal) left; REC time + trial + voice right
+ *  - Viewfinder reticle: Professional spatial corner brackets [ ] with center targeting dot
+ *  - Middle row: Room understanding card left-centre (mini-room + parts checklist + core caption); debug messages beside
+ *  - Floating guidance: Now Bar coaching capsule anchored above camera deck with smooth fade transitions
+ *  - Camera deck: Authentic camera shutter button (outer ring + solid core / stop square), flanked by circular glass controls
+ * Long-press the status pill to toggle the ingest debug line. Clamped by system bar / cutout insets.
  */
 class Hud(private val ctx: Activity) {
     private val d = ctx.resources.displayMetrics.density
@@ -36,15 +36,15 @@ class Hud(private val ctx: Activity) {
     var debugOn = false
         private set
     private val result = glassText(UiKit.TEXT_M).apply { visibility = View.GONE; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE; maxLines = 4 }
-    private val recDot = View(ctx).apply { background = UiKit.rounded(Color.RED, dp(6).toFloat()) }
-    private val recText = TextView(ctx).apply { textSize = UiKit.TEXT_M; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD }
+    private val recDot = View(ctx).apply { background = UiKit.rounded(UiKit.RED, dp(5).toFloat()) }
+    private val recText = TextView(ctx).apply { textSize = 14f; setTextColor(UiKit.LABEL); typeface = UiKit.MEDIUM; fontFeatureSettings = "tnum" }
     private val recRow = LinearLayout(ctx).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         visibility = View.GONE
-        background = UiKit.glass(ctx)
-        setPadding(dp(10), dp(5), dp(12), dp(5))
-        addView(recDot, LinearLayout.LayoutParams(dp(12), dp(12)).apply { rightMargin = dp(8) })
+        background = UiKit.nowBar(ctx, 0xE6141824.toInt())
+        setPadding(dp(14), dp(6), dp(16), dp(6))
+        addView(recDot, LinearLayout.LayoutParams(dp(10), dp(10)).apply { rightMargin = dp(8) })
         addView(recText)
     }
     private val voice = UiKit.chip(ctx).apply { visibility = View.GONE; textSize = UiKit.TEXT_S }
@@ -56,14 +56,24 @@ class Hud(private val ctx: Activity) {
     /** Push-to-talk chip (top-right zone, left of the voice toggle). Hidden unless voice commands are available. */
     private val mic = UiKit.chip(ctx).apply {
         visibility = View.GONE; textSize = UiKit.TEXT_S; gravity = Gravity.CENTER
-        minimumHeight = dp(48); minimumWidth = dp(48)   // 48 dp touch target
+        minimumHeight = dp(44); minimumWidth = dp(44)
     }
     /** Field research chip (trial setup); hidden unless [setTrial] is given a label (field flavour, not recording). */
     private val trial = UiKit.chip(ctx).apply {
         visibility = View.GONE; textSize = UiKit.TEXT_S; gravity = Gravity.CENTER
-        minimumHeight = dp(48)
+        minimumHeight = dp(44)
     }
-    private val coaching = glassText(UiKit.TEXT_L).apply { gravity = Gravity.CENTER; typeface = Typeface.DEFAULT_BOLD; maxLines = 2 }
+    private val reticle = ReticleView(ctx).apply { visibility = View.GONE }
+
+    private val coaching = TextView(ctx).apply {
+        textSize = 15f
+        setTextColor(UiKit.LABEL)
+        typeface = UiKit.MEDIUM
+        gravity = Gravity.CENTER
+        background = UiKit.nowBar(ctx, 0xF2121624.toInt())
+        setPadding(dp(22), dp(10), dp(22), dp(10))
+        maxLines = 2
+    }
     /** Issue #1: centred "Recalibrating" card with the circling-phone animation (declared before [root], which adds it). */
     private val recalibrate = RecalibrateOverlay(ctx)
     private val bannerText = TextView(ctx)
@@ -75,8 +85,20 @@ class Hud(private val ctx: Activity) {
         addView(bannerText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         addView(bannerButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(12) })
     }
-    val button: Button = barButton(UiKit.bigButton(ctx, "Start"))
-    val pauseButton: Button = barButton(UiKit.secondaryButton(ctx, "Pause")).apply { visibility = View.GONE }
+
+    /** Authentic camera shutter button in the center of the control deck. */
+    val button: Button = ShutterButton(ctx).apply {
+        minimumWidth = dp(76); minWidth = dp(76)
+        minimumHeight = dp(76); minHeight = dp(76)
+    }
+    /** Circular glass pause/resume button flanking the shutter. */
+    val pauseButton: Button = UiKit.circularButton(ctx, "⏸", 50).apply {
+        visibility = View.GONE
+    }
+    /** Leaves the capture screen before recording starts (hidden while recording: Finish is the way out). */
+    val closeButton: View = UiKit.circularIconButton(ctx, R.drawable.ic_close, "Close", 44).apply {
+        setOnClickListener { ctx.finish() }
+    }
 
     private val pulse = ObjectAnimator.ofFloat(recDot, View.ALPHA, 1f, 0.2f).apply {
         duration = 600; repeatMode = ObjectAnimator.REVERSE; repeatCount = ObjectAnimator.INFINITE
@@ -91,25 +113,20 @@ class Hud(private val ctx: Activity) {
 
     private val longSide = maxOf(ctx.resources.displayMetrics.widthPixels, ctx.resources.displayMetrics.heightPixels)
     init {
-        pill.maxWidth = (longSide * 0.34).toInt()
+        pill.maxWidth = (longSide * 0.36).toInt()
         val mid = (longSide * 0.55).toInt()
-        coaching.maxWidth = (longSide * 0.6).toInt(); detail.maxWidth = mid; voiceLine.maxWidth = mid; result.maxWidth = mid; debug.maxWidth = mid
+        coaching.maxWidth = (longSide * 0.7).toInt(); detail.maxWidth = mid; voiceLine.maxWidth = mid; result.maxWidth = mid; debug.maxWidth = mid
         voice.setOnClickListener { onVoiceToggle() }
         boxes.setOnClickListener { onBoxesToggle() }
         mic.setOnClickListener { onMicClick() }
         trial.setOnClickListener { onTrialClick() }
         pill.setOnLongClickListener { debugOn = !debugOn; if (!debugOn) debug.visibility = View.GONE; true }
-        UiKit.setChip(pill, StatusPill.STARTING.text, StatusPill.STARTING.tone.argb)
+        UiKit.setChip(pill, "● " + StatusPill.STARTING.text, StatusPill.STARTING.tone.argb)
     }
 
     private fun glassText(size: Float) = TextView(ctx).apply {
-        textSize = size; setTextColor(Color.WHITE); background = UiKit.glass(ctx)
+        textSize = size; setTextColor(UiKit.LABEL); background = UiKit.glass(ctx, 16)
         setPadding(dp(12), dp(6), dp(12), dp(6))
-    }
-
-    private fun barButton(b: Button) = b.apply {
-        textSize = UiKit.TEXT_M; minimumHeight = dp(52); minHeight = dp(52)
-        setPadding(dp(20), dp(8), dp(20), dp(8))
     }
 
     /** No-op while the debug line is toggled off (long-press the status pill to show it). */
@@ -137,6 +154,7 @@ class Hud(private val ctx: Activity) {
         val topBar = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            addView(closeButton, LinearLayout.LayoutParams(dp(44), dp(44)).apply { rightMargin = dp(10) })
             addView(pill, LinearLayout.LayoutParams(wrap, wrap))
             addView(View(ctx), LinearLayout.LayoutParams(0, 0, 1f))
             addView(right, LinearLayout.LayoutParams(wrap, wrap))
@@ -151,20 +169,29 @@ class Hud(private val ctx: Activity) {
             addView(understanding.card, LinearLayout.LayoutParams(wrap, wrap).apply { gravity = Gravity.CENTER_VERTICAL })
             addView(msgs, LinearLayout.LayoutParams(0, wrap, 1f).apply { leftMargin = dp(8) })
         }
-        val buttons = LinearLayout(ctx).apply {
+
+        // Camera shutter deck: symmetrical camera controls (Pause | Shutter | Spacer/Voice)
+        val shutterDeck = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            addView(pauseButton, LinearLayout.LayoutParams(dp(140), wrap).apply { rightMargin = dp(12) })
-            addView(button, LinearLayout.LayoutParams(dp(200), wrap))
+            // Left flank: Circular glass Pause button
+            addView(pauseButton, LinearLayout.LayoutParams(dp(50), dp(50)).apply { rightMargin = dp(28) })
+            // Center: Authentic camera shutter
+            addView(button, LinearLayout.LayoutParams(dp(76), dp(76)))
+            // Right flank: Balanced spacer (preserves dead-center alignment)
+            addView(View(ctx), LinearLayout.LayoutParams(dp(50), dp(50)).apply { leftMargin = dp(28) })
         }
+
         val column = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             addView(topBar, LinearLayout.LayoutParams(match, wrap))
             addView(bannerRow, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(6) })
             addView(middle, LinearLayout.LayoutParams(match, 0, 1f).apply { topMargin = dp(6); bottomMargin = dp(6) })
-            addView(coaching, LinearLayout.LayoutParams(wrap, wrap).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(8) })
-            addView(buttons, LinearLayout.LayoutParams(match, wrap))
+            addView(coaching, LinearLayout.LayoutParams(wrap, wrap).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(14) })
+            addView(shutterDeck, LinearLayout.LayoutParams(match, wrap).apply { bottomMargin = dp(4) })
         }
+
+        addView(reticle, FrameLayout.LayoutParams(dp(84), dp(84), Gravity.CENTER))
         addView(column, FrameLayout.LayoutParams(match, match))
         addView(recalibrate.card, FrameLayout.LayoutParams(wrap, wrap, Gravity.CENTER))   // above the column, never clickable
         UiKit.applyInsets(this)
@@ -177,10 +204,10 @@ class Hud(private val ctx: Activity) {
      * policy level. [live] false = no camera frame recently (paused/stalled): neutral pill, never a tracking verdict.
      */
     fun setStatus(state: String, failure: String, reasons: List<String>, thermalLevel: Int, live: Boolean = true) {
-        if (!live) { UiKit.setChip(pill, "Camera paused", StatusPill.Tone.NEUTRAL.argb); return }
+        if (!live) { UiKit.setChip(pill, "● Camera paused", StatusPill.Tone.NEUTRAL.argb); return }
         if (state == "TRACKING") everTracked = true
         val p = StatusPill.statusPill(state, failure, reasons, thermalLevel, everTracked)
-        UiKit.setChip(pill, p.text, p.tone.argb)
+        UiKit.setChip(pill, "● " + p.text, p.tone.argb)
     }
 
     /** Tracking-only pill (screens without core quality/thermal, e.g. the raw recorder). */
@@ -213,12 +240,14 @@ class Hud(private val ctx: Activity) {
     }
 
     fun setRecording(on: Boolean) {
+        reticle.visibility = if (on) View.VISIBLE else View.GONE
         recRow.visibility = if (on) View.VISIBLE else View.GONE
         if (on) { if (!pulse.isStarted) pulse.start() } else { pulse.cancel(); recDot.alpha = 1f; paused = false }
-        button.text = if (on) "Finish" else "Start"
-        UiKit.recolor(button, if (on) UiKit.RED else 0xFF1565C0.toInt())
+        (button as? ShutterButton)?.isRecording = on
+        button.text = if (on) "Finish Scan" else "Start Scan"
         pauseButton.visibility = if (on && pauseEnabled) View.VISIBLE else View.GONE
-        if (!on) pauseButton.text = "Pause"
+        closeButton.visibility = if (on) View.GONE else View.VISIBLE
+        if (!on) pauseButton.text = "⏸"
         recSec = -1
     }
 
@@ -228,7 +257,7 @@ class Hud(private val ctx: Activity) {
     fun setPaused(on: Boolean) {
         if (on == paused) return
         paused = on
-        pauseButton.text = if (on) "Resume" else "Pause"
+        pauseButton.text = if (on) "▶" else "⏸"
         if (on) { pulse.cancel(); recDot.alpha = 0.3f } else if (!pulse.isStarted) pulse.start()
     }
 
@@ -237,7 +266,7 @@ class Hud(private val ctx: Activity) {
         val sec = elapsedMs / 1000
         if (sec == recSec && paused == recPaused && counter == recCounter) return
         recSec = sec; recPaused = paused; recCounter = counter
-        recText.text = (if (paused) "PAUSED  " else "REC  ") + UiKit.mmss(elapsedMs) + if (counter.isEmpty()) "" else "   $counter"
+        recText.text = (if (paused) "PAUSED  " else "REC  ") + UiKit.mmss(elapsedMs) + if (counter.isEmpty()) "" else "  •  $counter"
     }
 
     fun setVoice(on: Boolean?) {   // null hides the chip

@@ -1,69 +1,69 @@
 package dev.capturekit.sample
 
 import android.app.Activity
-import android.app.AlertDialog
-import dev.capturekit.consent.ConsentStore
 import android.app.ActivityManager
+import android.app.AlertDialog
 import android.app.ApplicationExitInfo
 import android.content.Intent
-import android.os.Build
-import android.util.Log
-import dev.capturekit.capture.SessionManager
+import android.content.pm.ApplicationInfo
 import android.graphics.Color
-import android.graphics.Typeface
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import com.google.ar.core.ArCoreApk
+import dev.capturekit.capture.SessionManager
+import dev.capturekit.consent.ConsentStore
 
-/**
- * Launcher: first-run onboarding with the camera/motion rationale (permission is requested only after it is
- * shown), then a home screen with the guided scan as the primary action. The raw recorder and clock check
- * (Phase 0 tools) live under "Developer tools".
- */
+/** CaptureKit entry point: onboarding, scan readiness, and links to the user's scans. */
 class MainActivity : Activity() {
-    private var permLine: TextView? = null
-    private var arLine: TextView? = null
-    private var grant: Button? = null
     private var home = false
     private val ui = Handler(Looper.getMainLooper())
     private val prefs by lazy { getSharedPreferences("ck_prefs", MODE_PRIVATE) }
     private val consent by lazy { ConsentStore.get(this) }
-    private var consentLine: TextView? = null
-    private var revoke: Button? = null
 
-    private var recoveryLine: TextView? = null
+    // Dynamic UI elements
+    private var readyBadge: TextView? = null
+    private var permCard: LinearLayout? = null
+    private var arCard: LinearLayout? = null
+    private var arCardText: TextView? = null
+    private var arCardBtn: Button? = null
+    private var recoveryCard: LinearLayout? = null
+    private var recoveryText: TextView? = null
+    private var consentSummaryText: TextView? = null
+    private var voiceSwitch: Switch? = null
     @Volatile private var recoveryNote: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.decorView.setBackgroundColor(0xFF101418.toInt())
+        window.decorView.setBackgroundColor(UiKit.BG)
         if (prefs.getBoolean(KEY_ONBOARDED, false)) showHome() else showOnboarding(0)
         if (savedInstanceState == null) checkLastExit()
     }
 
-    /**
-     * Launch: read why the previous process ended (API 30+; kept in prefs as the last reason) and recover any
-     * scan the DB still marks "recording". A recovered scan gets one calm line on Home.
-     */
     private fun checkLastExit() {
         Thread {
             val reason = lastExitReason()
             val recovered = try { SessionManager.recoverInterrupted(this) } catch (t: Throwable) { Log.w(TAG, "recovery failed", t); emptyList() }
             if (reason != null) Log.i(TAG, "last process exit: $reason; recovered ${recovered.size} scan(s)")
             if (recovered.isEmpty()) return@Thread
-            runOnUiThread { recoveryNote = "Last scan ended unexpectedly and was recovered"; paintRecovery() }
+            runOnUiThread {
+                recoveryNote = "Your last scan ended unexpectedly. It was recovered and saved."
+                paintRecovery()
+            }
         }.start()
     }
 
-    /** Newest exit record not seen before, as "REASON (description)"; also stored in prefs. Null below API 30 or if nothing new. */
     private fun lastExitReason(): String? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         return try {
@@ -88,158 +88,242 @@ class MainActivity : Activity() {
         else -> "REASON_$r"
     }
 
-    private fun paintRecovery() {
-        val l = recoveryLine ?: return
-        val n = recoveryNote
-        l.visibility = if (n == null) View.GONE else View.VISIBLE
-        if (n != null) UiKit.setChip(l, n, UiKit.GREEN)
-    }
-
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun lp(bottom: Int = 12) = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         .apply { bottomMargin = dp(bottom) }
+    private val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
 
-    private fun title(text: String) = TextView(this).apply {
-        this.text = text; textSize = 28f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
-    }
-
-    private fun body(text: String) = TextView(this).apply { this.text = text; textSize = 17f; setTextColor(0xFFCFD8DC.toInt()) }
-
-    private fun setScreen(root: LinearLayout) {
-        setContentView(ScrollView(this).apply {
+    private fun setScreen(root: View) {
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = false
             addView(root)
-            UiKit.applyInsets(this, 24)
-        })
+            UiKit.applyInsets(this, 20)
+        }
+        setContentView(UiKit.page(this, scroll))
     }
 
     // ---- onboarding (3 pages) ----
     private fun showOnboarding(page: Int) {
-        home = false; permLine = null; arLine = null; grant = null; recoveryLine = null
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        home = false
+        readyBadge = null; permCard = null; arCard = null; recoveryCard = null
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.BOTTOM }
         val last = 2
-        when (page) {
-            0 -> {
-                root.addView(title("Scan a room with your phone"), lp(12))
-                root.addView(body("CaptureKit guides you step by step while you walk around a room, speaks short prompts, and saves a complete scan bundle on this phone."), lp(12))
-                root.addView(body("1. Press Start and move slowly.\n2. Follow the spoken and on-screen prompts.\n3. Press Finish and review the result."), lp(24))
-            }
-            1 -> {
-                root.addView(title("Why we ask for the camera"), lp(12))
-                root.addView(body("Camera: needed to see the room and to track how the phone moves. Images stay on this phone."), lp(12))
-                root.addView(body("Motion sensors: used to notice shaky movement. Android does not ask for permission for these."), lp(12))
-                root.addView(body("Nothing is uploaded: this build has no network access."), lp(24))
-            }
-            else -> {
-                root.addView(title("Before you start"), lp(12))
-                root.addView(body("- Use a well lit room.\n- Hold the phone in landscape and walk slowly.\n- Turn the volume up for spoken guidance (you can switch it off at any time).\n- Switch screens off and ask other people to leave the room: a scan can capture them."), lp(24))
-            }
+        val (title, lines) = when (page) {
+            0 -> "Scan a room in 3D" to listOf(
+                "CaptureKit guides you around the room, tracks what you have covered, and tells you what to revisit.",
+                "Press Start and move smoothly.\nFollow the spoken and on-screen cues.\nFinish and review your scan.")
+            1 -> "Camera and motion" to listOf(
+                "The camera maps the room and tracks your movement. Your scan stays on this phone unless you choose to upload it.",
+                "Motion sensors keep tracking stable. Uploads and anonymous telemetry are optional and off by default.")
+            else -> "Before you start" to listOf(
+                "Use good light.\nWalk slowly and keep the phone steady.\nTurn the volume up for spoken guidance.\nClose doors and keep people out of view.")
         }
-        val next = UiKit.bigButton(this, if (page == last) (if (CameraPermission.granted(this)) "Continue" else "Allow camera and continue") else "Next").apply {
+        root.addView(View(this), LinearLayout.LayoutParams(1, 0, 1f))
+        root.addView(UiKit.largeTitle(this, title), lp(12))
+        for (l in lines) root.addView(UiKit.body(this, l, if (l == lines.first()) UiKit.LABEL_2 else UiKit.LABEL, 16f), lp(14))
+        root.addView(View(this), LinearLayout.LayoutParams(1, 0, 1f))
+
+        // Page dots
+        root.addView(LinearLayout(this).apply {
+            gravity = Gravity.CENTER
+            contentDescription = "Step ${page + 1} of ${last + 1}"
+            for (i in 0..last) addView(View(context).apply {
+                background = UiKit.rounded(if (i == page) UiKit.LABEL else UiKit.LABEL_3, dp(4).toFloat())
+            }, LinearLayout.LayoutParams(dp(if (i == page) 18 else 6), dp(6)).apply { marginStart = dp(3); marginEnd = dp(3) })
+        }, lp(20))
+
+        val next = UiKit.bigButton(this, if (page == last) (if (CameraPermission.granted(this)) "Continue" else "Allow camera and continue") else "Continue").apply {
             setOnClickListener {
                 if (page < last) showOnboarding(page + 1)
                 else if (CameraPermission.granted(this@MainActivity)) finishOnboarding()
                 else CameraPermission.request(this@MainActivity)
             }
         }
-        root.addView(next, lp(8))
-        if (page > 0) root.addView(UiKit.secondaryButton(this, "Back").apply { setOnClickListener { showOnboarding(page - 1) } }, lp(8))
-        root.addView(body("Step ${page + 1} of ${last + 1}").apply { gravity = Gravity.CENTER; textSize = 14f })
+        root.addView(next, lp(10))
+        if (page > 0) root.addView(UiKit.secondaryButton(this, "Back").apply { setOnClickListener { showOnboarding(page - 1) } }, lp(0))
         setScreen(root)
     }
 
     private fun finishOnboarding() {
         prefs.edit().putBoolean(KEY_ONBOARDED, true).apply()
         showHome()
-        if (!consent.hasConsent()) startActivity(Intent(this, ConsentActivity::class.java))   // consent screen right after onboarding
+        if (!consent.hasConsent()) startActivity(Intent(this, ConsentActivity::class.java))
     }
 
-    // ---- home ----
+    private fun openScans() = startActivity(Intent(this, ScansActivity::class.java))
+
+    /** A glass card with a status-tinted title line, body text and an optional action. Hidden until needed. */
+    private fun alertCard(kind: UiKit.Kind, title: String, bodyOut: (TextView) -> Unit, action: Button?): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = UiKit.card(this@MainActivity, 22)
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            visibility = View.GONE
+            addView(UiKit.text(this@MainActivity, title, 16f, kind.color, UiKit.MEDIUM), lp(6))
+            addView(UiKit.body(this@MainActivity, "", size = 14f).also(bodyOut), lp(if (action != null) 14 else 0))
+            if (action != null) addView(action)
+        }
+
+    // ---- Home ----
     private fun showHome() {
         home = true
-        val version = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (t: Throwable) { "?" }
+        val version = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (t: Throwable) { "1.0" }
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(title("CaptureKit"), lp(4))
-        root.addView(body("Guided room scan  v$version").apply { textSize = 15f }, lp(16))
-        recoveryLine = UiKit.statusText(this).also { root.addView(it, lp(8)) }
+
+        // 1. Large title + readiness line; scans shortcut on the right.
+        root.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), dp(8), 0, 0)
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(UiKit.largeTitle(this@MainActivity, "CaptureKit"))
+                readyBadge = UiKit.text(this@MainActivity, "", 14f, UiKit.LABEL_2).also { addView(it, lp(0).apply { topMargin = dp(2) }) }
+            }, LinearLayout.LayoutParams(0, wrap, 1f))
+        }, lp(24))
+
+        // 2. Alerts (each hidden unless needed).
+        recoveryCard = alertCard(UiKit.Kind.OK, "Scan recovered", { recoveryText = it },
+            UiKit.secondaryButton(this, "View scans").apply { setOnClickListener { openScans() } }).also { root.addView(it, lp(12)) }
         paintRecovery()
-        permLine = UiKit.statusText(this).also { root.addView(it, lp(8)) }
-        arLine = UiKit.statusText(this).also { root.addView(it, lp(8)) }
-        grant = UiKit.bigButton(this, "Allow camera", UiKit.AMBER).apply {
-            setOnClickListener { CameraPermission.retry(this@MainActivity) }
-        }.also { root.addView(it, lp(16)) }
+        permCard = alertCard(UiKit.Kind.ERROR, "Camera access needed",
+            { it.text = "CaptureKit uses the camera to see the room and track your movement." },
+            UiKit.bigButton(this, "Allow camera").apply { setOnClickListener { CameraPermission.retry(this@MainActivity) } })
+            .also { root.addView(it, lp(12)) }
+        arCardBtn = UiKit.bigButton(this, "Check again").apply { setOnClickListener { refresh() } }
+        arCard = alertCard(UiKit.Kind.WARN, "Google Play Services for AR needed", { arCardText = it }, arCardBtn)
+            .also { root.addView(it, lp(12)) }
 
-        root.addView(UiKit.bigButton(this, "Start guided scan").apply {
-            setOnClickListener {
-                if (!CameraPermission.granted(this@MainActivity)) showOnboarding(1)
-                else if (!consent.hasConsent()) startActivity(Intent(this@MainActivity, ConsentActivity::class.java).putExtra(ConsentActivity.EXTRA_START_SCAN, true))
-                else startActivity(Intent(this@MainActivity, CaptureActivity::class.java))
-            }
-        }, lp(4))
-        root.addView(body("Voice and on-screen prompts, quality checks, and a saved bundle").apply { textSize = 14f }, lp(16))
+        // 3. Hero: one clear action.
+        root.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = UiKit.card(this@MainActivity, 30)
+            setPadding(dp(22), dp(22), dp(22), dp(22))
+            addView(UiKit.title(this@MainActivity, "Scan a room", 28f), lp(8))
+            addView(UiKit.body(this@MainActivity, "Walk slowly around the room. CaptureKit tracks what you have covered and tells you what is missing."), lp(22))
+            addView(UiKit.bigButton(this@MainActivity, "Start scan").apply {
+                setOnClickListener {
+                    if (!CameraPermission.granted(this@MainActivity)) {
+                        CameraPermission.request(this@MainActivity)
+                    } else if (!consent.hasConsent()) {
+                        startActivity(Intent(this@MainActivity, ConsentActivity::class.java).putExtra(ConsentActivity.EXTRA_START_SCAN, true))
+                    } else {
+                        startActivity(Intent(this@MainActivity, CaptureActivity::class.java))
+                    }
+                }
+            })
+        }, lp(28))
 
-        root.addView(UiKit.secondaryButton(this, "My scans").apply {
-            setOnClickListener { startActivity(Intent(this@MainActivity, ScansActivity::class.java)) }
-        }, lp(16))
-
-        val voice = UiKit.secondaryButton(this, "")
-        fun paintVoice() { voice.text = if (SpeechRenderer.savedEnabled(this)) "Voice guidance: on" else "Voice guidance: off" }
-        paintVoice()
-        voice.setOnClickListener { SpeechRenderer.saveEnabled(this, !SpeechRenderer.savedEnabled(this)); paintVoice() }
-        root.addView(voice, lp(16))
-
-        consentLine = UiKit.statusText(this, 16f).also { root.addView(it, lp(8)) }
-        revoke = UiKit.secondaryButton(this, "Withdraw consent").apply {
-            contentDescription = "Withdraw consent. Asks for confirmation first."
-            setOnClickListener { confirmRevoke() }
-        }.also { root.addView(it, lp(24)) }
-        paintConsent()
-
-        root.addView(body("Developer tools").apply { textSize = 14f; setTextColor(0xFF78909C.toInt()) }, lp(6))
-        for ((label, cls) in listOf("Raw recorder" to RecorderActivity::class.java, "Clock check" to ClockCheckActivity::class.java)) {
-            root.addView(UiKit.secondaryButton(this, label).apply {
-                setOnClickListener { startActivity(Intent(this@MainActivity, cls)) }
-            }, lp(8))
+        // 4. Library
+        root.addView(UiKit.sectionHeader(this, "Library"))
+        val voice = UiKit.toggle(this, SpeechRenderer.savedEnabled(this)).apply {
+            contentDescription = "Voice guidance"
+            setOnCheckedChangeListener { _, on -> SpeechRenderer.saveEnabled(this@MainActivity, on) }
         }
+        voiceSwitch = voice
+        root.addView(UiKit.group(this).apply {
+            addView(UiKit.listRow(this@MainActivity, null, "My scans", "Saved rooms and their check results") { openScans() })
+            addView(UiKit.listRow(this@MainActivity, null, "Voice guidance", "Spoken coaching while you scan", trailing = voice).apply {
+                isClickable = true; foreground = UiKit.rowRipple(); setOnClickListener { voice.toggle() }
+            })
+        }, lp(28))
+
+        // 5. Privacy
+        root.addView(UiKit.sectionHeader(this, "Privacy"))
+        root.addView(UiKit.group(this).apply {
+            addView(UiKit.listRow(this@MainActivity, null, "Stored on this phone", "").also { row ->
+                consentSummaryText = ((row.getChildAt(0) as LinearLayout).getChildAt(1) as TextView)
+            })
+            addView(UiKit.listRow(this@MainActivity, null, "Withdraw consent", titleColor = UiKit.RED, chevron = false) { confirmRevoke() })
+        }, lp(28))
+
+        // 6. Developer tools: debuggable builds only.
+        if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            root.addView(UiKit.sectionHeader(this, "Developer"))
+            root.addView(UiKit.group(this).apply {
+                addView(UiKit.listRow(this@MainActivity, null, "Sensor recorder", "Raw camera and IMU capture") {
+                    startActivity(Intent(this@MainActivity, RecorderActivity::class.java))
+                })
+                addView(UiKit.listRow(this@MainActivity, null, "Clock check", "Camera and sensor timestamp offsets") {
+                    startActivity(Intent(this@MainActivity, ClockCheckActivity::class.java))
+                })
+            }, lp(20))
+        }
+
+        root.addView(UiKit.caption(this, "Version $version").apply { gravity = Gravity.CENTER }, lp(8))
+
         setScreen(root)
         refresh()
     }
 
+    private fun paintVoice() {
+        val on = SpeechRenderer.savedEnabled(this)
+        voiceSwitch?.let { if (it.isChecked != on) it.isChecked = on }
+    }
+
+    private fun paintRecovery() {
+        val c = recoveryCard ?: return
+        val n = recoveryNote
+        c.visibility = if (n == null) View.GONE else View.VISIBLE
+        if (n != null) recoveryText?.text = n
+    }
+
     private fun paintConsent() {
-        Telemetry.sync(this)   // field flavour: starts or stops crash reports to match the current consent; no-op in standard
+        Telemetry.sync(this)
         val c = consent.current()
-        consentLine?.let {
-            if (c == null) UiKit.setChip(it, "Consent: not given. Needed before scanning.", UiKit.AMBER)
-            else UiKit.setChip(it, "Consent given. Upload: ${if (c.upload) "on" else "off"}. Anonymous reports: ${if (c.telemetry) "on" else "off"}.", UiKit.GREEN)
+        consentSummaryText?.text = if (c == null) {
+            "Consent not given yet. It is needed before scanning."
+        } else {
+            "Upload ${if (c.upload) "on" else "off"}  ·  Anonymous telemetry ${if (c.telemetry) "on" else "off"}"
         }
-        revoke?.visibility = if (c == null) View.GONE else View.VISIBLE
     }
 
     private fun confirmRevoke() {
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Withdraw consent?")
-            .setMessage("Scanning will be blocked until you accept again. Uploading and anonymous reports stop, and your recorded choices are removed from this phone. Scans already saved or uploaded are not deleted.")
-            .setPositiveButton("Withdraw") { _, _ -> consent.revoke(); dev.capturekit.upload.UploadWorker.cancelAll(this); paintConsent() /* paintConsent -> Telemetry.sync closes Sentry */ }
-            .setNegativeButton("Keep consent", null)
+            .setMessage("Scanning will be blocked until you accept again. Uploading and anonymous telemetry stop, and recorded choices are removed from this phone. Your saved scans stay on the phone.")
+            .setPositiveButton("Withdraw") { _, _ ->
+                consent.revoke()
+                dev.capturekit.upload.UploadWorker.cancelAll(this)
+                paintConsent()
+            }
+            .setNegativeButton("Cancel", null)
             .show()
     }
 
     private fun refresh() {
         if (!home) return
         paintConsent()
+        paintVoice()
         val ok = CameraPermission.granted(this)
-        permLine?.let { UiKit.setChip(it, if (ok) "Camera permission: granted" else
-            "Camera permission: NOT granted. The camera is needed to see the room and track motion.", if (ok) UiKit.GREEN else UiKit.RED) }
-        grant?.apply { visibility = if (ok) View.GONE else View.VISIBLE; text = CameraPermission.retryLabel() }
+        permCard?.visibility = if (ok) View.GONE else View.VISIBLE
+
         val av = try { ArCoreApk.getInstance().checkAvailability(this) } catch (t: Throwable) { null }
-        val (text, color) = when {
-            av == null -> "ARCore: unknown" to UiKit.AMBER
-            av.isTransient -> "ARCore: checking..." to UiKit.AMBER
-            av == ArCoreApk.Availability.SUPPORTED_NOT_INSTALLED -> "ARCore: install Google Play Services for AR (will be requested)" to UiKit.AMBER
-            av == ArCoreApk.Availability.SUPPORTED_APK_TOO_OLD -> "ARCore: Google Play Services for AR needs an update" to UiKit.AMBER
-            av.isSupported -> "ARCore: ready" to UiKit.GREEN
-            else -> "ARCore: not supported on this phone" to UiKit.RED
+        val (readyText, isSupported) = when {
+            av == null -> "AR status unknown" to false
+            av.isTransient -> "Checking AR..." to false
+            av == ArCoreApk.Availability.SUPPORTED_NOT_INSTALLED -> "Install Google Play Services for AR" to false
+            av == ArCoreApk.Availability.SUPPORTED_APK_TOO_OLD -> "Update Google Play Services for AR" to false
+            av.isSupported -> "Ready to scan" to true
+            else -> "This phone does not support AR" to false
         }
-        arLine?.let { UiKit.setChip(it, text, color) }
+
+        if (isSupported) {
+            arCard?.visibility = View.GONE
+        } else {
+            arCard?.visibility = View.VISIBLE
+            arCardText?.text = "$readyText. CaptureKit needs it to track the phone's position in the room."
+        }
+
+        readyBadge?.let {
+            when {
+                ok && isSupported -> { it.text = "Ready to scan"; it.setTextColor(UiKit.LABEL_2) }
+                !ok -> { it.text = "Camera access needed"; it.setTextColor(UiKit.RED) }
+                else -> { it.text = readyText; it.setTextColor(UiKit.AMBER) }
+            }
+        }
+
         if (av?.isTransient == true) ui.postDelayed({ refresh() }, 500)
     }
 
@@ -253,7 +337,7 @@ class MainActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         CameraPermission.onResult(this, grantResults)
-        if (!home) finishOnboarding() else refresh()   // rationale was shown first; Home explains how to fix a refusal
+        if (!home) finishOnboarding() else refresh()
     }
 
     override fun onPause() { ui.removeCallbacksAndMessages(null); super.onPause() }

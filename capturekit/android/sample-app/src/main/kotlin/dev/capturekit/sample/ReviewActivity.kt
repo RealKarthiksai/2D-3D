@@ -2,8 +2,6 @@ package dev.capturekit.sample
 
 import android.app.Activity
 import android.content.Intent
-import android.graphics.Color
-import android.graphics.Typeface
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -19,6 +17,7 @@ import dev.capturekit.sample.upload.UploadGate
 import dev.capturekit.upload.UploadState
 import dev.capturekit.upload.UploadStatus
 import dev.capturekit.upload.UploadWorker
+import dev.capturekit.verdict.ScanInfo
 import dev.capturekit.verdict.VerdictText
 import java.io.File
 
@@ -29,7 +28,7 @@ import java.io.File
  * Standard flavour has no INTERNET permission: nothing is queued and no upload state is shown.
  */
 class ReviewActivity : Activity() {
-    data class Parsed(val verdict: String?, val keyframes: Int?, val issues: List<String>)
+    data class Parsed(val verdict: String?, val keyframes: Int?, val issues: List<String>, val durationMs: Long? = null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -37,9 +36,9 @@ class ReviewActivity : Activity() {
         val status = intent.getIntExtra(EXTRA_STATUS, Status.STATE)
         val elapsed = intent.getLongExtra(EXTRA_ELAPSED_MS, 0L)
         val kfLive = intent.getIntExtra(EXTRA_KEYFRAMES, 0)
-        setContentView(TextView(this).apply {
-            text = "Checking the scan..."; textSize = 20f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-        })
+        setContentView(UiKit.page(this, TextView(this).apply {
+            text = "Checking the scan..."; textSize = 17f; setTextColor(UiKit.LABEL_2); gravity = Gravity.CENTER
+        }))
         // Disk reads (manifest, bundle size) stay off the UI thread.
         Thread {
             val text = try { File(dir, "manifest.json").readText() } catch (t: Throwable) { "" }
@@ -83,7 +82,7 @@ class ReviewActivity : Activity() {
         val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL }
         val card = LinearLayout(this).apply {
             orientation = if (landscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
-            background = UiKit.rounded(0xFF1B222A.toInt(), dp(16).toFloat())
+            background = UiKit.card(this@ReviewActivity, 28)
             setPadding(dp(24), dp(20), dp(24), dp(20))
             if (landscape) {
                 addView(left, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(24) })
@@ -112,57 +111,53 @@ class ReviewActivity : Activity() {
                 orientation = LinearLayout.VERTICAL
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
                 contentDescription = "Room parts. ${checklist.description}"
-                background = UiKit.glass(this@ReviewActivity)
+                background = UiKit.rounded(UiKit.FILL, dp(18).toFloat())
                 setPadding(dp(6), dp(6), dp(6), dp(6))
                 if (segs.isNotEmpty() || shell.isNotEmpty()) addView(RoomView(this@ReviewActivity).also { it.setSnapshot(segs, floor, ceiling, shell, closed, spans, objects, openings) }, LinearLayout.LayoutParams(dp(170), dp(130)))
                 addView(checklist, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
             }
             card.addView(mid, 1, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(24); gravity = Gravity.CENTER_VERTICAL })
         }
-        left.addView(TextView(this).apply {
-            text = if (ok) "Scan saved" else "Save failed"
-            textSize = 28f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
-        }, lp(8))
+        left.addView(UiKit.title(this, if (ok) "Scan saved" else "Save failed", 28f), lp(10))
         val (vText, vColor) = when {
             !ok -> "Not saved (status ${UiKit.statusName(status)})" to UiKit.RED
-            verdict == "PASS" -> "Check passed" to UiKit.GREEN
-            verdict == "WARN" -> "Check: usable, with warnings" to UiKit.AMBER
-            verdict == "FAIL" -> "Check failed" to UiKit.RED
-            else -> "Check: not available" to 0xFF546E7A.toInt()
+            else -> ScanInfo.badgeText(verdict) to ScanUi.verdictColor(verdict)
         }
-        left.addView(UiKit.chip(this).also { UiKit.setChip(it, vText, vColor) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(12) })
-        left.addView(row("Duration", UiKit.mmss(elapsed)), lp(2))
-        left.addView(row("Keyframes", kf.toString()), lp(2))
+        left.addView(UiKit.chip(this).also { UiKit.setChip(it, vText, vColor) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(16) })
+        // Live elapsed time when coming from a scan; otherwise the bundle's own clock span (opened from My scans).
+        val durationMs = if (elapsed > 0) elapsed else manifest.durationMs
+        if (durationMs != null && durationMs > 0) left.addView(row("Duration", UiKit.mmss(durationMs)), lp(6))
+        left.addView(row("Keyframes", kf.toString()), lp(6))
         // What the scan recognised (issue #2 D): objects by class plus doors / windows, from the last room snapshot.
         val found = ObjectSummary.text(
             EventParser.parseObjects(intent.getStringExtra(EXTRA_OBJECTS) ?: ""),
             EventParser.parseOpenings(intent.getStringExtra(EXTRA_OPENINGS) ?: ""),
         )
-        if (found.isNotEmpty()) left.addView(row("Found", found, wrap = true).apply { contentDescription = "Found in the room: $found" }, lp(2))
-        else if (intent.getBooleanExtra(EXTRA_OBJECTS_EXPECTED, false)) left.addView(row("Found", "No objects recognised"), lp(2))
-        left.addView(row("Size", UiKit.humanSize(size)), lp(2))
-        left.addView(row("Folder", dir.name), lp(2))
+        if (found.isNotEmpty()) left.addView(row("Found", found, wrap = true).apply { contentDescription = "Found in the room: $found" }, lp(6))
+        else if (intent.getBooleanExtra(EXTRA_OBJECTS_EXPECTED, false)) left.addView(row("Found", "No objects recognised"), lp(6))
+        left.addView(row("Size", UiKit.humanSize(size)), lp(6))
+        left.addView(row("Folder", dir.name), lp(6))
         // Full path, wrapped (never clipped); selectable so it can be copied.
         left.addView(UiKit.pathText(this, dir.absolutePath, Int.MAX_VALUE).apply { ellipsize = null; setTextIsSelectable(true) }, lp(12))
         // Plain-language result: headline, then up to three notes (title, what happened, what to do), errors first.
         if (ok && verdict != null) {
-            right.addView(TextView(this).apply { text = vt.headline(verdict); textSize = 17f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE) }, lp(6))
+            right.addView(UiKit.text(this, vt.headline(verdict), 17f, UiKit.LABEL, UiKit.MEDIUM), lp(8))
             val notes = vt.describe(issueList)
             for (n in notes.take(3)) right.addView(TextView(this).apply {
-                text = "${n.title}. ${n.text} ${n.action}"
-                textSize = 15f; setTextColor(if (n.severity == "ERROR") 0xFFFFAB91.toInt() else 0xFFFFCC80.toInt())
+                text = UiKit.dotted("${n.title}. ${n.text} ${n.action}", if (n.severity == "ERROR") UiKit.RED else UiKit.AMBER)
+                textSize = 15f; setTextColor(UiKit.LABEL_2); setLineSpacing(0f, 1.15f)
                 contentDescription = "${if (n.severity == "ERROR") "Problem" else "Note"}: ${n.title}. ${n.text} ${n.action}"
             }, lp(4))
-            if (notes.size > 3) right.addView(TextView(this).apply { text = "and ${notes.size - 3} more"; textSize = 14f; setTextColor(0xFFB0BEC5.toInt()) }, lp(4))
+            if (notes.size > 3) right.addView(TextView(this).apply { text = "and ${notes.size - 3} more"; textSize = 14f; setTextColor(UiKit.LABEL_3) }, lp(4))
         }
         right.addView(TextView(this).apply {
             text = when {
                 ready && UploadGate.available -> "The scan is stored on this phone."
-                ready -> "The scan is stored on this phone. Uploading is not part of this build."
+                ready -> "The scan is stored on this phone."
                 ok -> "Not ready: the check failed. Scan again, moving slowly and covering the whole room."
                 else -> "Something went wrong while saving. Scan again."
             }
-            textSize = 16f; setTextColor(Color.WHITE)
+            textSize = 15f; setTextColor(UiKit.LABEL_2)
         }, lp(8))
         if (ready && UploadGate.available) {
             val chip = UiKit.chip(this).also { uploadChip = it; it.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES; it.setPadding(dp(12), dp(6), dp(12), dp(6)) }
@@ -174,7 +169,7 @@ class ReviewActivity : Activity() {
         val newScan = UiKit.bigButton(this, "New scan").apply {
             setOnClickListener { startActivity(Intent(this@ReviewActivity, CaptureActivity::class.java)); finish() }
         }
-        val home = UiKit.secondaryButton(this, "Home").apply { setOnClickListener { finish() } }
+        val home = UiKit.secondaryButton(this, "Done").apply { setOnClickListener { finish() } }
         val scans = UiKit.secondaryButton(this, "My scans").apply {
             contentDescription = "Open My scans"
             setOnClickListener { startActivity(Intent(this@ReviewActivity, ScansActivity::class.java)); finish() }
@@ -189,15 +184,18 @@ class ReviewActivity : Activity() {
 
         val scroll = ScrollView(this).apply {
             isFillViewport = true
+            isVerticalScrollBarEnabled = false
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_VERTICAL
+                addView(UiKit.circularIconButton(context, R.drawable.ic_close, "Close", 44).apply { setOnClickListener { finish() } },
+                    LinearLayout.LayoutParams(dp(44), dp(44)).apply { bottomMargin = dp(12) })
                 addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(12) })
                 addView(actions, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             UiKit.applyInsets(this, 16)
         }
-        setContentView(scroll)
+        setContentView(UiKit.page(this, scroll))
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -206,9 +204,9 @@ class ReviewActivity : Activity() {
     /** Label + value row; [wrap] lets a long value use several lines (else one line, middle-ellipsised). */
     private fun row(label: String, value: String, wrap: Boolean = false) = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
-        addView(TextView(context).apply { text = label; textSize = 16f; setTextColor(0xFFB0BEC5.toInt()) }, LinearLayout.LayoutParams(dp(110), ViewGroup.LayoutParams.WRAP_CONTENT))
+        addView(TextView(context).apply { text = label; textSize = 15f; setTextColor(UiKit.LABEL_3) }, LinearLayout.LayoutParams(dp(100), ViewGroup.LayoutParams.WRAP_CONTENT))
         addView(TextView(context).apply {
-            text = value; textSize = 16f; setTextColor(Color.WHITE)
+            text = value; textSize = 15f; typeface = UiKit.MEDIUM; setTextColor(UiKit.LABEL)
             if (!wrap) { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
     }
@@ -251,7 +249,10 @@ class ReviewActivity : Activity() {
                 val msg = o.optString("message", "")
                 if ((sev == "WARN" || sev == "ERROR") && msg.isNotEmpty()) issues.add(msg)
             }
-            Parsed(verdict, kf, issues)
+            val clock = root.optJSONObject("clock")
+            val dur = if (clock != null && clock.has("t_start_ns") && clock.has("t_end_ns"))
+                ((clock.optLong("t_end_ns") - clock.optLong("t_start_ns")) / 1_000_000L).takeIf { it > 0 } else null
+            Parsed(verdict, kf, issues, dur)
         } catch (t: Throwable) { Parsed(null, null, emptyList()) }   // missing/corrupt manifest: show "not available"
     }
 }

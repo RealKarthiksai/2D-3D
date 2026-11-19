@@ -30,19 +30,19 @@ class ConsentActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.decorView.setBackgroundColor(0xFF101418.toInt())
+        window.decorView.setBackgroundColor(UiKit.BG)
         val text = resources.openRawResource(
             resources.getIdentifier(ConsentStore.TEXT_RESOURCE, "raw", packageName).also { check(it != 0) { "missing raw/${ConsentStore.TEXT_RESOURCE}" } }).bufferedReader().use { it.readText() }
         val (head, rest) = text.lines().let { it.first() to it.drop(1).joinToString("\n").trim() }
 
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         content.addView(TextView(this).apply {
-            this.text = "Before you scan"; textSize = 28f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
+            this.text = "Before you scan"; textSize = 32f; typeface = UiKit.BOLD; letterSpacing = -0.02f; setTextColor(UiKit.LABEL)
             isFocusable = true
         }, lp(12))
         content.addView(UiKit.banner(this, head.lowercase().replaceFirstChar { it.uppercase() }, UiKit.Kind.WARN), lp(16))
         content.addView(TextView(this).apply {
-            this.text = rest; textSize = 17f; setTextColor(0xFFECEFF1.toInt()); setLineSpacing(0f, 1.15f)
+            this.text = rest; textSize = 16f; setTextColor(UiKit.LABEL_2); setLineSpacing(0f, 1.25f)
         }, lp(24))
         upload = toggle("Allow uploading my finished scans (optional)")
         telemetry = toggle("Allow anonymous crash and usage reports (optional)")
@@ -56,7 +56,7 @@ class ConsentActivity : Activity() {
             viewTreeObserver.addOnGlobalLayoutListener { checkEnd() }   // text shorter than the screen: nothing to scroll
         }
 
-        hint = TextView(this).apply { textSize = 14f; setTextColor(0xFFB0BEC5.toInt()); gravity = android.view.Gravity.CENTER }
+        hint = TextView(this).apply { textSize = 13f; setTextColor(UiKit.LABEL_3); gravity = android.view.Gravity.CENTER }
         accept = UiKit.bigButton(this, "Accept and continue").apply {
             contentDescription = "Accept and continue. Available after you scroll to the end of the consent text."
             setOnClickListener { onAccept() }
@@ -75,7 +75,7 @@ class ConsentActivity : Activity() {
             addView(bar, lp(0).apply { topMargin = dp(8) })
             UiKit.applyInsets(this, 20)
         }
-        setContentView(root)
+        setContentView(UiKit.page(this, root))
         paint()
     }
 
@@ -90,8 +90,8 @@ class ConsentActivity : Activity() {
 
     private fun paint() {
         accept.isEnabled = reachedEnd
-        UiKit.recolor(accept, if (reachedEnd) 0xFF1565C0.toInt() else 0xFF37474F.toInt())
-        accept.setTextColor(if (reachedEnd) Color.WHITE else 0xFF90A4AE.toInt())
+        UiKit.recolor(accept, if (reachedEnd) UiKit.PRIMARY else UiKit.GLASS)
+        accept.setTextColor(if (reachedEnd) Color.BLACK else UiKit.LABEL_3)
         hint.text = if (reachedEnd) "You can accept now. Both optional choices are off unless you turned them on."
             else "Scroll down and read to the end to enable Accept."
     }
@@ -106,10 +106,10 @@ class ConsentActivity : Activity() {
         finish()
     }
 
-    private fun toggle(label: String) = Switch(this).apply {
-        text = label; textSize = 18f; setTextColor(Color.WHITE); isChecked = false
+    private fun toggle(label: String) = UiKit.toggle(this, false).apply {
+        text = label; textSize = 16f; setTextColor(UiKit.LABEL); isChecked = false
         minHeight = dp(56); setPadding(dp(12), dp(8), dp(12), dp(8))
-        background = UiKit.rounded(0xFF263238.toInt(), dp(12).toFloat())
+        background = UiKit.card(context, 18)
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()

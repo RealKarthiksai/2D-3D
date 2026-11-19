@@ -50,16 +50,16 @@ class ChecklistView(ctx: Context) : LinearLayout(ctx) {
     }
 
     private fun mark(v: TextView, on: Boolean, label: String) {
-        v.text = (if (on) "✓ " else "○ ") + label
+        v.text = (if (on) "● " else "○ ") + label
         v.setTextColor(if (on) OK else DIM)
     }
 
     companion object {
         const val SCANNING_PCT = 20           // scanning band 20-79, done >= RoomView.DONE_PCT (guesses)
         const val SMALL = 11f
-        private const val OK = 0xFF81C784.toInt()
-        private const val PROGRESS = 0xFF4FC3F7.toInt()
-        private const val DIM = 0xFFB0BEC5.toInt()
+        private const val OK = UiKit.GREEN
+        private const val PROGRESS = UiKit.CYAN_ACCENT
+        private const val DIM = 0xFF8E8E93.toInt()
 
         /** Layout wall count: `walls` from a v3 core (evidenced layout walls), else the older max(plane count, surfaces). */
         fun foundWalls(o: CoreEvent.Overlay): Int = if (o.layoutV3) o.walls else max(o.walls, o.surfaces.size)
@@ -94,11 +94,11 @@ class UnderstandingView(private val ctx: Context) {
     private val room = RoomView(ctx)
     private val checklist = ChecklistView(ctx)
     private val caption = TextView(ctx).apply {
-        textSize = UiKit.TEXT_S; setTextColor(0xFFE3F2FD.toInt()); maxLines = 2
+        textSize = UiKit.TEXT_S; setTextColor(UiKit.LABEL_2); maxLines = 2
         ellipsize = android.text.TextUtils.TruncateAt.END; visibility = View.GONE
     }
-    private val glassBg = UiKit.glass(ctx)
-    private val glowBg = UiKit.rounded(GLOW, dp(UiKit.RADIUS_DP).toFloat())
+    private val glassBg = UiKit.card(ctx, 22)
+    private val glowBg = UiKit.rounded(GLOW, dp(22).toFloat())
     private val unglow = Runnable { card.background = glassBg }
 
     /** Left-centre zone card. Hidden until the first snapshot. */

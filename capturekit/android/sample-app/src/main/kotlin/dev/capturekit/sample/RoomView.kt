@@ -69,15 +69,16 @@ class RoomView(ctx: Context) : View(ctx) {
     // ---- drawing resources ----
     private val floorFill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = 0x99FFFFFF.toInt(); strokeJoin = Paint.Join.ROUND }
-    private val wallInk = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 4f * d; strokeCap = Paint.Cap.BUTT }
-    private val blockedLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = 0xFFFFB74D.toInt() }
+    private val wallInk = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 4.5f * d; strokeCap = Paint.Cap.ROUND }
+    private val blockedLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.8f * d; color = 0xFFFFB300.toInt() }
     private val missingLine = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; strokeWidth = 2.5f * d; color = 0x66FFFFFF
+        style = Paint.Style.STROKE; strokeWidth = 2.5f * d; color = 0x80FFFFFF.toInt()
         pathEffect = DashPathEffect(floatArrayOf(4f * d, 4f * d), 0f)
     }
     private val cornerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt() }
-    private val doorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 5f * d; color = 0xFFFFB74D.toInt() }
-    private val windowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 5f * d; color = 0xFF80DEEA.toInt() }
+    private val cornerHaloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1f * d; color = 0x6600E676.toInt() }
+    private val doorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 5f * d; color = 0xFFFFB74D.toInt(); strokeCap = Paint.Cap.ROUND }
+    private val windowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 5f * d; color = 0xFF80DEEA.toInt(); strokeCap = Paint.Cap.ROUND }
     private val objFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x66B0BEC5 }
     private val objEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.2f * d; color = 0xCCCFD8DC.toInt() }
     private val objLabel = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 8.5f * d; color = 0xFFFFFFFF.toInt(); textAlign = Paint.Align.CENTER }
@@ -91,8 +92,12 @@ class RoomView(ctx: Context) : View(ctx) {
     }
     private val userPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val userEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = 0xFF000000.toInt() }
+    private val fovBeamPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = 0x2600E5FF }
+    private val fovBeamStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1f * d; color = 0x4D00E5FF }
+    private val beamPath = Path()
     private val targetPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFD54F.toInt() }
     private val targetRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = 0xFFFFD54F.toInt() }
+    private val targetPulseRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.2f * d; color = 0x80FFD54F.toInt() }
     private val ceilFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = INK_DONE }
     private val ceilEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = 0xCCFFFFFF.toInt() }
     private val path = Path()
@@ -253,8 +258,12 @@ class RoomView(ctx: Context) : View(ctx) {
 
         // Corners
         if (nShell > 0) {
-            val r = (if (shellClosed) 3.2f else 2.4f) * d
-            for (i in 0 until nShell) { pt(shx[i], shz[i]); c.drawCircle(tmp[0], tmp[1], r, cornerPaint) }
+            val r = (if (shellClosed) 3.5f else 2.5f) * d
+            for (i in 0 until nShell) {
+                pt(shx[i], shz[i])
+                c.drawCircle(tmp[0], tmp[1], r + 1.5f * d, cornerHaloPaint)
+                c.drawCircle(tmp[0], tmp[1], r, cornerPaint)
+            }
         }
 
         // Openings
@@ -293,14 +302,33 @@ class RoomView(ctx: Context) : View(ctx) {
         // Target dot
         if (hasTarget) {
             pt(targetX, targetZ)
-            c.drawCircle(tmp[0], tmp[1], 3.5f * d, targetPaint)
+            c.drawCircle(tmp[0], tmp[1], 11f * d, targetPulseRing)
             c.drawCircle(tmp[0], tmp[1], 7f * d, targetRing)
+            c.drawCircle(tmp[0], tmp[1], 3.5f * d, targetPaint)
         }
 
         // User arrow: fixed at the centre, always pointing up. Heading ring: world sector [30i, 30i+30) deg drawn at its
         // bearing relative to the user (positive = left = screen left).
         if (showUser) {
             val ux = w / 2f; val uy = h / 2f
+
+            // Flashlight / FOV beam: projects forward from the user (screen UP) like Polycam / RoomPlan
+            if (tracking) {
+                val beamLen = 32f * d
+                val halfFovRad = Math.toRadians(25.0) // 50 deg total cone
+                beamPath.reset()
+                beamPath.moveTo(ux, uy)
+                val bxL = ux - beamLen * sin(halfFovRad).toFloat()
+                val byL = uy - beamLen * cos(halfFovRad).toFloat()
+                val bxR = ux + beamLen * sin(halfFovRad).toFloat()
+                val byR = uy - beamLen * cos(halfFovRad).toFloat()
+                beamPath.lineTo(bxL, byL)
+                beamPath.quadTo(ux, uy - beamLen * 1.08f, bxR, byR)
+                beamPath.close()
+                c.drawPath(beamPath, fovBeamPaint)
+                c.drawPath(beamPath, fovBeamStroke)
+            }
+
             val rr = 15f * d
             for (sec in 0 until 12) {
                 path.reset()
@@ -318,7 +346,7 @@ class RoomView(ctx: Context) : View(ctx) {
             path.lineTo(ux, uy + b * 0.1f)
             path.lineTo(ux + b, uy + b * 0.6f)
             path.close()
-            userPaint.color = if (tracking) 0xFF4FC3F7.toInt() else UiKit.AMBER
+            userPaint.color = if (tracking) 0xFF00E5FF.toInt() else UiKit.AMBER
             c.drawPath(path, userPaint)
             c.drawPath(path, userEdge)
         }
@@ -393,7 +421,7 @@ class RoomView(ctx: Context) : View(ctx) {
         const val MAX_PX_PER_M = 40f          // dp per metre cap
         const val SMOOTH = 0.35f              // fit easing per update (4 Hz)
         const val DONE_PCT = 80               // guess until Gate 0 data
-        const val INK_DONE = 0xCC66BB6A.toInt()
-        const val INK_SCANNING = 0xCC4FC3F7.toInt()
+        const val INK_DONE = 0xFF00E676.toInt()
+        const val INK_SCANNING = 0xFF00B0FF.toInt()
     }
 }

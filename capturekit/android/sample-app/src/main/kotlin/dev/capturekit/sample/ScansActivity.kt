@@ -2,17 +2,18 @@ package dev.capturekit.sample
 
 import android.app.Activity
 import android.content.Intent
-import android.graphics.Color
-import android.graphics.Typeface
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
-import android.widget.Switch
 import android.widget.TextView
 import dev.capturekit.capture.ResearchReport
 import dev.capturekit.consent.ConsentStore
@@ -26,8 +27,9 @@ import dev.capturekit.upload.UploadStatus
 import dev.capturekit.upload.UploadWorker
 import dev.capturekit.verdict.ScanInfo
 import java.io.File
-import java.text.DateFormat
+import java.util.Calendar
 import java.util.Date
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * "My scans": every bundle on this phone, newest first, with date, room label (field trials), the validator verdict
@@ -36,11 +38,12 @@ import java.util.Date
  * an upload is active. The standard flavour has no INTERNET permission, so it shows no upload UI at all.
  */
 class ScansActivity : Activity() {
-    private data class Row(val dir: File, val timeMs: Long, val room: String?, val verdict: String?, val size: Long, val upload: UploadStatus)
+    private data class Row(val dir: File, val timeMs: Long, val room: String?, val verdict: String?, val size: Long, val upload: UploadStatus, val thumb: Bitmap?)
 
     private lateinit var list: LinearLayout
     private var wifiOnly = true
     private var generation = 0
+    private val thumbs = ConcurrentHashMap<String, Bitmap>()
     @Volatile private var visible = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -49,21 +52,17 @@ class ScansActivity : Activity() {
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
         val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            addView(TextView(context).apply {
-                text = "My scans"; textSize = 28f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
-                if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(UiKit.secondaryButton(context, "Back").apply {
-                contentDescription = "Back to home"; setOnClickListener { finish() }
-            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            orientation = LinearLayout.VERTICAL
+            addView(UiKit.circularIconButton(context, R.drawable.ic_arrow_back, "Back to home", 44).apply { setOnClickListener { finish() } },
+                LinearLayout.LayoutParams(dp(44), dp(44)).apply { bottomMargin = dp(16) })
+            addView(UiKit.largeTitle(context, "My scans"), lp(0))
         }
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(header, lp(12))
-        if (UploadGate.available) root.addView(settingsPanel(), lp(12))
-        root.addView(ScrollView(this).apply { isFillViewport = true; addView(list) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        UiKit.applyInsets(root, 16)
-        setContentView(root)
+        root.addView(header, lp(20))
+        if (UploadGate.available) root.addView(settingsPanel(), lp(16))
+        root.addView(ScrollView(this).apply { isFillViewport = true; isVerticalScrollBarEnabled = false; addView(list) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        UiKit.applyInsets(root, 20)
+        setContentView(UiKit.page(this, root))
         showMessage("Loading your scans...")
     }
 
@@ -101,13 +100,44 @@ class ScansActivity : Activity() {
             val research = try { ResearchReport.fileFor(d).takeIf { it.exists() }?.readText() } catch (t: Throwable) { null }
             Row(d, ScanInfo.timeMs(d.name, d.lastModified()), ScanInfo.roomLabel(research), ReviewActivity.parseManifest(manifest).verdict,
                 try { UiKit.dirSizeBytes(d) } catch (t: Throwable) { 0L },
-                if (uploads) UploadWorker.status(applicationContext, d) else UploadStatus(UploadState.NONE))
+                if (uploads) UploadWorker.status(applicationContext, d) else UploadStatus(UploadState.NONE), thumbFor(d))
         }.sortedByDescending { it.timeMs }
     }
 
+    /** Middle keyframe, decoded small once per scan (worker thread). */
+    private fun thumbFor(d: File): Bitmap? {
+        thumbs[d.absolutePath]?.let { return it }
+        return try {
+            val jpgs = File(d, "keyframes").listFiles { f -> f.name.endsWith(".jpg", true) || f.name.endsWith(".jpeg", true) }?.sortedBy { it.name }
+            val f = jpgs?.getOrNull(jpgs.size / 2) ?: return null
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(f.path, bounds)
+            var sample = 1
+            while (bounds.outWidth / (sample * 2) >= 240 && bounds.outHeight / (sample * 2) >= 240) sample *= 2
+            BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = sample })?.also { thumbs[d.absolutePath] = it }
+        } catch (t: Throwable) { null }
+    }
+
+    /** "Today, 12:07", "Yesterday, 21:58", "17 Nov, 21:35", "17 Nov 2025" (phone's own time format). */
+    private fun friendlyDate(ms: Long): String {
+        val now = Calendar.getInstance(); val c = Calendar.getInstance().apply { timeInMillis = ms }
+        val time = android.text.format.DateFormat.getTimeFormat(this).format(Date(ms))
+        val days = (startOfDay(now) - startOfDay(c)) / 86_400_000L
+        return when {
+            days == 0L -> "Today, $time"
+            days == 1L -> "Yesterday, $time"
+            now.get(Calendar.YEAR) == c.get(Calendar.YEAR) -> android.text.format.DateFormat.format("d MMM", c).toString() + ", $time"
+            else -> android.text.format.DateFormat.format("d MMM yyyy", c).toString()
+        }
+    }
+
+    private fun startOfDay(c: Calendar) = (c.clone() as Calendar).apply {
+        set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+    }.timeInMillis
+
     private fun showMessage(msg: String) {
         list.removeAllViews()
-        list.addView(TextView(this).apply { text = msg; textSize = 18f; setTextColor(0xFFB0BEC5.toInt()); gravity = Gravity.CENTER }, lp(0))
+        list.addView(TextView(this).apply { text = msg; textSize = 16f; setTextColor(UiKit.LABEL_2); gravity = Gravity.CENTER; setPadding(0, dp(48), 0, 0) }, lp(0))
     }
 
     private fun render(rows: List<Row>) {
@@ -117,8 +147,10 @@ class ScansActivity : Activity() {
         if (UploadGate.available && !consentUpload) {
             list.addView(UiKit.banner(this, "Uploading is off. You did not allow uploads in the consent screen.", UiKit.Kind.WARN).apply { textSize = 15f }, lp(12))
         }
-        val fmt = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
-        for (r in rows) list.addView(card(r, fmt.format(Date(r.timeMs)), consentUpload), lp(12))
+        list.addView(UiKit.sectionHeader(this, if (rows.size == 1) "1 scan" else "${rows.size} scans"))
+        val group = UiKit.group(this)
+        for (r in rows) group.addView(card(r, friendlyDate(r.timeMs), consentUpload))
+        list.addView(group, lp(24))
     }
 
     private fun renderEmpty() {
@@ -126,11 +158,11 @@ class ScansActivity : Activity() {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
             setPadding(dp(16), dp(48), dp(16), dp(16))
             addView(TextView(context).apply {
-                text = "No scans yet"; textSize = 24f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+                text = "No scans yet"; textSize = 22f; typeface = UiKit.BOLD; setTextColor(UiKit.LABEL); gravity = Gravity.CENTER
             }, lp(8))
             addView(TextView(context).apply {
                 text = "Scan a room and it will show up here with its check result."
-                textSize = 16f; setTextColor(0xFFB0BEC5.toInt()); gravity = Gravity.CENTER
+                textSize = 15f; setTextColor(UiKit.LABEL_2); gravity = Gravity.CENTER
             }, lp(24))
             addView(UiKit.bigButton(context, "Start a scan").apply {
                 setOnClickListener { startActivity(Intent(this@ScansActivity, CaptureActivity::class.java)); finish() }
@@ -139,30 +171,42 @@ class ScansActivity : Activity() {
     }
 
     private fun card(r: Row, date: String, consentUpload: Boolean): View {
-        val badge = UiKit.chip(this).also { UiKit.setChip(it, ScanInfo.badgeText(r.verdict), ScanUi.verdictColor(r.verdict)) }
-        val title = TextView(this).apply {
-            text = if (r.room != null) "$date  -  ${r.room}" else date
-            textSize = 18f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); maxLines = 2; ellipsize = TextUtils.TruncateAt.END
+        val badge = UiKit.text(this, UiKit.dotted(ScanInfo.badgeText(r.verdict), ScanUi.verdictColor(r.verdict)), 13f, UiKit.LABEL_2)
+        val thumb = FrameLayout(this).apply {
+            background = UiKit.rounded(UiKit.FILL, dp(12).toFloat())
+            clipToOutline = true
+            if (r.thumb != null) addView(ImageView(context).apply { setImageBitmap(r.thumb); scaleType = ImageView.ScaleType.CENTER_CROP },
+                FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            else Unit
+        }
+        val info = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(TextView(context).apply {
+                text = r.room ?: date
+                textSize = 16f; typeface = UiKit.MEDIUM; setTextColor(UiKit.LABEL); maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+            })
+            addView(TextView(context).apply {
+                text = if (r.room != null) "$date  ·  ${UiKit.humanSize(r.size)}" else UiKit.humanSize(r.size)
+                textSize = 13.5f; setTextColor(UiKit.LABEL_3); maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(2); bottomMargin = dp(4) })
+            addView(badge)
         }
         val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(12) })
-            addView(badge, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(thumb, LinearLayout.LayoutParams(dp(64), dp(64)).apply { rightMargin = dp(14) })
+            addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(UiKit.iconImage(context, R.drawable.ic_chevron_right, UiKit.LABEL_3), LinearLayout.LayoutParams(dp(18), dp(18)))
         }
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = UiKit.rounded(0xFF1B222A.toInt(), dp(14).toFloat())
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            addView(top, lp(4))
-            addView(TextView(context).apply {
-                text = "${UiKit.humanSize(r.size)}  -  ${r.dir.name}"; textSize = 14f; setTextColor(0xFFB0BEC5.toInt())
-                maxLines = 1; ellipsize = TextUtils.TruncateAt.MIDDLE
-            }, lp(8))
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            foreground = UiKit.rowRipple()
+            addView(top, lp(0))
         }
         var spoken = "Scan $date${r.room?.let { ", $it" } ?: ""}. Check: ${ScanInfo.badgeText(r.verdict)}."
         if (UploadGate.available) {
             val chip = UiKit.chip(this).also { ScanUi.paintUpload(it, r.upload, wifiOnly) }
-            col.addView(chip, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
+            col.addView(chip, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10); bottomMargin = dp(8) })
             if (r.upload.state == UploadState.UPLOADING) col.addView(ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
                 max = 100; progress = r.upload.percent.coerceIn(0, 100)
                 contentDescription = "Upload progress ${r.upload.percent} percent"
@@ -179,8 +223,8 @@ class ScansActivity : Activity() {
                 setOnClickListener { isEnabled = false; queue(r.dir, r.verdict, replace = false) }
             }, lp(0))
             else if (r.verdict != "PASS" && r.verdict != "WARN" && r.upload.state == UploadState.NONE) col.addView(TextView(this).apply {
-                text = if (r.verdict == "FAIL") "A failed scan is never uploaded." else "Not finalized: this scan cannot be uploaded."; textSize = 14f; setTextColor(0xFFB0BEC5.toInt())
-            }, lp(0))
+                text = if (r.verdict == "FAIL") "A failed scan is never uploaded." else "Not finalized: this scan cannot be uploaded."; textSize = 13.5f; setTextColor(UiKit.LABEL_3)
+            }, lp(0).apply { topMargin = dp(8) })
         }
         col.isClickable = true
         col.contentDescription = spoken + " Double tap for details."
@@ -199,11 +243,11 @@ class ScansActivity : Activity() {
 
     private fun settingsPanel(): View = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        background = UiKit.rounded(0xFF1B222A.toInt(), dp(14).toFloat())
-        setPadding(dp(16), dp(10), dp(16), dp(10))
-        addView(Switch(context).apply {
-            text = "Upload on Wi-Fi only"; textSize = 16f; setTextColor(Color.WHITE)
-            isChecked = wifiOnly; minHeight = dp(48)
+        background = UiKit.card(context, UiKit.RADIUS_DP)
+        setPadding(dp(16), dp(10), dp(16), dp(12))
+        addView(UiKit.toggle(context, wifiOnly).apply {
+            text = "Upload on Wi-Fi only"; textSize = 16f; setTextColor(UiKit.LABEL); typeface = UiKit.MEDIUM
+            minHeight = dp(48)
             contentDescription = "Upload on Wi-Fi only. Turn off to also upload on mobile data."
             setOnCheckedChangeListener { _, on ->
                 wifiOnly = on
@@ -217,7 +261,7 @@ class ScansActivity : Activity() {
             }
         })
         addView(TextView(context).apply {
-            text = "Scans are large. Off means mobile data may be used."; textSize = 13f; setTextColor(0xFFB0BEC5.toInt())
+            text = "Scans are large. Off means mobile data may be used."; textSize = 13f; setTextColor(UiKit.LABEL_3)
         })
     }
 
