@@ -37,11 +37,18 @@ object ReviewSheet {
     /** Nothing of the room captured: no snapshot at all, or no floor and no wall seen. */
     fun nothingFound(o: CoreEvent.Overlay?): Boolean = o == null || (!o.floorFound && o.walls == 0 && o.surfaces.isEmpty())
 
-    /** The sheet is skipped (finish straight away) only when something was captured and no wall is weak. */
-    fun needed(o: CoreEvent.Overlay?): Boolean = nothingFound(o) || weakWalls(o).isNotEmpty()
+    /**
+     * The sheet is skipped (finish straight away) only when something was captured and no wall is weak. With
+     * [guidance] off (ADR 0032) the weak-wall part is gated: only the empty-scan notice remains.
+     */
+    fun needed(o: CoreEvent.Overlay?, guidance: Boolean): Boolean = nothingFound(o) || (guidance && weakWalls(o).isNotEmpty())
 
-    fun show(act: Activity, o: CoreEvent.Overlay?, onGaps: () -> Unit, onFinish: () -> Unit): Dialog {
-        val weak = weakWalls(o)
+    /**
+     * [guidance] off: minimal empty-scan notice (title, one line, the two buttons); no checklist or walls.
+     * The "Found" line needs [detector] (ADR 0032), as on the Review screen.
+     */
+    fun show(act: Activity, o: CoreEvent.Overlay?, guidance: Boolean, detector: Boolean, onGaps: () -> Unit, onFinish: () -> Unit): Dialog {
+        val weak = if (guidance) weakWalls(o) else emptyList()
         val empty = nothingFound(o)
         val segs = o?.let { ScanStateSnapshot.evidencedWalls(it) }.orEmpty()
         var done = 0; var scanning = 0
@@ -60,7 +67,7 @@ object ReviewSheet {
             background = UiKit.rounded(0x4DFFFFFF, act.dp(3).toFloat())
         }
 
-        val found = o?.let { ObjectSummary.text(it.objects, it.openings) }.orEmpty()   // issue #2 D: what was recognised so far
+        val found = if (!detector) "" else o?.let { ObjectSummary.text(it.objects, it.openings) }.orEmpty()   // issue #2 D: what was recognised so far
         val root = LinearLayout(act).apply {
             orientation = LinearLayout.VERTICAL
             background = UiKit.card(act, 28)
@@ -73,10 +80,10 @@ object ReviewSheet {
             })
 
             addView(text("Before you finish", 22f, true))
-            addView(checklist, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = act.dp(10) })
+            if (guidance) addView(checklist, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = act.dp(10) })
             addView(text(gapsText, UiKit.TEXT_M).apply {
                 setTextColor(if (empty || weak.isNotEmpty()) UiKit.AMBER else 0xFFB0BEC5.toInt())
-                contentDescription = "$gapsText ${checklist.description}"
+                contentDescription = if (guidance) "$gapsText ${checklist.description}" else gapsText
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = act.dp(10) })
             if (found.isNotEmpty()) addView(text("Found: $found.", UiKit.TEXT_M).apply {
                 setTextColor(0xFFCFD8DC.toInt())

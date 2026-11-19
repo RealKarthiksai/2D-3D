@@ -11,6 +11,7 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import dev.capturekit.capture.FeatureFlags
 import dev.capturekit.guidance.StatusPill
 
 /**
@@ -21,8 +22,10 @@ import dev.capturekit.guidance.StatusPill
  *  - Floating guidance: Now Bar coaching capsule anchored above camera deck with smooth fade transitions
  *  - Camera deck: Authentic camera shutter button (outer ring + solid core / stop square), flanked by circular glass controls
  * Long-press the status pill to toggle the ingest debug line. Clamped by system bar / cutout insets.
+ * [features] (ADR 0032): a switched-off feature's view is never added / stays GONE and gets no click listener
+ * (room card = guidance, boxes chip = detector, mic chip = voiceCommands, recalibration card = recalibrateCard).
  */
-class Hud(private val ctx: Activity) {
+class Hud(private val ctx: Activity, private val features: FeatureFlags.Flags = FeatureFlags.Flags.DEFAULTS) {
     private val d = ctx.resources.displayMetrics.density
     private fun dp(v: Int) = (v * d).toInt()
 
@@ -117,8 +120,8 @@ class Hud(private val ctx: Activity) {
         val mid = (longSide * 0.55).toInt()
         coaching.maxWidth = (longSide * 0.7).toInt(); detail.maxWidth = mid; voiceLine.maxWidth = mid; result.maxWidth = mid; debug.maxWidth = mid
         voice.setOnClickListener { onVoiceToggle() }
-        boxes.setOnClickListener { onBoxesToggle() }
-        mic.setOnClickListener { onMicClick() }
+        if (features.detector) boxes.setOnClickListener { onBoxesToggle() }
+        if (features.voiceCommands) mic.setOnClickListener { onMicClick() }
         trial.setOnClickListener { onTrialClick() }
         pill.setOnLongClickListener { debugOn = !debugOn; if (!debugOn) debug.visibility = View.GONE; true }
         UiKit.setChip(pill, "● " + StatusPill.STARTING.text, StatusPill.STARTING.tone.argb)
@@ -166,7 +169,7 @@ class Hud(private val ctx: Activity) {
         }
         val middle = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
-            addView(understanding.card, LinearLayout.LayoutParams(wrap, wrap).apply { gravity = Gravity.CENTER_VERTICAL })
+            if (features.guidance) addView(understanding.card, LinearLayout.LayoutParams(wrap, wrap).apply { gravity = Gravity.CENTER_VERTICAL })
             addView(msgs, LinearLayout.LayoutParams(0, wrap, 1f).apply { leftMargin = dp(8) })
         }
 
@@ -193,7 +196,7 @@ class Hud(private val ctx: Activity) {
 
         addView(reticle, FrameLayout.LayoutParams(dp(84), dp(84), Gravity.CENTER))
         addView(column, FrameLayout.LayoutParams(match, match))
-        addView(recalibrate.card, FrameLayout.LayoutParams(wrap, wrap, Gravity.CENTER))   // above the column, never clickable
+        if (features.recalibrateCard) addView(recalibrate.card, FrameLayout.LayoutParams(wrap, wrap, Gravity.CENTER))   // above the column, never clickable
         UiKit.applyInsets(this)
     }
 
@@ -214,7 +217,7 @@ class Hud(private val ctx: Activity) {
     fun setTracking(state: String, failure: String, live: Boolean = true) = setStatus(state, failure, emptyList(), 0, live)
 
     /** Latest core overlay snapshot (null hides it). Rendered at most 4 Hz; UI thread only. */
-    fun setUnderstanding(o: dev.capturekit.capture.CoreEvent.Overlay?) = understanding.update(o)
+    fun setUnderstanding(o: dev.capturekit.capture.CoreEvent.Overlay?) { if (features.guidance) understanding.update(o) }
 
     /** Voice-command feedback line; null hides it. Independent of [setDetail]. */
     fun setVoiceLine(text: String?) {
@@ -229,7 +232,7 @@ class Hud(private val ctx: Activity) {
 
     /** Fades to the new coaching sentence; [sub] (core long_text) goes to the room card caption. No-op when unchanged. */
     fun setCoaching(text: String, sub: String = "") {
-        understanding.setLongText(sub)
+        if (features.guidance) understanding.setLongText(sub)
         if (text == coachText) return
         coachText = text
         coaching.animate().cancel()
@@ -281,7 +284,7 @@ class Hud(private val ctx: Activity) {
 
     /** Camera-feed boxes chip; null hides it (detector not running, not recording, or the unguided trial arm). */
     fun setBoxes(on: Boolean?) {
-        if (on == null) { boxes.visibility = View.GONE; return }
+        if (on == null || !features.detector) { boxes.visibility = View.GONE; return }
         boxes.visibility = View.VISIBLE
         UiKit.setChip(boxes, if (on) "Boxes on" else "Boxes off", if (on) UiKit.GREEN else 0xFF546E7A.toInt())
         boxes.contentDescription = if (on) "Object boxes on the camera view are shown. Tap to hide them." else "Object boxes on the camera view are hidden. Tap to show them."
@@ -306,7 +309,7 @@ class Hud(private val ctx: Activity) {
      * text and a spoken-by-TalkBack description; idle is the quiet HUD blue-grey.
      */
     fun setMic(state: MicState?) {
-        if (state == null) { mic.visibility = View.GONE; return }
+        if (state == null || !features.voiceCommands) { mic.visibility = View.GONE; return }
         mic.visibility = View.VISIBLE
         val (text, color, desc) = when (state) {
             MicState.IDLE -> Triple("Mic", 0xFF455A64.toInt(), "Voice commands. Tap, then say pause, resume, repeat, what is missing, finish, louder or quieter.")
@@ -349,7 +352,7 @@ class Hud(private val ctx: Activity) {
      * Issue #1 / ADR 0031: the recalibration card. [text] = the core's sentence ([dev.capturekit.guidance.Recalibration.prompt]);
      * null hides it. Shown while the core recovers tracking (keyframe capture paused); dismissed when tracking is back.
      */
-    fun setRecalibrate(text: String?) = recalibrate.set(text)
+    fun setRecalibrate(text: String?) { if (features.recalibrateCard) recalibrate.set(text) }
 
     fun release() { pulse.cancel(); coaching.animate().cancel(); recalibrate.release() }
 }

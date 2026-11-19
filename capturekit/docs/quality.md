@@ -35,3 +35,28 @@ zero allocations per frame after the first frame at a resolution. Device numbers
 `ckit import-raw RAW OUT --select-keyframes [--config cfg.json]` keeps only selected keyframes.
 `ckit quality-report BUNDLE... [--json out] [--no-sfm]` adds pycolmap registration rate of the selection.
 Reports for the synthetic golden sessions: `docs/reports/quality_synth.json`.
+
+## Reconstruction bench (`ckit recon-bench`)
+`ckit recon-bench SCAN [--baseline SCAN] [--json OUT]` reconstructs a bundle folder offline (pycolmap,
+CPU, 1 thread, seed 0) and prints a table; `--baseline` adds a baseline column and a delta column.
+Archive input is not supported yet. JSON keys (read by later issues; `seconds` is printed but never
+written to JSON, so two runs on one bundle give byte-identical files):
+
+| key | meaning |
+|---|---|
+| bundle | folder name |
+| package_bytes | sum of sizes of the files listed in manifest.json plus manifest.json itself (every file under the folder if there is no readable manifest); archive size once archive input lands |
+| keyframes | keyframe images in the sampled list given to SfM (capped at 80 by the e2e sampler) |
+| registered_pct | % of the sampled keyframes registered by free incremental SfM (no pose prior) |
+| reproj_images | posed keyframes (all of them, not the sampled list) used by the fixed-pose triangulation |
+| mean_reproj_px | mean reprojection error of pose-seeded (fixed-pose) triangulation over all `reproj_images` |
+| sparse_points | 3D points from that triangulation (all posed keyframes) |
+| coverage_yaw_pct | % of 36 yaw sectors (10 deg, world Y-up) that >= 1 posed keyframe of the sampled list looks into (poses only; proxy, no ground truth) |
+| baseline, delta | only with `--baseline`: the baseline's keys and `report - baseline` per key |
+
+Fixed-pose triangulation registers every posed image by construction, so `registered_pct` comes from
+the free mapping. Table and exact commands: `docs/reports/recon_bench.md`.
+
+Scope: `keyframes` and `registered_pct` use the sampled list (at most 80); `reproj_images`,
+`mean_reproj_px` and `sparse_points` use all posed keyframes, so the two groups differ for long scans.
+A bundle with fewer than 3 keyframes exits 1 with a message on stderr.
