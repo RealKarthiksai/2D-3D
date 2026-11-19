@@ -25,6 +25,7 @@ const char* reason_code(Reason r) {
     case kMinGap: return "MIN_GAP";
     case kNotBest: return "NOT_BEST";
     case kRecalibrating: return "RECALIBRATING";
+    case kDuplicate: return "DUPLICATE";
   }
   return "UNKNOWN";
 }
@@ -306,11 +307,36 @@ std::optional<double> median_point_depth(const geometry::PoseWC& T, const float*
 }
 
 // ---- Keyframe selector ----
-bool KeyframeSelector::novel(const geometry::PoseWC& T) const {
+// A saved keyframe covers T when it is within trans_ratio x depth AND rot_deg of it (ADR 0033). Checked
+// against the last keyframe first (NOT_NOVEL, as before), then against every indexed keyframe (DUPLICATE):
+// a revisit of an older view is skipped, never saved again. Brute force over the bounded ring: <= 2048 poses,
+// cheap translation test first, rotation only for the few nearby.
+uint32_t KeyframeSelector::novelty(const geometry::PoseWC& T) const {
   const double depth = depth_ > 0 ? depth_ : cfg_.scene_depth_m;
-  const double dt = (T.translation() - kf_pose_.translation()).norm();
-  const double ang = kf_pose_.rotation().angularDistance(T.rotation()) * 180.0 / M_PI;
-  return dt / depth >= cfg_.trans_ratio || ang >= cfg_.rot_deg;
+  const double r = cfg_.trans_ratio * depth;
+  const Eigen::Vector3d t = T.translation();
+  const Eigen::Quaterniond q = T.rotation();
+  auto covers = [&](const Eigen::Vector3d& kt, const Eigen::Quaterniond& kq) {
+    return (t - kt).norm() / depth < cfg_.trans_ratio && kq.angularDistance(q) * 180.0 / M_PI < cfg_.rot_deg;
+  };
+  if (covers(kf_pose_.translation(), kf_pose_.rotation())) return kNotNovel;
+  const double r2 = r * r * (1 + 1e-9);  // prefilter only; covers() decides at the boundary
+  for (const auto& k : index_)
+    if ((t - k.t).squaredNorm() < r2 && covers(k.t, k.q)) return kDuplicate;
+  return 0;
+}
+
+void KeyframeSelector::clear_index() {
+  index_.clear();  // keeps the reserved capacity
+  index_head_ = 0;
+  have_kf_ = false;
+}
+
+bool KeyframeSelector::reanchor(double drift_m, double drift_deg) {
+  const double depth = depth_ > 0 ? depth_ : cfg_.scene_depth_m;
+  if (!(drift_m / depth >= cfg_.trans_ratio || drift_deg >= cfg_.rot_deg)) return false;
+  clear_index();
+  return true;
 }
 
 void KeyframeSelector::close_window(std::vector<Decision>& out) {
@@ -323,6 +349,13 @@ void KeyframeSelector::close_window(std::vector<Decision>& out) {
   have_kf_ = true;
   window_ = false;
   ++n_kf_;
+  const KfPose k{kf_pose_.translation(), kf_pose_.rotation()};
+  if (index_.size() < kPoseIndexCap) {
+    index_.push_back(k);  // capacity reserved in the constructor: no allocation
+  } else {
+    index_[index_head_] = k;  // full: overwrite the oldest
+    index_head_ = (index_head_ + 1) % kPoseIndexCap;
+  }
 }
 
 void KeyframeSelector::push(uint32_t id, int64_t t, const FrameMetrics& m, const geometry::PoseWC& T,
@@ -335,7 +368,12 @@ void KeyframeSelector::push(uint32_t id, int64_t t, const FrameMetrics& m, const
     return;
   }
   if (window_) {
-    if (d.quality > best_.d.quality) {
+    // A better frame that a saved keyframe already covers must not win (no duplicate saved via the window).
+    const uint32_t covered = d.quality > best_.d.quality && have_kf_ ? novelty(T) : 0;
+    if (covered) {
+      d.reasons |= covered;
+      pending_.push_back(d);
+    } else if (d.quality > best_.d.quality) {
       best_.d.reasons |= kNotBest;
       pending_.push_back(best_.d);
       best_ = {d, T};
@@ -356,8 +394,8 @@ void KeyframeSelector::push(uint32_t id, int64_t t, const FrameMetrics& m, const
       out.push_back(d);
       return;
     }
-    if (!novel(T)) {
-      d.reasons |= kNotNovel;
+    if (const uint32_t covered = novelty(T)) {
+      d.reasons |= covered;
       out.push_back(d);
       return;
     }

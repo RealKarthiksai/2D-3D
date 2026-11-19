@@ -23,6 +23,7 @@ class StatusPillTest {
         "MIN_GAP" to "Good",
         "NOT_BEST" to "Good",
         "RECALIBRATING" to "Recalibrating",
+        "DUPLICATE" to "Good",
     )
 
     @Test fun recalibratingOutranksEverythingButTrackingLost() {
@@ -63,7 +64,7 @@ class StatusPillTest {
     }
 
     @Test fun selectorReasonsNeverAffectThePill() {
-        for (code in listOf("NOT_NOVEL", "MIN_GAP", "NOT_BEST")) assertNull(code, StatusPill.forReason(code))
+        for (code in listOf("NOT_NOVEL", "MIN_GAP", "NOT_BEST", "DUPLICATE")) assertNull(code, StatusPill.forReason(code))
         assertEquals(StatusPill.GOOD, statusPill("TRACKING", "NONE", listOf("NOT_NOVEL", "MIN_GAP", "NOT_BEST"), 0))
         assertEquals(StatusPill.WARMING, statusPill("TRACKING", "NONE", listOf("NOT_BEST"), 2))
     }

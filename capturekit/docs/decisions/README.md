@@ -33,3 +33,4 @@ Architecture Decision Records (ADRs), one file per decision: NNNN-title.md.
 - [0029](0029-sim-arcore-plane-mode-furnished-rooms.md) Simulator "arcore" plane mode (fragments, re-ids, subsumption, jitter) and furnished4 / furnishedL rooms
 - [0030](0030-object-classes-detector-default-on.md) More object classes (append-only ids), detector on by default, objects on the mini-map, camera boxes and review
 - [0031](0031-tracking-recovery-recalibrate.md) Tracking recovery (issue #1): RECALIBRATE prompt, keyframe pause, TRACKING_LOST / TRACKING_RESET events
+- [0033](0033-keyframe-dedup-all-keyframes.md) Keyframe selection (issue #9): novelty against all saved keyframes, DUPLICATE reason, thresholds unchanged

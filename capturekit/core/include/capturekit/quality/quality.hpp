@@ -29,8 +29,9 @@ enum Reason : uint32_t {
   kMinGap = 1u << 11,           // selector: too soon after last keyframe
   kNotBest = 1u << 12,          // selector: a better frame won the candidate window
   kRecalibrating = 1u << 13,    // hard (session): tracking recovery active, keyframe capture paused (ADR 0031)
+  kDuplicate = 1u << 14,        // selector: an older saved keyframe already covers this view (revisit, ADR 0033)
 };
-constexpr uint32_t kLastReason = kRecalibrating;  // highest bit, for iteration
+constexpr uint32_t kLastReason = kDuplicate;  // highest bit, for iteration
 const char* reason_code(Reason r);
 std::vector<std::string> reason_codes(uint32_t mask);  // reporting only (allocates)
 
@@ -134,7 +135,12 @@ class KeyframeSelector {
     double quality = 0;
     uint32_t reasons = 0;  // metric reasons | selector reasons
   };
-  explicit KeyframeSelector(const QualityConfig& cfg) : cfg_(cfg) { pending_.reserve(64); }
+  /// Saved keyframe poses kept for revisit detection (ADR 0033): the newest kPoseIndexCap, oldest evicted.
+  static constexpr size_t kPoseIndexCap = 2048;
+  explicit KeyframeSelector(const QualityConfig& cfg) : cfg_(cfg) {
+    pending_.reserve(64);
+    index_.reserve(kPoseIndexCap);
+  }
   /// Every pushed frame gets exactly one decision, possibly after its candidate window closes.
   void push(uint32_t frame_id, int64_t t_ns, const FrameMetrics& m,
             const geometry::PoseWC& T_world_from_camera, std::vector<Decision>& out);
@@ -143,14 +149,25 @@ class KeyframeSelector {
   /// Governor keyframe_rate_scale: min gap is divided by it; <= 0 stops new keyframes.
   void set_rate_scale(double s) { rate_scale_ = s; }
   uint64_t keyframes() const { return n_kf_; }
+  size_t indexed_keyframes() const { return index_.size(); }
+  /// Forget all saved keyframe poses (and the last keyframe for novelty); capacity is kept, no allocation.
+  void clear_index();
+  /// Tracking re-anchor (ADR 0031 TRACKING_RESET): old poses live in a shifted frame. Clears the index when the
+  /// drift exceeds the dedup thresholds (drift_m / depth >= trans_ratio or drift_deg >= rot_deg). True if cleared.
+  bool reanchor(double drift_m, double drift_deg);
 
  private:
   struct Cand {
     Decision d;
     geometry::PoseWC pose;
   };
+  struct KfPose {
+    Eigen::Vector3d t;
+    Eigen::Quaterniond q;
+  };
   void close_window(std::vector<Decision>& out);
-  bool novel(const geometry::PoseWC& T) const;
+  /// 0 when T is novel; kNotNovel when the last keyframe covers it, kDuplicate when an older saved one does.
+  uint32_t novelty(const geometry::PoseWC& T) const;
   QualityConfig cfg_;
   double depth_ = 0, rate_scale_ = 1.0;
   bool have_kf_ = false, window_ = false;
@@ -158,6 +175,8 @@ class KeyframeSelector {
   int64_t kf_t_ = 0, window_t0_ = 0;
   Cand best_;
   std::vector<Decision> pending_;
+  std::vector<KfPose> index_;  // ring once full; index_head_ = next slot to overwrite
+  size_t index_head_ = 0;
   uint64_t n_kf_ = 0;
 };
 
