@@ -47,6 +47,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.decorView.setBackgroundColor(UiKit.BG)
+        Features.prefetch(this)   // ADR 0032: debug-build switches read off the main thread before the capture screen
         if (prefs.getBoolean(KEY_ONBOARDED, false)) showHome() else showOnboarding(0)
         if (savedInstanceState == null) checkLastExit()
     }

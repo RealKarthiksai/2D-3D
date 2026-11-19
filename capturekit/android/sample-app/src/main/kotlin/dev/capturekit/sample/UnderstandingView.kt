@@ -80,10 +80,11 @@ class ChecklistView(ctx: Context) : LinearLayout(ctx) {
 }
 
 /**
- * "What the app understands" card for the capture HUD's left-centre zone: the live mini room ([RoomView]), the
- * parts checklist under it and a small caption with the core's reason line (why_text, else the core's
- * long_text). All sentences come from the core; only fixed labels live here. Tap the card to collapse it to the
- * map only. Updates are throttled to 4 Hz and must be called on the UI thread.
+ * "What the app understands" card for the capture HUD's left-centre zone: the parts checklist and a small caption
+ * with the core's reason line (why_text, else the core's long_text). The live mini room was removed from the capture
+ * screen (issue #8: the camera mask overlay replaces it); [RoomView] stays on the review screen. All sentences come
+ * from the core; only fixed labels live here. Tap the card to hide the caption. Updates are throttled to 4 Hz and must
+ * be called on the UI thread.
  * Feedback: a haptic tick when another wall reaches the done threshold; a short green glow plus a confirm
  * haptic when the core reports mode "finish" (the core speaks "Scan complete" itself).
  */
@@ -91,7 +92,6 @@ class UnderstandingView(private val ctx: Context) {
     private val d = ctx.resources.displayMetrics.density
     private fun dp(v: Int) = (v * d).toInt()
 
-    private val room = RoomView(ctx)
     private val checklist = ChecklistView(ctx)
     private val caption = TextView(ctx).apply {
         textSize = UiKit.TEXT_S; setTextColor(UiKit.LABEL_2); maxLines = 2
@@ -109,8 +109,7 @@ class UnderstandingView(private val ctx: Context) {
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         background = glassBg
         setPadding(dp(6), dp(6), dp(6), dp(6))
-        addView(room, LinearLayout.LayoutParams(dp(MAP_W_DP), dp(MAP_H_DP)))
-        addView(checklist, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
+        addView(checklist, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         addView(caption, LinearLayout.LayoutParams(dp(MAP_W_DP), LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(2) })
         setOnClickListener { collapsed = !collapsed; render() }
     }
@@ -146,7 +145,6 @@ class UnderstandingView(private val ctx: Context) {
     /** Newest snapshot (null = not scanning: hide everything). Renders at most every 250 ms (4 Hz). */
     fun update(o: CoreEvent.Overlay?, nowMs: Long = SystemClock.elapsedRealtime()) {
         if (o == null) {
-            if (last != null || shown != null) room.reset()
             last = null; shown = null; shownFound = -1; shownDone = -1; maxDone = -1; finishSeen = false
             card.removeCallbacks(unglow); card.background = glassBg
             card.visibility = View.GONE
@@ -167,7 +165,6 @@ class UnderstandingView(private val ctx: Context) {
 
     private fun render() {
         val o = last ?: return
-        if (o !== shown) room.setData(o)
         shown = o
         val pct = Math.round((o.completeness * 100).coerceIn(0.0, 100.0)).toInt()
         var done = 0; var scanning = 0
@@ -194,7 +191,6 @@ class UnderstandingView(private val ctx: Context) {
                 (if (foundText.isEmpty()) "" else "Found: $foundText. ") +
                 if (collapsed) "Details hidden. Tap to show." else "Tap to hide details."
         }
-        checklist.visibility = if (collapsed) View.GONE else View.VISIBLE
         card.visibility = View.VISIBLE
         shownFound = found; shownDone = done; shownScanning = scanning
         shownFloor = o.floorFound; shownCeiling = ceilingSeen; shownPct = pct; shownCollapsed = collapsed; shownFoundText = foundText
@@ -204,8 +200,7 @@ class UnderstandingView(private val ctx: Context) {
     }
 
     private companion object {
-        const val MAP_W_DP = 170
-        const val MAP_H_DP = 130
+        const val MAP_W_DP = 170   // caption width (was the mini-map width)
         const val GLOW = 0xCC2E7D32.toInt()
         const val GLOW_MS = 1200L
     }

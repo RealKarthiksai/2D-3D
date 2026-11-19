@@ -50,6 +50,7 @@ dist/
 *.iml
 .DS_Store
 
-# --- Detector model (fetched by scripts/fetch_models.sh, never committed; ADR 0017) ---
+# --- Detector / segmentation models (fetched by scripts/fetch_models.sh, never committed; ADR 0017, issue #8) ---
 /android/capturekit/src/main/assets/*.tflite
+/android/capturekit/src/main/assets/*.bin
 .kotlin/
