@@ -32,7 +32,15 @@ def _residuals(rec) -> np.ndarray:
     return np.asarray(res).reshape(-1, 2)
 
 
-def _triangulate(pycolmap, model: Path, db: Path, images: Path, out: Path, shift: float):
+def _triangulate(
+    pycolmap,
+    model: Path,
+    db: Path,
+    images: Path,
+    out: Path,
+    shift: float,
+    threads: int | None = None,
+):
     rec = pycolmap.Reconstruction(str(model))
     for cam in rec.cameras.values():
         p = np.array(cam.params, float)
@@ -42,6 +50,8 @@ def _triangulate(pycolmap, model: Path, db: Path, images: Path, out: Path, shift
     out.mkdir(parents=True, exist_ok=True)
     opts = pycolmap.IncrementalPipelineOptions()
     opts.triangulation.random_seed = 0
+    if threads is not None:
+        opts.num_threads = threads
     return pycolmap.triangulate_points(rec, str(db), str(images), str(out), options=opts)
 
 
@@ -62,7 +72,11 @@ def _refine_principal_point(pycolmap, rec) -> list[float]:
     return [round(float(after[i] - before[i]), 4) for i in (2, 3)]
 
 
-def report_bundle(bundle: Path, work: Path | None = None, overlap: int = 10) -> dict:
+def report_bundle(
+    bundle: Path, work: Path | None = None, overlap: int = 10, num_threads: int | None = None
+) -> dict:
+    """num_threads=None keeps the fast defaults; an int pins extraction, matching and
+    triangulation to that many threads (recon-bench uses 1 for run-to-run determinism)."""
     import pycolmap
 
     pycolmap.logging.minloglevel = 2  # warnings+ only
@@ -81,7 +95,7 @@ def report_bundle(bundle: Path, work: Path | None = None, overlap: int = 10) -> 
         cam0 = next(iter(rec0.cameras.values()))
         names = [img.name for img in rec0.images.values()]
         ext = pycolmap.FeatureExtractionOptions()
-        ext.num_threads = 4
+        ext.num_threads = 4 if num_threads is None else num_threads
         reader = pycolmap.ImageReaderOptions()
         reader.camera_model = cam0.model.name
         reader.camera_params = ",".join(repr(float(v)) for v in cam0.params)
@@ -101,11 +115,16 @@ def report_bundle(bundle: Path, work: Path | None = None, overlap: int = 10) -> 
         export_colmap(bundle, model, image_ids=ids)
         pair = pycolmap.SequentialPairingOptions()
         pair.overlap = overlap
-        pycolmap.match_sequential(db, pairing_options=pair, device=pycolmap.Device.cpu)
+        match_kw = {}
+        if num_threads is not None:  # default call path stays exactly as before
+            match = pycolmap.FeatureMatchingOptions()
+            match.num_threads = num_threads
+            match_kw["matching_options"] = match
+        pycolmap.match_sequential(db, pairing_options=pair, device=pycolmap.Device.cpu, **match_kw)
         sweep = {}
         main = None
         for s in SHIFTS:
-            rec = _triangulate(pycolmap, model, db, bundle, tmp / f"tri_{s:+.1f}", s)
+            rec = _triangulate(pycolmap, model, db, bundle, tmp / f"tri_{s:+.1f}", s, num_threads)
             r = _residuals(rec)
             e = np.linalg.norm(r, axis=1) if len(r) else np.zeros(0)
             sweep[f"{s:+.1f}"] = round(float(e.mean()), 4) if len(e) else None
@@ -113,7 +132,7 @@ def report_bundle(bundle: Path, work: Path | None = None, overlap: int = 10) -> 
                 main = (rec, r, e)
         rec, r, e = main
         # Poses fixed, principal point free: its shift directly estimates a pixel-centre bias.
-        ref = _triangulate(pycolmap, model, db, bundle, tmp / "tri_pp", 0.0)
+        ref = _triangulate(pycolmap, model, db, bundle, tmp / "tri_pp", 0.0, num_threads)
         pp_delta = _refine_principal_point(pycolmap, ref)
         observed = {
             el.image_id for pid in rec.point3D_ids() for el in rec.point3D(pid).track.elements

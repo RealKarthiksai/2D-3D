@@ -136,6 +136,36 @@ def reprojection_report_cmd(
     typer.echo(json.dumps(rep["summary"], sort_keys=True))
 
 
+@app.command("recon-bench")
+def recon_bench_cmd(
+    scan: Path,
+    baseline: Annotated[
+        Path | None, typer.Option(help="Second bundle folder to compare side by side.")
+    ] = None,
+    json_out: Annotated[Path | None, typer.Option("--json", help="Write JSON report here.")] = None,
+) -> None:
+    """Offline reconstruction report (single-threaded, seeded); `--baseline` adds delta columns."""
+    import json
+
+    from ckit.recon_bench import delta, recon_bench, stable, table
+
+    try:
+        rep = recon_bench(scan)
+        base = recon_bench(baseline) if baseline else None
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+    if json_out:
+        # `seconds` is wall-clock and non-deterministic: kept out of the JSON.
+        out = stable(rep)
+        if base is not None:
+            out["baseline"] = stable(base)
+            out["delta"] = delta(rep, base)
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+    typer.echo(table(rep, base))
+
+
 @app.command("replay")
 def replay_cmd(
     bundle: Path,
