@@ -10,8 +10,11 @@ from pathlib import Path
 from ckit.replay.driver import replay
 
 
-def registration_rate(bundle: Path, files: list[str], work: Path | None = None) -> dict:
-    """Incremental SfM (pycolmap) on the given images only; registered / given."""
+def registration_rate(
+    bundle: Path, files: list[str], work: Path | None = None, num_threads: int | None = None
+) -> dict:
+    """Incremental SfM (pycolmap) on the given images only; registered / given.
+    num_threads=None keeps the defaults; an int pins extraction, matching and mapping."""
     import pycolmap
 
     pycolmap.logging.minloglevel = 2
@@ -22,7 +25,12 @@ def registration_rate(bundle: Path, files: list[str], work: Path | None = None) 
         if db.exists():
             db.unlink()
         ext = pycolmap.FeatureExtractionOptions()
-        ext.num_threads = 4
+        ext.num_threads = 4 if num_threads is None else num_threads
+        match_kw = {}
+        if num_threads is not None:  # default call path stays exactly as before
+            match = pycolmap.FeatureMatchingOptions()
+            match.num_threads = num_threads
+            match_kw["matching_options"] = match
         pycolmap.extract_features(
             db,
             bundle,
@@ -32,13 +40,18 @@ def registration_rate(bundle: Path, files: list[str], work: Path | None = None) 
             device=pycolmap.Device.cpu,
         )
         if len(files) <= 80:
-            pycolmap.match_exhaustive(db, device=pycolmap.Device.cpu)
+            pycolmap.match_exhaustive(db, device=pycolmap.Device.cpu, **match_kw)
         else:
             pair = pycolmap.SequentialPairingOptions()
             pair.overlap = 15
-            pycolmap.match_sequential(db, pairing_options=pair, device=pycolmap.Device.cpu)
+            pycolmap.match_sequential(
+                db, pairing_options=pair, device=pycolmap.Device.cpu, **match_kw
+            )
         opts = pycolmap.IncrementalPipelineOptions()
         opts.random_seed = 0  # deterministic mapping where pycolmap allows it
+        if num_threads is not None:
+            opts.num_threads = num_threads
+            opts.mapper.num_threads = num_threads
         recs = pycolmap.incremental_mapping(db, bundle, tmp / "sparse", options=opts)
         best = max((r.num_reg_images() for r in recs.values()), default=0)
         return {
