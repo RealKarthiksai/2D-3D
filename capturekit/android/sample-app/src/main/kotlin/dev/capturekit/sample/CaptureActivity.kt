@@ -22,7 +22,7 @@ import dev.capturekit.guidance.ScanStateSnapshot
 import dev.capturekit.nativebridge.Status
 import dev.capturekit.platform.PlatformSignals
 import dev.capturekit.platform.ThermalAdapter
-import dev.capturekit.capture.DebugFlags
+import dev.capturekit.capture.FeatureFlags
 import dev.capturekit.sample.research.ResearchLog
 import java.io.File
 import java.text.SimpleDateFormat
@@ -31,10 +31,11 @@ import java.util.Locale
 
 /**
  * Guided scan screen: a real core session (quality, keyframe selection, governor, guidance) over the live
- * camera image with a friendly HUD. The 2D object detector runs by default when its model is packaged (ADR 0030):
- * its boxes are drawn over the camera feed ([DetectionOverlayView], "Boxes" chip) and the core lifts them to the
- * labelled objects of the mini-map and the review screen. Core instructions are shown (speak_text as coaching, long_text as
- * subtitle), spoken verbatim by [SpeechRenderer] and mapped to haptics. Finish hands over to [ReviewActivity].
+ * camera image with a friendly HUD. Features not yet verified on a device are switched off by [FeatureFlags]
+ * (ADR 0032; debug builds can switch them on): with `detector` on, the 2D detector's boxes are drawn over the camera feed
+ * ([DetectionOverlayView], "Boxes" chip) and the core lifts them to the labelled objects of the mini-map and the review
+ * screen. Core instructions (only safety/tracking ones unless `guidance` is on) are shown (speak_text as coaching,
+ * long_text as subtitle), spoken verbatim by [SpeechRenderer] and mapped to haptics. Finish hands over to [ReviewActivity].
  * Bundles land in getExternalFilesDir("bundles"); interrupted sessions are recovered on the next launch.
  * Pull with: adb pull /sdcard/Android/data/dev.capturekit.sample/files/bundles
  */
@@ -43,7 +44,8 @@ class CaptureActivity : Activity(), SessionManager.Listener {
     private lateinit var hud: Hud
     private lateinit var boxView: DetectionOverlayView
     private lateinit var speech: SpeechRenderer
-    private lateinit var voice: VoiceController
+    /** Null when voice commands are switched off (ADR 0032): no recognizer, no mic permission request. */
+    private var voice: VoiceController? = null
     private lateinit var research: ResearchLog
     private var session: SessionManager? = null
     @Volatile private var adapter: ARAdapter? = null
@@ -59,6 +61,8 @@ class CaptureActivity : Activity(), SessionManager.Listener {
     @Volatile private var instruction = ""
     @Volatile private var instructionLong = ""
     @Volatile private var instructionType = ""
+    /** elapsedRealtime when [instruction] arrived: with guidance off a safety prompt expires (FeatureFlags.instructionStillShown). */
+    @Volatile private var instructionAtMs = 0L
     /** Issue #1 / ADR 0031: tracking recalibration prompt (immutable; replaced on the core event thread, read on the UI thread). */
     @Volatile private var recal = Recalibration()
     /**
@@ -93,7 +97,10 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         override fun voiceStateChanged() = refreshMic()
     }
 
-    private fun refreshMic() = hud.setMic(if (voice.available && recording && !finishing && !research.unguided) voice.micState else null)
+    private fun refreshMic() {
+        val v = voice
+        hud.setMic(if (v != null && v.available && recording && !finishing && !research.unguided) v.micState else null)
+    }
 
     /** Trial chip (field flavour, not while recording) and the voice chip (hidden in the unguided arm). */
     private fun applyTrial() {
@@ -103,6 +110,9 @@ class CaptureActivity : Activity(), SessionManager.Listener {
     }
 
     private fun scanPrompt() = if (research.unguided) "Scan the room" else "Move slowly and keep the camera steady"
+
+    /** Drops the last instruction so the coaching line goes back to [scanPrompt] (prompt expired, or the scan resumed). */
+    private fun clearInstruction() = synchronized(recalLock) { instruction = ""; instructionLong = ""; instructionType = "" }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -117,16 +127,20 @@ class CaptureActivity : Activity(), SessionManager.Listener {
             boxView.onArFrame(frame)   // cheap no-op unless a new keyframe's boxes arrived
         }
         ar.onError = { msg -> arMessage = msg; refresh() }
-        hud = Hud(this)
+        hud = Hud(this, features)
         hud.pauseEnabled = true
         hud.button.setOnClickListener { if (session == null) start() else stop() }
         hud.pauseButton.setOnClickListener { togglePause() }
         hud.onVoiceToggle = { speech.enabled = !speech.enabled; hud.setVoice(speech.enabled) }
-        hud.onBoxesToggle = { boxView.showBoxes = !boxView.showBoxes; hud.setBoxes(boxView.showBoxes) }
+        if (features.detector) hud.onBoxesToggle = { boxView.showBoxes = !boxView.showBoxes; hud.setBoxes(boxView.showBoxes) }
+        else boxView.visibility = android.view.View.GONE
         research = ResearchLog(this)
-        voice = VoiceController(this, speech, voiceHost)
-        voice.onIntent = { research.onIntent(it.name) }
-        hud.onMicClick = { voice.onMicTapped() }
+        if (features.voiceCommands) {
+            val v = VoiceController(this, speech, voiceHost)
+            v.onIntent = { research.onIntent(it.name) }
+            hud.onMicClick = { v.onMicTapped() }
+            voice = v
+        }
         hud.onTrialClick = { if (!recording) research.showSetup { applyTrial() } }
         applyTrial()
         hud.setCoaching("Press Start, then move slowly around the room")
@@ -149,26 +163,14 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         }.start()
     }
 
-    /** Start pressed: ask for the microphone first (rationale), then begin; a refusal only turns voice commands off. */
-    private fun start() = voice.ensurePermissionThen { startScan() }
-
-    /** One `getprop` call (a short child process; streams closed, process destroyed). Debug builds only, read once per activity. */
-    private fun sysProp(n: String): String {
-        var p: Process? = null
-        return try {
-            p = Runtime.getRuntime().exec(arrayOf("getprop", n))
-            p.inputStream.bufferedReader().use { it.readText().trim() }
-        } catch (t: Throwable) { "" } finally { p?.destroy() }
-    }
-
     /**
-     * (understanding override or null, detector on). Properties are read once, only in a debuggable build; elsewhere
-     * there is no override and the detector is on (ADR 0030: on by default; it still needs the packaged model).
+     * Start pressed: with voice commands on, ask for the microphone first (rationale), then begin; a refusal only turns
+     * voice commands off. With them off (default, ADR 0032) there is no microphone request.
      */
-    private val debugFlags: Pair<Int?, Boolean> by lazy {
-        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE == 0) null to true
-        else DebugFlags.understandingLevel(sysProp(DebugFlags.PROP_UNDERSTANDING)) to DebugFlags.detectorOn(sysProp(DebugFlags.PROP_DETECTOR))
-    }
+    private fun start() { val v = voice; if (v != null) v.ensurePermissionThen { startScan() } else startScan() }
+
+    /** Feature switches (ADR 0032): defaults everywhere, debug-build `setprop` overrides; see [Features]. */
+    private val features: FeatureFlags.Flags by lazy { Features.get(this) }
 
     private fun startScan() {
         if (session != null || finishing) return
@@ -181,15 +183,16 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         }
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val dir = File(getExternalFilesDir("bundles"), "scan_$stamp")
-        // Detector on by default; debug builds can override (U11-A): `adb shell setprop debug.capturekit.detector 0` and
-        // `debug.capturekit.understanding 0|1|2`. With no understanding override, a running detector gets level 1 (objects).
-        val (understandingOverride, detector) = debugFlags
+        // Detector off by default (ADR 0032); debug builds can override: `adb shell setprop debug.capturekit.detector 1` and
+        // `debug.capturekit.understanding 0|1|2`. With no understanding override, a running detector gets level 1 (objects);
+        // with the detector off and no override there is no `guide.understanding` key (no /ar/detections, no /guide/ objects).
+        val detector = features.detector
         val detectorWillRun = detector && LiteRtKeyframeDetector.available(this)
         // The unguided trial arm is the no-guidance control: no understanding by default (detections are still recorded).
-        val understanding = DebugFlags.understandingFor(understandingOverride, detectorWillRun && !research.unguided)
+        val understanding = FeatureFlags.understandingFor(features.understanding, detectorWillRun && !research.unguided)
         val s = SessionManager(this, dir, listener = this, detectorEnabled = detector)
         // 8 core frame slots (default 4): absorbs ~800 ms worker stalls at 10 candidates/s before ErrFull.
-        if (!s.start(mapOf<String, Any>("frame_slots" to 8) + consentCfg + DebugFlags.extraConfig(understanding))) {
+        if (!s.start(mapOf<String, Any>("frame_slots" to 8) + consentCfg + FeatureFlags.extraConfig(understanding))) {
             hud.setBanner("Could not start the capture session. Check free storage and try again.", UiKit.Kind.ERROR)
             return
         }
@@ -232,21 +235,22 @@ class CaptureActivity : Activity(), SessionManager.Listener {
             }
         } else {
             val st = s.resume()
-            if (st == Status.OK) hud.setCoaching(scanPrompt())
+            if (st == Status.OK) { clearInstruction(); hud.setCoaching(scanPrompt()) }
             else hud.setBanner("Cannot resume yet: the phone needs to cool down or charge (status ${UiKit.statusName(st)}).", UiKit.Kind.WARN)
         }
     }
 
     /**
      * Finish pressed: when a wall is weak, pause the core and show [ReviewSheet] before finalize ("Scan the gaps"
-     * resumes the same bundle, "Finish anyway" finalizes); otherwise finish straight away.
+     * resumes the same bundle, "Finish anyway" finalizes); otherwise finish straight away. With guidance off (ADR 0032)
+     * only the empty-scan notice remains (nothing of the room captured).
      */
     private fun stop() {
         val s = session ?: return
         if (finishing || reviewDialog != null) return
         val room = overlay
         // Unguided trial arm: no review sheet (it is guidance); finish straight away.
-        if (!recording || research.unguided || !ReviewSheet.needed(room)) { finishScan(); return }
+        if (!recording || research.unguided || !ReviewSheet.needed(room, features.guidance)) { finishScan(); return }
         if (!corePaused) {
             if (s.pause() != Status.OK) {
                 hud.setBanner("Could not pause the scan to review it. Press Finish again.", UiKit.Kind.WARN)
@@ -257,12 +261,12 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         }
         speech.stopNow()
         hud.haptic(false)
-        reviewDialog = ReviewSheet.show(this, room,
+        reviewDialog = ReviewSheet.show(this, room, features.guidance, features.detector,
             onGaps = {
                 if (reviewDialog == null) return@show   // one-shot: resume runs once
                 reviewDialog = null
                 val st = s.resume()
-                if (st == Status.OK) hud.setCoaching(scanPrompt())
+                if (st == Status.OK) { clearInstruction(); hud.setCoaching(scanPrompt()) }
                 else hud.setBanner("Cannot resume yet: the phone needs to cool down or charge (status ${UiKit.statusName(st)}). Press Resume when it is ready.", UiKit.Kind.WARN)
             },
             onFinish = { reviewDialog = null; finishScan() })
@@ -272,7 +276,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         val s = session ?: return
         if (finishing) return
         finishing = true
-        voice.onPause()
+        voice?.onPause()
         speech.stopNow()
         sensors?.stop(); thermal?.stop(); adapter = null
         hud.button.isEnabled = false
@@ -351,7 +355,15 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         if (recording) {
             hud.setPaused(corePaused)
             hud.setRecInfo(elapsedMs())
-            if (!corePaused && instruction.isNotEmpty() && !research.unguided) hud.setCoaching(instruction, instructionLong)
+            if (!corePaused && instruction.isNotEmpty() && !research.unguided) {
+                // Guidance off: nothing replaces a safety prompt, so it expires back to the scan prompt (RECALIBRATE stays while recovering).
+                val recalibrating = r.active && instructionType == Recalibration.RECALIBRATE
+                val at = instructionAtMs
+                if (FeatureFlags.instructionStillShown(instruction, at, SystemClock.elapsedRealtime(), features.guidance, recalibrating))
+                    hud.setCoaching(instruction, instructionLong)
+                else if (synchronized(recalLock) { (instructionAtMs == at).also { if (it) { instruction = ""; instructionLong = ""; instructionType = "" } } })
+                    hud.setCoaching(scanPrompt())   // a prompt that arrived meanwhile is kept and shown at the next tick
+            }
         }
         // Banner is for errors only: a forced thermal/battery pause blocks capture, so it stays here.
         val thermalMsg = if (recording && p != null && p.mustPause) "Capture paused: the phone is too hot or the battery is low. Let it rest." else null
@@ -393,11 +405,18 @@ class CaptureActivity : Activity(), SessionManager.Listener {
                 }
             }
             is CoreEvent.Instruction -> {
-                synchronized(recalLock) { instruction = e.speakText; instructionLong = e.longText; instructionType = e.type }
                 research.onInstruction()
-                if (!corePaused && !research.unguided) {
-                    speech.onInstruction(e.id, e.speakText, e.priority)
-                    hud.hapticFor(e.haptic, e.priority)
+                // Guidance gate (ADR 0032): with guidance off only safety/tracking prompts are shown, spoken and felt.
+                // The core has already recorded every instruction in /events.
+                if (FeatureFlags.showInstruction(e.type, features.guidance)) {
+                    synchronized(recalLock) {
+                        instruction = e.speakText; instructionLong = e.longText; instructionType = e.type
+                        instructionAtMs = SystemClock.elapsedRealtime()
+                    }
+                    if (!corePaused && !research.unguided) {
+                        speech.onInstruction(e.id, e.speakText, e.priority)
+                        hud.hapticFor(e.haptic, e.priority)
+                    }
                 }
             }
             is CoreEvent.Overlay -> overlay = e
@@ -435,7 +454,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == VoiceController.REQ_CODE) { voice.onPermissionResult(grantResults); return }
+        if (requestCode == VoiceController.REQ_CODE) { voice?.onPermissionResult(grantResults); return }
         if (CameraPermission.onResult(this, grantResults)) { arMessage = null; ar.resume() }
         else { arMessage = "Camera permission is needed to scan the room."; refresh() }
     }
@@ -445,7 +464,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         ui.removeCallbacks(tick)
         // Leaving the screen mid-scan: pause the core session so no gap is recorded as tracking data.
         if (recording && !corePaused && !finishing) session?.pause()
-        voice.onPause()
+        voice?.onPause()
         speech.stopNow()
         val t1 = SystemClock.elapsedRealtime()
         arActive = false
@@ -477,7 +496,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
             }.start()
         }
         hud.release()
-        voice.release()
+        voice?.release()
         speech.release()
         ar.close()
         super.onDestroy()
