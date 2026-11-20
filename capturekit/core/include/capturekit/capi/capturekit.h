@@ -119,7 +119,8 @@ const char* ck_version(void);
 /* config_json: flat JSON. Keys: threaded, frame_slots, queue_capacity, calib_normal_poses,
  * keyframe_ack_timeout_s, string metadata (bundle_id, session_id, platform, model, os, app_version,
  * clock_base), consent_version + consent_at (ISO-8601 text, both or neither), redaction_mode
- * ("none" | "faces"), "quality.<key>" and "governor.<key>" overrides. NULL or "{}" for defaults.
+ * ("none" | "faces"), record_imu (0 | 1, default 0: /imu/* are not written, ADR 0034; schema 1.4.0),
+ * "quality.<key>" and "governor.<key>" overrides. NULL or "{}" for defaults.
  * Creates bundle_dir if needed. Returns NULL on error (status in *err if non-NULL). */
 ck_session* ck_session_create(const char* bundle_dir, const char* config_json, ck_status* err);
 void ck_session_destroy(ck_session* s);
