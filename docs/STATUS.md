@@ -4,7 +4,7 @@ The program now has two parts (see [program-spec/README.md](program-spec/README.
 
 See also [NEXT_SESSION.md](NEXT_SESSION.md) for the copy-paste start kit for a new conversation.
 
-Updated 2026-11-17 (end of unattended run) · branch `main` · last commit `b3d39f0` + a large UNCOMMITTED tree (see PROGRESS.md; history was rewritten, older hashes no longer exist) · tests only you can run: [HUMAN_TESTS.md](HUMAN_TESTS.md)
+Updated 2026-11-20 · branch `main` · issues #6, #7, #8, #9, #10 merged into main · tests only you can run: [HUMAN_TESTS.md](HUMAN_TESTS.md)
 
 ## 0. What the default build shows (issue #6, ADR 0032)
 
