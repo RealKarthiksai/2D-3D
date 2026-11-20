@@ -38,18 +38,19 @@ std::string role_for(const std::string& rel) {
   return "other";
 }
 
-/// Consent or redaction metadata makes the manifest a 1.2.0 one (ADR 0020), guide output channels a 1.3.0 one (ADR 0028); never lowers a newer version.
+/// The schema version the content needs, never lowering a newer m.schema_version: consent or redaction metadata makes
+/// the manifest a 1.2.0 one (ADR 0020), guide output channels a 1.3.0 one (ADR 0028), an unrecorded IMU a 1.4.0 one
+/// (ADR 0034). The newest feature present wins.
 std::string effective_schema(const BundleMeta& m, const StreamCounts& c) {
-  if (c.get(topic::kGuideLabels) + c.get(topic::kGuideShell) + c.get(topic::kGuideGaps) > 0) {  // ADR 0028
-    int major = 0, minor = 0;
-    if (std::sscanf(m.schema_version.c_str(), "%d.%d.", &major, &minor) == 2 && (major > 1 || minor >= 3)) return m.schema_version;
-    return "1.3.0";
-  }
-  if (m.consent_version.empty() && m.redaction_mode == "none") return m.schema_version;
+  int needed = 0;  // minor of 1.x; 0 = nothing beyond what schema_version already says
+  if (!m.consent_version.empty() || m.redaction_mode != "none") needed = 2;
+  if (c.get(topic::kGuideLabels) + c.get(topic::kGuideShell) + c.get(topic::kGuideGaps) > 0) needed = 3;
+  if (!m.imu_recorded) needed = 4;
+  if (needed == 0) return m.schema_version;
   int major = 0, minor = 0;
-  if (std::sscanf(m.schema_version.c_str(), "%d.%d.", &major, &minor) == 2 && (major > 1 || minor >= 2))
+  if (std::sscanf(m.schema_version.c_str(), "%d.%d.", &major, &minor) == 2 && (major > 1 || minor >= needed))
     return m.schema_version;
-  return "1.2.0";
+  return "1." + std::to_string(needed) + ".0";
 }
 
 }  // namespace

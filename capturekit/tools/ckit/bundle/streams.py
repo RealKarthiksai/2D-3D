@@ -28,6 +28,8 @@ TOPICS = {
     "/guide/gaps": "capturekit.v1.RoomGaps",
 }
 REQUIRED_TOPICS = ["/pose", "/imu/gyro", "/imu/accel", "/intrinsics", "/frame_index", "/events"]
+# Optional from schema 1.4.0 (ADR 0034): the lean bundle does not record the IMU.
+IMU_TOPICS = frozenset({"/imu/gyro", "/imu/accel"})
 
 _classes: dict[tuple[bytes, str], type] = {}
 

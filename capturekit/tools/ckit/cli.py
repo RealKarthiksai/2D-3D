@@ -88,13 +88,53 @@ def import_raw_cmd(
         _dump(import_raw(raw, out))
 
 
+@app.command("pack")
+def pack_cmd(
+    bundle: Path,
+    out: Annotated[
+        Path | None, typer.Option(help="Archive path (default: <bundle folder>.zip beside it).")
+    ] = None,
+    delete_source: Annotated[
+        bool, typer.Option(help="Delete the folder once the archive is verified and validates.")
+    ] = False,
+) -> None:
+    """Pack a Scan Bundle folder into ONE verified .zip (ADR 0034). Exit code 1 on any problem."""
+    import shutil
+
+    from ckit.bundle.archive import ArchiveError, is_inside, pack_bundle
+    from ckit.bundle.validate import validate
+
+    try:
+        res = pack_bundle(bundle, out)
+    except ArchiveError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+    rep = validate(res.archive)
+    typer.echo(
+        f"{res.archive}  {res.entries} files  {res.source_bytes} -> {res.archive_bytes} bytes"
+        f"  validate={rep.verdict}"
+    )
+    if rep.verdict == "FAIL":  # the folder is kept: never delete the only copy of a scan that fails
+        typer.echo(rep.summary(), err=True)
+        raise typer.Exit(1)
+    if delete_source:
+        # Last look before the only other copy goes: the archive exists, outside the folder.
+        if not res.archive.is_file() or is_inside(res.archive, bundle):
+            typer.echo(
+                f"{res.archive}: not deleting {bundle}: no separate archive on disk", err=True
+            )
+            raise typer.Exit(1)
+        shutil.rmtree(bundle)
+        typer.echo(f"deleted {bundle}")
+
+
 @app.command("validate")
 def validate_cmd(
     bundle: Path,
     level: Annotated[str, typer.Option(help="structural|integrity|semantic|quality")] = "semantic",
     json_out: Annotated[Path | None, typer.Option("--json", help="Write JSON report here.")] = None,
 ) -> None:
-    """Validate a Scan Bundle. Exit code 1 on any ERROR."""
+    """Validate a Scan Bundle folder or .zip archive. Exit code 1 on any ERROR."""
     import json
 
     from ckit.bundle.validate import validate
@@ -140,19 +180,25 @@ def reprojection_report_cmd(
 def recon_bench_cmd(
     scan: Path,
     baseline: Annotated[
-        Path | None, typer.Option(help="Second bundle folder to compare side by side.")
+        Path | None, typer.Option(help="Second bundle (folder or .zip) to compare side by side.")
     ] = None,
     json_out: Annotated[Path | None, typer.Option("--json", help="Write JSON report here.")] = None,
 ) -> None:
-    """Offline reconstruction report (single-threaded, seeded); `--baseline` adds delta columns."""
+    """Offline reconstruction report (single-threaded, seeded) of a bundle folder or .zip archive;
+    `--baseline` adds delta columns."""
+    import contextlib
     import json
 
+    from ckit.bundle.archive import bundle_dir
     from ckit.recon_bench import delta, recon_bench, stable, table
 
     try:
-        rep = recon_bench(scan)
-        base = recon_bench(baseline) if baseline else None
-    except ValueError as e:
+        with (
+            contextlib.ExitStack() as unpacked
+        ):  # a .zip is unpacked to a temp folder, removed after
+            rep = recon_bench(unpacked.enter_context(bundle_dir(scan)))
+            base = recon_bench(unpacked.enter_context(bundle_dir(baseline))) if baseline else None
+    except ValueError as e:  # includes ArchiveError
         typer.echo(str(e), err=True)
         raise typer.Exit(1) from e
     if json_out:
@@ -188,9 +234,10 @@ def replay_cmd(
         Path | None, typer.Option(help="JSON {sink: {key: value}} overrides.")
     ] = None,
 ) -> None:
-    """Replay a bundle through core sinks; prints a deterministic JSON report."""
+    """Replay a bundle (folder or .zip) through core sinks; prints a deterministic JSON report."""
     import json
 
+    from ckit.bundle.archive import ArchiveError, bundle_dir
     from ckit.replay.driver import Faults, dumps, replay
 
     f = Faults(
@@ -201,7 +248,12 @@ def replay_cmd(
         seed=seed,
     )
     cfg = json.loads(config.read_text()) if config else None
-    text = dumps(replay(bundle, sink, f, realtime=not fast, speed=speed, sink_config=cfg))
+    try:
+        with bundle_dir(bundle) as folder:
+            text = dumps(replay(folder, sink, f, realtime=not fast, speed=speed, sink_config=cfg))
+    except ArchiveError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(text)

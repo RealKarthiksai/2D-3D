@@ -66,6 +66,7 @@ std::optional<SessionConfig> SessionConfig::from_json(std::string_view text, std
     else if (k == "calib_normal_poses" && n) c.calib_normal_poses = std::max(1, int(*n));
     else if (k == "keyframe_ack_timeout_s" && n) c.keyframe_ack_timeout_s = *n;
     else if (k == "outbound_capacity" && n) c.outbound_capacity = size_t(std::max(16.0, *n));
+    else if (k == "record_imu" && n) c.record_imu = *n != 0;
     else if (k == "clock_offset_ns" && n) c.meta.clock_offset_ns = int64_t(*n);
     else if (k == "display_rotation_deg" && n) c.meta.display_rotation_deg = int(*n);
     else if (str && k == "bundle_id") c.meta.bundle_id = *str;
@@ -123,6 +124,7 @@ std::unique_ptr<Session> Session::create(const std::string& dir, const SessionCo
     return nullptr;
   }
   SessionConfig cfg = cfg_in;
+  cfg.meta.imu_recorded = cfg.record_imu;  // schema 1.4.0 when the IMU is left out (ADR 0034)
   std::string base = fs::path(dir).filename().string();
   if (cfg.meta.session_id.empty()) cfg.meta.session_id = base;
   if (cfg.meta.bundle_id.empty()) cfg.meta.bundle_id = base;
@@ -133,7 +135,8 @@ std::unique_ptr<Session> Session::create(const std::string& dir, const SessionCo
       .set("quality_config_version", cfg.quality.version)
       .raw("governor_config", cfg.governor.to_json())
       .raw("guide_config", cfg.guide.to_json())
-      .set("guide_config_hash", cfg.guide.hash());
+      .set("guide_config_hash", cfg.guide.hash())
+      .set("record_imu", cfg.record_imu);
   cfg.meta.capture_settings_json = settings.dump();
 
   std::unique_ptr<Session> s(new Session(dir, cfg));
@@ -159,6 +162,7 @@ bool Session::write_checkpoint() {
       .set("display_rotation_deg", m.display_rotation_deg)
       .set("consent_version", m.consent_version).set("consent_at", m.consent_at)
       .set("redaction_mode", m.redaction_mode)
+      .set("imu_recorded", m.imu_recorded)  // recover() must stamp the same schema (ADR 0034)
       .set("capture_settings_json", m.capture_settings_json);
   auto tmp = fs::path(dir_) / "session.json.tmp";
   {
@@ -401,11 +405,11 @@ void Session::process(Item& it) {
           publish_recovery();
           guide_tick(v.t_ns);
         } else if constexpr (std::is_same_v<T, Gyro>) {
-          gyro_.push(v.s.t_ns, v.s.v[0], v.s.v[1], v.s.v[2]);
+          gyro_.push(v.s.t_ns, v.s.v[0], v.s.v[1], v.s.v[2]);  // in memory: blur risk + recovery check
           guide_.on_gyro(v.s);
-          writer_.write_gyro(v.s);
+          if (cfg_.record_imu) writer_.write_gyro(v.s);  // ADR 0034: not recorded by default
         } else if constexpr (std::is_same_v<T, Accel>) {
-          writer_.write_accel(v.s);
+          if (cfg_.record_imu) writer_.write_accel(v.s);
         } else if constexpr (std::is_same_v<T, bundle::IntrinsicsSample>) {
           if (!first_intrinsics_) first_intrinsics_ = v;
           fx_ = v.fx;

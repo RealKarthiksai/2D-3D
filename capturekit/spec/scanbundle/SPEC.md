@@ -1,4 +1,4 @@
-# Scan Bundle v1.3.0
+# Scan Bundle v1.4.0
 
 The Scan Bundle is the contract between capture and everything downstream. `ckit validate` is the executable definition of "valid". Conventions: [conventions.md](../../../docs/program-spec/conventions.md). This supersedes the `video.mp4` layout in older docs (ADR 0001).
 
@@ -17,8 +17,8 @@ The Scan Bundle is the contract between capture and everything downstream. `ckit
 | Topic | Message | Required | Rate |
 |---|---|---|---|
 | `/pose` | `capturekit.v1.Pose` | yes | AR frame rate |
-| `/imu/gyro` | `capturekit.v1.ImuSample` | yes | ≥100 Hz typical |
-| `/imu/accel` | `capturekit.v1.ImuSample` | yes | ≥100 Hz typical |
+| `/imu/gyro` | `capturekit.v1.ImuSample` | yes until 1.3.0; optional since 1.4.0 (ADR 0034: not recorded by default) | ≥100 Hz typical when present |
+| `/imu/accel` | `capturekit.v1.ImuSample` | yes until 1.3.0; optional since 1.4.0 (ADR 0034: not recorded by default) | ≥100 Hz typical when present |
 | `/intrinsics` | `capturekit.v1.Intrinsics` | yes (≥1 before first keyframe) | on change |
 | `/frame_index` | `capturekit.v1.FrameIndex` | yes | per candidate frame |
 | `/events` | `capturekit.v1.Event` | yes (may be empty) | sparse |
@@ -40,13 +40,18 @@ The MCAP `log_time` and `publish_time` of each message equal its `t_ns`. Within 
 - History: 1.0.0 first release; **1.1.0** adds `/ar/detections` and `manifest.counts.detections` (additive: a 1.0.0 bundle validates unchanged, readers ignore the channel).
 - **1.2.0** adds manifest blocks `consent` and `privacy`, file role `redaction`, and the codes CONSENT_MISSING, REDACTION_MANIFEST_MISSING (ERROR, only when schema_version >= 1.2.0) and REDACTION_ENTRY_NO_FILE (INFO). Bundles of 1.0.0 and 1.1.0 carry neither block and validate unchanged. A writer stamps 1.2.0 only when it was given consent or redaction metadata, so research and synthetic bundles stay 1.1.0.
 - **1.3.0** adds the derived channels `/guide/labels`, `/guide/shell`, `/guide/gaps`, `manifest.counts.guide_labels|guide_shell|guide_gaps` (written only when non-zero) and the codes GUIDE_OUTPUT_BAD_VALUE (WARN) and LABEL_WALL_UNKNOWN (INFO). Bundles of 1.0.0 to 1.2.0 carry none of it and validate unchanged; readers that do not know the channels ignore them. A writer stamps 1.3.0 only when it wrote at least one record on these channels (understanding on and something found), so every other bundle keeps 1.1.0 or 1.2.0. Because 1.3.0 >= 1.2.0, the consent and privacy rules apply to such bundles (ADR 0020).
+- **1.4.0** (ADR 0034, issue #10) makes `/imu/gyro` and `/imu/accel` optional: the live capture no longer records the IMU unless `record_imu` is set (`capture_settings.record_imu` says which), because no downstream step reads it. The channels stay registered (empty) in streams written by our writer, and `counts.imu_gyro|imu_accel` stay required (0 when not recorded). A writer stamps 1.4.0 only when the IMU was not recorded, so research bundles with IMU keep their older version. Bundles of 1.0.0 to 1.3.0 validate unchanged. It also defines the archive form (below) and the code ARCHIVE_UNREADABLE.
 - Protobuf field numbers are never reused. New fields are additive and belong to a minor bump.
 
-## Validator (`ckit validate <bundle> [--level structural|integrity|semantic|quality]`)
+## Archive form (since 1.4.0, ADR 0034)
+A bundle may be sent as ONE zip, `<bundle folder name>.zip`, holding exactly the files of the layout above at the zip root (no wrapping folder): `manifest.json` first, then the files it lists, sorted; JPEGs stored, everything else deflated; fixed entry timestamps. Nothing outside `manifest.json` and its `files` list may be in it. `ckit pack <folder>` creates and verifies it (CRCs, then every listed size and sha256, then the validator); `ckit validate`, `verdict`, `replay` and `recon-bench` accept the `.zip` in place of the folder. Readers must refuse entries with absolute paths, `..`, backslashes or symlinks, and bound the entry count, the unpacked size and the free space needed (the reference limits are 20 000 entries and 4 GiB, with 10 % free-space margin; names that differ only in case, or contain `:`, count as unsafe); an archive they cannot open safely is ARCHIVE_UNREADABLE. The folder form stays valid.
+
+## Validator (`ckit validate <bundle|bundle.zip> [--level structural|integrity|semantic|quality]`)
 The levels are cumulative. Output is a JSON report (`{"verdict", "issues":[{"code","severity","level","message","where"}]}`) plus a human summary. Exit code 1 if any ERROR.
 
 | Code | Severity | Level | Meaning |
 |---|---|---|---|
+| ARCHIVE_UNREADABLE | ERROR | structural | the `.zip` cannot be opened safely: not a zip, unsafe entry name, symlink, duplicate name, damaged entry, or over the entry / size limit |
 | MISSING_MANIFEST | ERROR | structural | no manifest.json |
 | MANIFEST_SCHEMA | ERROR | structural | manifest.json is not valid JSON or fails the schema |
 | UNSUPPORTED_MAJOR | ERROR | structural | schema_version major is not 1 |

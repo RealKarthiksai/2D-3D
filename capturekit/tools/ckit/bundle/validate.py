@@ -13,7 +13,8 @@ from pathlib import Path
 import jsonschema
 
 from ckit.bundle import SPEC_DIR, SUPPORTED_MAJOR, SUPPORTED_MINOR
-from ckit.bundle.streams import REQUIRED_TOPICS, read_streams
+from ckit.bundle.archive import ArchiveError, bundle_dir, is_archive
+from ckit.bundle.streams import IMU_TOPICS, REQUIRED_TOPICS, read_streams
 
 LEVELS = ["structural", "integrity", "semantic", "quality"]
 KEYFRAME_POSE_TOL_NS = 50_000_000
@@ -224,7 +225,26 @@ def _redaction_entries(bundle: Path) -> tuple[list[str], int]:
 
 
 def validate(bundle: Path, level: str = "semantic") -> Report:
+    """Validate a bundle folder, or a ``.zip`` archive of one (ADR 0034).
+
+    An archive is unpacked to a temporary folder first and the report names the archive; one that
+    cannot be opened safely is an ARCHIVE_UNREADABLE ERROR.
+    """
     bundle = Path(bundle)
+    if not is_archive(bundle):
+        return _validate_folder(bundle, level)
+    try:
+        with bundle_dir(bundle) as folder:
+            rep = _validate_folder(folder, level)
+    except ArchiveError as e:
+        failed = Report(str(bundle), level)
+        failed.add("ARCHIVE_UNREADABLE", "ERROR", "structural", str(e)[:300])
+        return failed
+    rep.bundle = str(bundle)
+    return rep
+
+
+def _validate_folder(bundle: Path, level: str) -> Report:
     upto = LEVELS.index(level)
     rep = Report(str(bundle), level)
     S = "structural"
@@ -276,7 +296,10 @@ def validate(bundle: Path, level: str = "semantic") -> Report:
         elif not streams.finalized:
             rep.add("MCAP_TRUNCATED", "ERROR", S, "no valid MCAP footer/summary (not finalized)")
         if streams.readable:
+            imu_optional = manifest is not None and _minor(manifest) >= 4  # lean bundle (ADR 0034)
             for t in REQUIRED_TOPICS:
+                if imu_optional and t in IMU_TOPICS:
+                    continue
                 if t not in streams.topics_present:
                     rep.add("MISSING_CHANNEL", "ERROR", S, "required channel absent", t)
     elif not any(i.code == "MISSING_FILE" for i in rep.issues):

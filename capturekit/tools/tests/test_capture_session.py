@@ -144,7 +144,8 @@ def test_ingest_detections_via_capi_reaches_bundle(tmp_path):
 def test_understanding_on_bundle_validates_with_placeholder_consent(source, tmp_path):
     """ADR 0028: 1.3.0 bundles need consent; simulate() stamps placeholders for synthetic runs."""
     out = tmp_path / "und"
-    r = simulate(source, out, {"guide.understanding": 1})
+    # record_imu keeps the 1.3.0 shape; the lean default (1.4.0) is in test_lean_bundle.py
+    r = simulate(source, out, {"guide.understanding": 1, "record_imu": 1})
     assert r["state"] == "COMPLETE"
     m = json.loads((out / "manifest.json").read_text())
     assert m["schema_version"] == "1.3.0" and m["counts"]["guide_shell"] > 0, m["counts"]

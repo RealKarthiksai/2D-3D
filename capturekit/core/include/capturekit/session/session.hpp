@@ -39,6 +39,9 @@ struct SessionConfig {
   int calib_normal_poses = 15;
   double keyframe_ack_timeout_s = 2.0;
   size_t outbound_capacity = 1024;
+  /// ADR 0034 (lean bundle): /imu/gyro and /imu/accel are written only when true (research). Off by default: nothing
+  /// downstream reads them. The core still keeps the gyro in memory for blur risk and the tracking-recovery check.
+  bool record_imu = false;
   bundle::BundleMeta meta;
   quality::QualityConfig quality;
   governor::GovernorConfig governor;

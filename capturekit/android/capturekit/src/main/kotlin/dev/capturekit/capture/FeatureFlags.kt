@@ -11,6 +11,7 @@ package dev.capturekit.capture
  *  - `recalibrate_card`: the issue #1 recalibration card (the core keyframe pause always stays)
  *  - `segmentation`: issue #8 camera mask overlay + Masks chip (also needs the packaged SAM 2.1 model files)
  *  - `understanding 0|1|2`: core `guide.understanding` override (unchanged from U11-A)
+ *  - `record_imu`: research only, keep the IMU channels in the bundle (ADR 0034; the default bundle is lean)
  * The core still records every instruction in /events; only display, speech and haptics are gated.
  */
 object FeatureFlags {
@@ -20,6 +21,7 @@ object FeatureFlags {
     const val PROP_VOICE_COMMANDS = "debug.capturekit.voice_commands"
     const val PROP_RECALIBRATE_CARD = "debug.capturekit.recalibrate_card"
     const val PROP_SEGMENTATION = "debug.capturekit.segmentation"
+    const val PROP_RECORD_IMU = "debug.capturekit.record_imu"
 
     /** Understanding level when the detector runs and no property overrides it: objects only, no gap steering. */
     const val DEFAULT_UNDERSTANDING_WITH_DETECTOR = 1
@@ -38,6 +40,8 @@ object FeatureFlags {
         val voiceCommands: Boolean = false,
         val recalibrateCard: Boolean = false,
         val segmentation: Boolean = false,
+        /** Research only (ADR 0034): keep /imu/gyro and /imu/accel in the bundle. Off = the lean bundle. */
+        val recordImu: Boolean = false,
     ) {
         companion object { val DEFAULTS = Flags() }
     }
@@ -59,6 +63,7 @@ object FeatureFlags {
             voiceCommands = switchOn(get(PROP_VOICE_COMMANDS), d.voiceCommands),
             recalibrateCard = switchOn(get(PROP_RECALIBRATE_CARD), d.recalibrateCard),
             segmentation = switchOn(get(PROP_SEGMENTATION), d.segmentation),
+            recordImu = switchOn(get(PROP_RECORD_IMU), d.recordImu),
         )
     }
 
@@ -110,7 +115,13 @@ object FeatureFlags {
     fun understandingFor(override: Int?, detectorWillRun: Boolean): Int? =
         override ?: if (detectorWillRun) DEFAULT_UNDERSTANDING_WITH_DETECTOR else null
 
-    /** Extra session config for [SessionManager.start]: the key is passed explicitly whenever a level is given (including 0); null = no key. */
-    fun extraConfig(understanding: Int?): Map<String, Any> =
-        if (understanding != null && understanding in 0..2) mapOf("guide.understanding" to understanding) else emptyMap()
+    /**
+     * Extra session config for [SessionManager.start]: `guide.understanding` is passed explicitly whenever a level is
+     * given (including 0), null = no key; `record_imu` = 1 only when [recordImu] (the core default is lean: no IMU).
+     */
+    fun extraConfig(understanding: Int?, recordImu: Boolean = false): Map<String, Any> =
+        buildMap {
+            if (understanding != null && understanding in 0..2) put("guide.understanding", understanding)
+            if (recordImu) put("record_imu", 1)
+        }
 }
