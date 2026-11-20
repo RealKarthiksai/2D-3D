@@ -6,6 +6,7 @@ ERROR -> rescan. WARN -> proceed with a note. INFO -> details only.
 | Code | Level | Severity | Title | What happened | What to do | Next |
 |---|---|---|---|---|---|---|
 | MISSING_MANIFEST | structural | ERROR | Scan is incomplete | The scan did not finish saving. | Scan the room again. | rescan |
+| ARCHIVE_UNREADABLE | structural | ERROR | Scan file is damaged | The scan's packed file could not be opened safely. | Scan the room again. | rescan |
 | MANIFEST_SCHEMA | structural | ERROR | Scan data is damaged | The scan's summary file is not readable. | Scan the room again. | rescan |
 | UNSUPPORTED_MAJOR | structural | ERROR | App update needed | This scan was made by a newer version of the app. | Update the app, then open the scan again. | rescan |
 | UNKNOWN_MINOR | structural | WARN | Newer scan format | This scan uses newer, optional data we do not know yet. | Nothing. Extra data is ignored. | proceed_with_note |

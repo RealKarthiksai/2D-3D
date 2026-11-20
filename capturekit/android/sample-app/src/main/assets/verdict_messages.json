@@ -13,6 +13,14 @@
       "action": "Scan the room again.",
       "next": "rescan"
     },
+    "ARCHIVE_UNREADABLE": {
+      "severity": "ERROR",
+      "level": "structural",
+      "title": "Scan file is damaged",
+      "text": "The scan's packed file could not be opened safely.",
+      "action": "Scan the room again.",
+      "next": "rescan"
+    },
     "MANIFEST_SCHEMA": {
       "severity": "ERROR",
       "level": "structural",

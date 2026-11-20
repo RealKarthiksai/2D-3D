@@ -21,9 +21,13 @@ from ckit.replay.driver import load_events
 def _cfg(extra: dict | None, threaded: bool) -> bytes:
     c = {"threaded": 1 if threaded else 0, "platform": "other", "model": "simulated"}
     c.update(extra or {})
-    # Synthetic sessions have no consent screen; 1.3.0 bundles (ADR 0028) need consent (ADR 0020),
-    # so stamp marked placeholders unless the caller gave real keys.
-    if float(c.get("guide.understanding", 0) or 0) > 0 and "consent_version" not in c:
+    # Synthetic sessions have no consent screen; schema 1.2.0+ bundles need consent (ADR 0020):
+    # 1.3.0 ones (guide outputs, ADR 0028) and the lean 1.4.0 default (no IMU, ADR 0034). So stamp
+    # marked placeholders unless the caller gave real keys. Only the legacy shape (IMU recorded, no
+    # guide outputs) stays consent-free.
+    lean = not float(c.get("record_imu", 0) or 0)
+    needs_consent = lean or float(c.get("guide.understanding", 0) or 0) > 0
+    if needs_consent and "consent_version" not in c:
         c.update(
             consent_version="synthetic",
             consent_at="1970-01-01T00:00:00Z",
