@@ -4,7 +4,19 @@ The program now has two parts (see [program-spec/README.md](program-spec/README.
 
 See also [NEXT_SESSION.md](NEXT_SESSION.md) for the copy-paste start kit for a new conversation.
 
-Updated 2026-11-17 (end of unattended run) · branch `main` · last commit `b3d39f0` + a large UNCOMMITTED tree (see PROGRESS.md; history was rewritten, older hashes no longer exist) · tests only you can run: [HUMAN_TESTS.md](HUMAN_TESTS.md)
+Updated 2026-11-20 · branch `main` (everything committed; GitHub RealKarthiksai/2D-3D issues #1-#10 are closed; see PROGRESS.md; history was rewritten once, older hashes in old reports no longer exist) · tests only you can run: [HUMAN_TESTS.md](HUMAN_TESTS.md)
+
+### GitHub issues vs the code (audited 2026-11-20 on `cded9a6`)
+| Issue | Delivered in `main`? | What is missing |
+|---|---|---|
+| #1 tracking recalibration | Yes (ADR 0031) | Card is OFF by default (`recalibrate_card`); cover/uncover device check (H36) not run |
+| #2 object detection | Yes (ADR 0030, superseded in part by 0032) | Detector OFF by default; never device-tested |
+| #3 UI overhaul | Partly: One UI 7 style redesign (`UiKit`, drawables, new Home/Review/My scans) | Not Material 3 / Compose as the issue proposed; mini-map redesign moot (#8 removed it from the capture screen) |
+| #6 feature audit | Yes (ADR 0032, table below) | "Stop writing bundle data that only removed features used" depends on #10 |
+| #7 `ckit recon-bench` | Yes (`docs/reports/recon_bench.md`) | Second walked room (blocked: needs a new recording) |
+| #8 live segmentation | Code + 3 test classes (`segment/`, SAM 2.1 tiny via LiteRT); OFF (`segmentation`) | No ADR for the model choice; the 2-3 model trial and a device run never happened |
+| #9 smart photo selection | Yes (ADR 0033, `DUPLICATE`) | Device re-walk |
+| #10 lean bundle + one archive | **No** when closed on 2026-11-19 (the pushed commit holds #6/#7 work). Stage 1 delivered by branch `fix/issue-10-lean-bundle` (ADR 0034) | Stage 2: Android packs at Finish, My scans / Review / upload read the zip, tus client + dev-server verifier take one zip, device run |
 
 ## 0. What the default build shows (issue #6, ADR 0032)
 
@@ -49,11 +61,11 @@ Nine of the thirteen phases (0–8, minus device acceptance) are done in softwar
 | 11 Overlay, review, consent, privacy | **Partial**: core overlay, Android HUD, ReviewActivity, Redactor (ADR 0021), ReviewSheet, RoomView, flavours (committed); uncommitted: ConsentStore/ConsentActivity + manifest consent (schema 1.2.0, ADR 0020), My scans + upload states, Sentry (field only), ResearchLog (field). Consent text is a placeholder | iOS UI build, redaction set labelling, consent text owner |
 | 12 Integration + field trials | `ckit e2e`, `trial-report`, frozen-1.0.0 example dir (`9f4ad14`); trials not started | Trials need participants and your target thresholds |
 
-**Verified on this machine (2026-11-17, uncommitted tree on b3d39f0):** C++ core `ctest` 163/163 (WSL, clean build) · WSL `pytest` 126 passed, 8 skipped · ruff check and format clean (2 files reformatted after the run) · replay_golden 0 differences · frozen-1.0.0 sha256 + validate PASS · Android `:capturekit:testDebugUnitTest` 184/184 and `assembleStandardDebug`/`assembleFieldDebug` OK. Docker smoke not run (docker down).
+**Verified on this machine (2026-11-20, integrated `main` at `cded9a6`):** C++ core `ctest` 233/233 (WSL, clean build; 1 skipped by design) · Android `:capturekit` unit tests 267/267 · standard debug APK built with Gradle and installed on a CPH2527 (Android 15), opens to the new Home screen · WSL `pytest` 161 passed, 8 skipped, 1 flaky failure (`test_threaded_mode_produces_valid_bundle`, a harness race, fixed in the #10 PR) · ruff clean. With the #10 stage-1 PR (lean bundle): ctest 238/238, pytest 178 passed / 8 skipped (flake fixed), Android 268/268, both flavours compile. Not verified: a walked scan with this build, any upload, anything iOS.
 **Not verified:** anything iOS/Swift (no macOS here); CI runs on `main` but the macOS job has never been seen green.
 
 ## 2. What I set up on this machine
-- Android SDK at `~/Android/Sdk` (cmdline-tools, platform 37, build-tools, CMake 4.1.2, NDK through Gradle). Installing it meant accepting the Android SDK licenses. Delete the folder if you don't want it.
+- Android SDK (this PC, 2026-11-20): `%LOCALAPPDATA%\Android\Sdk` (cmdline-tools, platform android-37.0, build-tools 37.0.0, CMake 4.1.2, NDK 30.0.16248370; the Android SDK licences were accepted when it was installed). Delete the folder if you do not want it. Earlier notes mention `~/Android/Sdk` on another machine.
 - Synthetic golden sessions: `capturekit/build/golden/raw/G1..G8_*` (raw), `build/golden/bundles/` (imported), `build/golden/plots/` (trajectories). Regenerate with `capturekit/scripts/make_golden.sh`.
 
 ## 3. Tasks I cannot do here (need you, hardware or decisions)
@@ -111,9 +123,9 @@ cd android && ANDROID_HOME=~/Android/Sdk ./gradlew assembleDebug testDebugUnitTe
 ```
 
 ## 5. Next step on my side
-Unattended queue stopped by the user after B1-B6 plus U7-A, U8-A, U8-C, U9-C (code only, uncommitted, reviewed). Remaining, in order: U5-C, U7-C (ADR 0023), U10-C, U11-CT, U11-A, a real U12-D. iOS blocked. Detail: `.claude/agent-memory/planner/briefs/unattended-queue.md` ("Status at stop"). Everything that needs a phone or a decision is in [HUMAN_TESTS.md](HUMAN_TESTS.md) (H1-H35).
-
-
+1. Review and merge the #10 stage-1 PR (lean bundle, schema 1.4.0, `ckit pack`); then stage 2: Android packs the archive at Finish, My scans / Review / upload read it, the tus client and dev-server verifier take one zip.
+2. Device checks from section 0 (H36 recalibration, H18/H19 detector, H37/H38 segmentation, H9/H22 guidance re-walk), then fix guidance per `WALK_FAILURE_RCA.md` and flip defaults in `FeatureFlags`.
+3. Open items: ADR for the segmentation model choice (#8), second walked room for `recon-bench` (#7), iOS (no Mac), field trials.
 
 ## 6. Gate 0: real-device track (from the Phase 8-12 research plan; start now, needs you)
 Provisional answers while the user was away: see capturekit/docs/decisions/0018-delegated-decisions.md (revisit). Detector: ADR 0017; face blur: ADR 0021.

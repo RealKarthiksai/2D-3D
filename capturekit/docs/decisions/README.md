@@ -35,3 +35,4 @@ Architecture Decision Records (ADRs), one file per decision: NNNN-title.md.
 - [0031](0031-tracking-recovery-recalibrate.md) Tracking recovery (issue #1): RECALIBRATE prompt, keyframe pause, TRACKING_LOST / TRACKING_RESET events
 - [0032](0032-feature-flags-device-verified-only.md) Default build shows only device-verified features; FeatureFlags (guidance, detector, voice commands, recalibration card) off by default (issue #6; supersedes 0030 "detector default on")
 - [0033](0033-keyframe-dedup-all-keyframes.md) Keyframe selection (issue #9): novelty against all saved keyframes, DUPLICATE reason, thresholds unchanged
+- [0034](0034-lean-bundle-no-imu-archive.md) Lean bundle: IMU not recorded by default (schema 1.4.0), one compressed archive, keep/drop inventory (issue #10)
