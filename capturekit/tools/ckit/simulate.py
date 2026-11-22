@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import signal
+import time
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +30,17 @@ def _cfg(extra: dict | None, threaded: bool) -> bytes:
             redaction_mode="none",
         )
     return json.dumps(c).encode()
+
+
+def _settle(service, quiet_s: float = 0.3, max_s: float = 10.0) -> None:
+    """Services events until none arrived for ``quiet_s`` (worker idle), at most ``max_s``."""
+    start = quiet_since = time.monotonic()
+    while time.monotonic() - start < max_s:
+        time.sleep(0.02)
+        if service():
+            quiet_since = time.monotonic()
+        elif time.monotonic() - quiet_since >= quiet_s:
+            return
 
 
 def simulate(
@@ -63,12 +75,15 @@ def simulate(
     buf = C.create_string_buffer(1 << 16)
     stats = {"keyframe_requests": 0, "acked": 0, "full": 0, "expired": 0}
 
-    def service():
+    def service() -> int:
+        """Answers pending keyframe requests; returns how many events were handled."""
+        handled = 0
         while True:
             n = L.ck_poll_events(s, buf, len(buf))
             if not n:
-                return
+                return handled
             for line in buf.raw[:n].decode().splitlines():
+                handled += 1
                 ev = json.loads(line)
                 if ev["type"] == "keyframe_request":
                     stats["keyframe_requests"] += 1
@@ -140,6 +155,12 @@ def simulate(
     if not threaded:
         L.ck_session_pump(s)
     service()
+    if threaded:
+        # The worker thread is still chewing the queue and flushes the last keyframe window on
+        # Stop. A real shell waits for that (SessionManager.finish sleeps 300 ms after stop, then
+        # drains events). Polling once and finalizing raced it: the final request was never
+        # acknowledged (ENCODE_MISSING; no keyframes at all in about 40 % of runs).
+        _settle(service)
     if not threaded:
         L.ck_session_pump(s)
     status = L.ck_session_finalize(s)
