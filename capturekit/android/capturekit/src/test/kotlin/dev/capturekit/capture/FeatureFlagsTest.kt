@@ -38,6 +38,7 @@ class FeatureFlagsTest {
     @Test fun defaultsAreAllOffWithoutAnyProperty() {
         val d = FeatureFlags.Flags.DEFAULTS
         assertFalse(d.guidance); assertFalse(d.detector); assertFalse(d.voiceCommands); assertFalse(d.recalibrateCard); assertFalse(d.segmentation)
+        assertFalse(d.recordImu)   // lean bundle by default (ADR 0034)
         assertNull(d.understanding)
         // Release build (no props read) and a debuggable build with every property unset / junk give the defaults.
         assertEquals(d, FeatureFlags.fromProps { null })
@@ -53,10 +54,12 @@ class FeatureFlagsTest {
         assertEquals(FeatureFlags.Flags.DEFAULTS.copy(recalibrateCard = true), only(FeatureFlags.PROP_RECALIBRATE_CARD))
         assertEquals(FeatureFlags.Flags.DEFAULTS.copy(understanding = 1), only(FeatureFlags.PROP_UNDERSTANDING))
         assertEquals(FeatureFlags.Flags.DEFAULTS.copy(segmentation = true), only(FeatureFlags.PROP_SEGMENTATION))
+        assertEquals(FeatureFlags.Flags.DEFAULTS.copy(recordImu = true), only(FeatureFlags.PROP_RECORD_IMU))
         val all = FeatureFlags.fromProps { if (it == FeatureFlags.PROP_UNDERSTANDING) "2" else "1" }
-        assertEquals(FeatureFlags.Flags(understanding = 2, detector = true, guidance = true, voiceCommands = true, recalibrateCard = true, segmentation = true), all)
+        assertEquals(FeatureFlags.Flags(understanding = 2, detector = true, guidance = true, voiceCommands = true, recalibrateCard = true, segmentation = true, recordImu = true), all)
         val names = listOf(FeatureFlags.PROP_GUIDANCE, FeatureFlags.PROP_DETECTOR, FeatureFlags.PROP_VOICE_COMMANDS,
-            FeatureFlags.PROP_RECALIBRATE_CARD, FeatureFlags.PROP_UNDERSTANDING, FeatureFlags.PROP_SEGMENTATION)
+            FeatureFlags.PROP_RECALIBRATE_CARD, FeatureFlags.PROP_UNDERSTANDING, FeatureFlags.PROP_SEGMENTATION,
+            FeatureFlags.PROP_RECORD_IMU)
         assertEquals(names.size, names.toSet().size)
         for (n in names) assertTrue(n, n.startsWith("debug.capturekit."))
     }
@@ -77,6 +80,17 @@ class FeatureFlagsTest {
         assertEquals(mapOf<String, Any>("guide.understanding" to 0), FeatureFlags.extraConfig(0))
         assertEquals(mapOf<String, Any>("guide.understanding" to 1), FeatureFlags.extraConfig(1))
         assertEquals(mapOf<String, Any>("guide.understanding" to 2), FeatureFlags.extraConfig(2))
+    }
+
+    /** ADR 0034: the lean bundle is the core default, so `record_imu` is sent only when research switches it on. */
+    @Test fun recordImuIsSentOnlyWhenSwitchedOn() {
+        assertFalse(FeatureFlags.extraConfig(null).containsKey("record_imu"))
+        assertFalse(FeatureFlags.extraConfig(1, recordImu = false).containsKey("record_imu"))
+        assertEquals(mapOf<String, Any>("record_imu" to 1), FeatureFlags.extraConfig(null, recordImu = true))
+        assertEquals(mapOf<String, Any>("guide.understanding" to 1, "record_imu" to 1), FeatureFlags.extraConfig(1, true))
+        val f = FeatureFlags.fromProps { if (it == FeatureFlags.PROP_RECORD_IMU) "1" else null }
+        assertTrue(f.recordImu)
+        assertEquals(mapOf<String, Any>("record_imu" to 1), FeatureFlags.extraConfig(f.understanding, f.recordImu))
     }
 
     /**

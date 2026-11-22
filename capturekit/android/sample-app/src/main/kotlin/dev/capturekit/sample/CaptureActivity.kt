@@ -207,7 +207,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         val understanding = FeatureFlags.understandingFor(features.understanding, detectorWillRun && !research.unguided)
         val s = SessionManager(this, dir, listener = this, detectorEnabled = detector)
         // 8 core frame slots (default 4): absorbs ~800 ms worker stalls at 10 candidates/s before ErrFull.
-        if (!s.start(mapOf<String, Any>("frame_slots" to 8) + consentCfg + FeatureFlags.extraConfig(understanding))) {
+        if (!s.start(mapOf<String, Any>("frame_slots" to 8) + consentCfg + FeatureFlags.extraConfig(understanding, features.recordImu))) {
             hud.setBanner("Could not start the capture session. Check free storage and try again.", UiKit.Kind.ERROR)
             return
         }
