@@ -28,6 +28,7 @@ class Message:
 V = Message
 MESSAGES: dict[str, Message] = {
     "MISSING_MANIFEST": V("ERROR", "structural", "Scan is incomplete", "The scan did not finish saving.", "Scan the room again.", RESCAN),
+    "ARCHIVE_UNREADABLE": V("ERROR", "structural", "Scan file is damaged", "The scan's packed file could not be opened safely.", "Scan the room again.", RESCAN),
     "MANIFEST_SCHEMA": V("ERROR", "structural", "Scan data is damaged", "The scan's summary file is not readable.", "Scan the room again.", RESCAN),
     "UNSUPPORTED_MAJOR": V("ERROR", "structural", "App update needed", "This scan was made by a newer version of the app.", "Update the app, then open the scan again.", RESCAN),
     "UNKNOWN_MINOR": V("WARN", "structural", "Newer scan format", "This scan uses newer, optional data we do not know yet.", "Nothing. Extra data is ignored.", PROCEED),
