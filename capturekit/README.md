@@ -51,3 +51,6 @@ docker compose up -d && ./smoke_test.sh
 ```
 
 Never commit secrets, keystores, signing profiles or real scan data.
+
+## Related Packages
+- [roomscan-recon](https://github.com/RealKarthiksai/roomscan-recon): Backend spatial understanding and 3D Gaussian Splatting reconstruction pipeline for CaptureKit scan bundles.
