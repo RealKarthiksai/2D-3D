@@ -33,6 +33,10 @@ struct BundleMeta {
   std::string consent_version, consent_at;
   std::string redaction_mode = "none";  // none | faces
   double q_camera_from_imu_wxyz[4] = {1, 0, 0, 0};
+  // Schema 1.4.0 (ADR 0034): false = the IMU was NOT recorded (the live session's default), which makes write_manifest
+  // stamp at least 1.4.0. Writers outside the live session (import-raw, golden bundles) keep the default: they write
+  // what they were given.
+  bool imu_recorded = true;
 };
 
 std::string sha256_hex(const std::string& file_path);

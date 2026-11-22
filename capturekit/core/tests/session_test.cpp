@@ -6,6 +6,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <random>
 #include <set>
 #include <string>
@@ -335,7 +336,7 @@ TEST(SessionKeyframes, UnackedRequestsExpireAndLeaveNoOrphans) {
 
 TEST(SessionThreaded, ConcurrentIngestStress) {
   auto d = fresh("stress");
-  auto* s = make(d, "{\"threaded\":1, \"queue_capacity\":512}");
+  auto* s = make(d, "{\"threaded\":1, \"queue_capacity\":512, \"record_imu\":1}");  // this test counts /imu/* records
   ck_session_start(s, 0);
   intr(s);
   const int N = 3000;
@@ -437,7 +438,7 @@ std::string slurp(const fs::path& p) {
 }
 constexpr const char* kConsentCfg =
     "{\"threaded\":0, \"model\":\"ConsentPhone\", \"consent_version\":\"v1\", "
-    "\"consent_at\":\"2026-11-17T09:30:00Z\", \"redaction_mode\":\"faces\"}";
+    "\"consent_at\":\"2026-11-17T09:30:00Z\", \"redaction_mode\":\"faces\", \"record_imu\":1}";  // 1.2.0 = IMU recorded
 void expect_consent_manifest(const std::string& m) {
   EXPECT_NE(m.find("\"schema_version\": \"1.2.0\""), std::string::npos) << m.substr(0, 200);
   EXPECT_NE(m.find("\"consent\": {\"version\": \"v1\", \"at\": \"2026-11-17T09:30:00Z\"}"), std::string::npos);
@@ -796,7 +797,8 @@ TEST(SessionDetections, ForwardedToEngineOnlyWithUnderstanding) {
 // ADR 0028: with understanding on, the engine's published labels reach /guide/* (change-triggered + final) and the
 // manifest is 1.3.0; with it off nothing is written and the manifest stays 1.1.0. Deterministic.
 TEST(SessionGuideOutputs, WrittenOnlyWithUnderstandingAndDeterministic) {
-  const char* on_cfg = "{\"threaded\":0, \"platform\":\"test\", \"guide.understanding\":1}";
+  // record_imu:1 keeps these the pre-1.4.0 shapes (1.3.0 / 1.1.0); the lean default has its own test below.
+  const char* on_cfg = "{\"threaded\":0, \"platform\":\"test\", \"guide.understanding\":1, \"record_imu\":1}";
   auto dir = [](const char* n) { return fs::path(CK_TEST_TMP) / "session" / n; };
   auto slurp = [](const fs::path& p) {
     std::ifstream f(p, std::ios::binary);
@@ -814,7 +816,7 @@ TEST(SessionGuideOutputs, WrittenOnlyWithUnderstandingAndDeterministic) {
   EXPECT_NE(m.find("\"schema_version\": \"1.3.0\""), std::string::npos) << m.substr(0, 120);
   EXPECT_NE(m.find("\"guide_labels\": " + std::to_string(c.labels.size())), std::string::npos);
 
-  overlays_with_detections("guide_out_off", "{\"threaded\":0, \"platform\":\"test\"}");
+  overlays_with_detections("guide_out_off", "{\"threaded\":0, \"platform\":\"test\", \"record_imu\":1}");
   auto off = bundle::read_streams((dir("guide_out_off") / "streams.mcap").string());
   EXPECT_TRUE(off.labels.empty() && off.shell.empty() && off.gaps.empty());
   auto mo = slurp(dir("guide_out_off") / "manifest.json");
@@ -937,4 +939,93 @@ TEST(SessionTrackingRecovery, KeyframesPausedPromptOnlyAndTimelineEvents) {
   for (auto& [k, v] : reset->attrs) keys.insert(k);
   EXPECT_EQ(keys, (std::set<std::string>{"drift_deg", "drift_m", "lost_s"}));
   EXPECT_TRUE(fs::exists(d / "manifest.json"));
+}
+
+// ADR 0034 (issue #10, lean bundle): the live session leaves the IMU out of the bundle unless record_imu is set. The
+// manifest says so (schema 1.4.0), the gyro still reaches the in-memory checks, and a recovered session stamps the same.
+namespace {
+struct ImuRun {
+  bundle::StreamContents c;
+  std::string manifest;
+};
+
+// 5 s of walk (30 Hz poses, 200 Hz gyro). killed = no finalize, then ck_recover; `edit_session_json` may rewrite the
+// checkpoint in between (to play a session.json written before ADR 0034).
+ImuRun imu_run(const char* name, const char* cfg, bool killed = false,
+               const std::function<void(const fs::path&)>& edit_session_json = {}) {
+  auto d = fresh(name);
+  auto* s = make(d, cfg);
+  Feeder f{s, d};
+  EXPECT_EQ(ck_session_start(s, 0), CK_OK);
+  intr(s);
+  for (int64_t i = 0; i < 150; ++i) {
+    f.step(i);
+    ck_session_pump(s);
+    f.handle_events();
+  }
+  if (!killed) {
+    EXPECT_EQ(ck_session_stop(s, 150 * 33 * kMs), CK_OK);
+    ck_session_pump(s);
+    f.handle_events();
+    ck_session_pump(s);
+    EXPECT_EQ(ck_session_finalize(s), CK_OK);
+  }
+  ck_session_destroy(s);
+  if (killed) {
+    if (edit_session_json) edit_session_json(d / "session.json");
+    char rep[1024];
+    EXPECT_EQ(ck_recover(d.c_str(), rep, sizeof rep), CK_OK) << rep;
+  }
+  return {bundle::read_streams((d / "streams.mcap").string()), slurp(d / "manifest.json")};
+}
+}  // namespace
+
+TEST(SessionLeanBundle, ImuIsNotRecordedByDefaultAndTheManifestSaysSo) {
+  auto r = imu_run("lean_default", "{\"threaded\":0, \"platform\":\"test\"}");
+  EXPECT_TRUE(r.c.finalized);
+  EXPECT_TRUE(r.c.gyro.empty());
+  EXPECT_TRUE(r.c.accel.empty());
+  EXPECT_GT(r.c.poses.size(), 100u);  // everything else is recorded as before
+  EXPECT_FALSE(r.c.frames.empty());
+  EXPECT_NE(r.manifest.find("\"schema_version\": \"1.4.0\""), std::string::npos) << r.manifest.substr(0, 160);
+  EXPECT_NE(r.manifest.find("\"imu_gyro\": 0, \"imu_accel\": 0"), std::string::npos);
+  EXPECT_NE(r.manifest.find("\"record_imu\":false"), std::string::npos);
+}
+
+TEST(SessionLeanBundle, RecordImuKeepsTheChannelsAndTheOlderSchema) {
+  auto r = imu_run("lean_off", "{\"threaded\":0, \"platform\":\"test\", \"record_imu\":1}");
+  EXPECT_GT(r.c.gyro.size(), 100u);
+  EXPECT_NE(r.manifest.find("\"schema_version\": \"1.1.0\""), std::string::npos) << r.manifest.substr(0, 160);
+  EXPECT_NE(r.manifest.find("\"record_imu\":true"), std::string::npos);
+  EXPECT_EQ(r.manifest.find("\"imu_gyro\": 0,"), std::string::npos);
+}
+
+TEST(SessionLeanBundle, ConsentAndGuideOutputsNeverLowerTheLeanSchema) {
+  // 1.2.0 (consent) and 1.3.0 (guide outputs) are older than 1.4.0: the lean stamp wins, the blocks stay.
+  auto r = imu_run("lean_consent", "{\"threaded\":0, \"consent_version\":\"v1\", \"consent_at\":\"2026-11-20T09:30:00Z\", "
+                                   "\"redaction_mode\":\"none\"}");
+  EXPECT_NE(r.manifest.find("\"schema_version\": \"1.4.0\""), std::string::npos);
+  EXPECT_NE(r.manifest.find("\"consent\": {\"version\": \"v1\""), std::string::npos);
+}
+
+TEST(SessionLeanBundle, RecoveredBundleKeepsTheLeanSchema) {
+  auto r = imu_run("lean_killed", "{\"threaded\":0, \"platform\":\"test\"}", /*killed=*/true);
+  EXPECT_TRUE(r.c.gyro.empty());
+  EXPECT_NE(r.manifest.find("\"schema_version\": \"1.4.0\""), std::string::npos) << r.manifest.substr(0, 160);
+  EXPECT_NE(r.manifest.find("recovered"), std::string::npos);
+}
+
+TEST(SessionLeanBundle, SessionJsonFromBeforeTheChangeRecoversAsAnImuBundle) {
+  // A checkpoint written by an older build has no imu_recorded key: that session recorded the IMU, so no 1.4.0.
+  auto r = imu_run("lean_old_checkpoint", "{\"threaded\":0, \"platform\":\"test\", \"record_imu\":1}", /*killed=*/true,
+                   [](const fs::path& p) {
+                     auto text = slurp(p);
+                     const std::string key = "\"imu_recorded\":true,";
+                     auto at = text.find(key);
+                     ASSERT_NE(at, std::string::npos) << text;
+                     text.erase(at, key.size());
+                     std::ofstream(p, std::ios::binary | std::ios::trunc) << text;
+                   });
+  EXPECT_GT(r.c.gyro.size(), 100u);
+  EXPECT_NE(r.manifest.find("\"schema_version\": \"1.1.0\""), std::string::npos) << r.manifest.substr(0, 160);
 }

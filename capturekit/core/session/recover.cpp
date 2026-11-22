@@ -60,6 +60,12 @@ void load_meta(const fs::path& dir, bundle::BundleMeta& m) {
   auto it = obj->find("clock_offset_ns");
   if (it != obj->end())
     if (auto* d = std::get_if<double>(&it->second)) m.clock_offset_ns = int64_t(*d);
+  // ADR 0034. A session.json written before this key existed recorded the IMU, hence the default true.
+  auto imu = obj->find("imu_recorded");
+  if (imu != obj->end()) {
+    if (auto* b = std::get_if<bool>(&imu->second)) m.imu_recorded = *b;
+    else if (auto* d = std::get_if<double>(&imu->second)) m.imu_recorded = *d != 0;
+  }
 }
 
 }  // namespace
