@@ -1,0 +1,4 @@
+# Docker build context is capturekit/: send only what the verifier image copies.
+*
+!dev-server/verifier/
+!tools/ckit/bundle/archive.py

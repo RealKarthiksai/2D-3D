@@ -398,15 +398,19 @@ def upload_cmd(
     consent: Annotated[
         bool, typer.Option(help="User consented to upload and local deletion.")
     ] = False,
+    key: Annotated[
+        str, typer.Option(envvar="CK_ACCESS_KEY", help="Access key sent as X-CK-Key ('' = none).")
+    ] = "",
 ) -> None:
-    """Upload a bundle via tus (manifest last), resume after kill, wait for the server verdict."""
+    """Upload a bundle folder or packed .zip via tus, resume after kill, wait for the verdict."""
     from ckit.upload import TusUploader
     from ckit.upload import delete_after_verify as retention
 
     if not consent:
         typer.echo("refusing to upload without --consent (consent flag is recorded by the app)")
         raise typer.Exit(2)
-    res = TusUploader(server, verifier or None).upload_bundle(bundle)
+    headers = {"X-CK-Key": key} if key else None
+    res = TusUploader(server, verifier or None, headers=headers).upload_bundle(bundle)
     deleted = retention(bundle, res, delete_after_verify) if delete_after_verify else False
     _dump({"status": res.status, "reason": res.reason, "repaired": res.repaired,
            "retries": res.retries, "deleted_local": deleted})  # fmt: skip

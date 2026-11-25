@@ -4,6 +4,9 @@ One tus upload per file (metadata: bundle_id, path, sha256), manifest.json LAST.
 persisted in `<bundle>/.ckit_upload.json` so a killed process or rebooted device resumes via HEAD
 (Upload-Offset). Transient errors retry with exponential backoff. After the manifest is up, the
 server verdict is polled; files the server reports CORRUPT are re-uploaded once from scratch.
+
+A packed `<bundle>.zip` goes up as ONE upload (metadata archive=1); `headers` (e.g. X-CK-Key) are
+sent with every request.
 """
 
 from __future__ import annotations
@@ -14,9 +17,12 @@ import json
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from ckit.bundle.archive import is_archive
 
 TUS = {"Tus-Resumable": "1.0.0"}
 STATE_FILE = ".ckit_upload.json"
@@ -68,7 +74,9 @@ class TusUploader:
         sleep: Callable[[float], None] = time.sleep,
         faults: Faults | None = None,
         timeout: float = 15.0,
+        headers: dict[str, str] | None = None,
     ) -> None:
+        self.headers = headers or {}  # sent with every request, e.g. {"X-CK-Key": key}
         self.server = server.rstrip("/") + "/"
         self.verifier = verifier.rstrip("/") if verifier else None
         self.chunk = chunk_size
@@ -86,7 +94,7 @@ class TusUploader:
         for attempt in range(self.max_attempts):
             try:
                 req = urllib.request.Request(
-                    url, data=data, method=method, headers={**TUS, **headers}
+                    url, data=data, method=method, headers={**TUS, **self.headers, **headers}
                 )
                 with urllib.request.urlopen(req, timeout=self.timeout) as r:
                     return r.status, dict(r.headers), r.read()
@@ -104,7 +112,13 @@ class TusUploader:
 
     # --- one file ------------------------------------------------------------------------------
     def _upload_file(
-        self, bundle: Path, rel: str, bundle_id: str, state: dict, fresh: bool
+        self,
+        bundle: Path,
+        rel: str,
+        bundle_id: str,
+        state: dict,
+        fresh: bool,
+        extra_meta: dict[str, str] | None = None,
     ) -> None:
         p = bundle / rel
         size = p.stat().st_size
@@ -123,7 +137,7 @@ class TusUploader:
                 "POST", self.server,
                 {"Upload-Length": str(size),
                  "Upload-Metadata": _meta({"bundle_id": bundle_id, "path": rel, "sha256": digest,
-                                           "filename": Path(rel).name})},
+                                           "filename": Path(rel).name, **(extra_meta or {})})},
             )  # fmt: skip
             url = hdr.get("Location") or hdr.get("location")
             if not url:
@@ -185,12 +199,42 @@ class TusUploader:
         return json.loads(body)
 
     def upload_bundle(self, bundle: Path, wait_s: float = 30.0) -> UploadResult:
+        """Upload a bundle folder (file by file, manifest last) or a packed .zip (one upload)."""
+        if is_archive(bundle):
+            return self._upload_archive(bundle, wait_s)
         manifest = json.loads((bundle / "manifest.json").read_text())
         bid = manifest["bundle_id"]
         state = self._load(bundle)
-        res = UploadResult()
         for rel in self.files(bundle):
             self._upload_file(bundle, rel, bid, state, fresh=False)
+
+        def resend(rels: list[str]) -> None:
+            for rel in rels:
+                self._upload_file(bundle, rel, bid, state, fresh=True)
+
+        return self._await_verdict(bid, wait_s, resend)
+
+    def _upload_archive(self, archive: Path, wait_s: float) -> UploadResult:
+        """One tus upload of the zip (metadata archive=1); the server verifies it as a whole."""
+        try:
+            with zipfile.ZipFile(archive) as zf:
+                bid = json.loads(zf.read("manifest.json"))["bundle_id"]
+        except (OSError, KeyError, ValueError, zipfile.BadZipFile) as e:
+            raise UploadError(f"{archive}: not a Scan Bundle archive: {e}") from e
+        folder, name = archive.parent, archive.name
+        state = self._load(folder)
+
+        def send(fresh: bool) -> None:
+            self._upload_file(folder, name, bid, state, fresh, {"archive": "1"})
+
+        send(fresh=False)
+        return self._await_verdict(bid, wait_s, lambda _rels: send(fresh=True))
+
+    def _await_verdict(
+        self, bid: str, wait_s: float, resend: Callable[[list[str]], None]
+    ) -> UploadResult:
+        """Poll the server verdict; re-send damaged files once (resend gets their paths)."""
+        res = UploadResult()
         if not self.verifier:
             res.status, res.retries = "UPLOADED", self.retries
             return res
@@ -202,26 +246,27 @@ class TusUploader:
                 if srv["status"] == "CORRUPT" and not repaired:
                     repaired = True  # re-send damaged files from scratch, manifest again last
                     bad = [c["path"] for c in srv["corrupt"]]
-                    for rel in [b for b in bad if b != "manifest.json"] + ["manifest.json"]:
-                        self._upload_file(bundle, rel, bid, state, fresh=True)
+                    resend([b for b in bad if b != "manifest.json"] + ["manifest.json"])
                     res.repaired = bad
                     deadline = time.monotonic() + wait_s
                     continue
                 res.status, res.reason, res.server = srv["status"], srv["reason"], srv
                 break
             if srv["status"] == "INCOMPLETE":  # files lost server-side: resend what is missing
-                for rel in srv["missing"]:
-                    self._upload_file(bundle, rel, bid, state, fresh=True)
+                resend(srv["missing"])
             self.sleep(0.3)
         res.retries = self.retries
         return res
 
 
 def delete_after_verify(bundle: Path, result: UploadResult, consent: bool) -> bool:
-    """Local retention (consent stub): delete only after server verification AND consent."""
+    """Local retention (consent stub): delete the folder/zip only after verification AND consent."""
     import shutil
 
     if not consent or result.status != "COMPLETE":
         return False
-    shutil.rmtree(bundle)
+    if bundle.is_dir():
+        shutil.rmtree(bundle)
+    else:  # a packed .zip
+        bundle.unlink()
     return True

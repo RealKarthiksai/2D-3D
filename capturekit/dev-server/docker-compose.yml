@@ -16,8 +16,8 @@ services:
     command: ["server", "/data", "--console-address", ":9001"]
     environment: *s3-credentials
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # web console
+      - "127.0.0.1:9000:9000"   # S3 API (this machine only: it holds every scan, the login is a default)
+      - "127.0.0.1:9001:9001"   # web console (this machine only)
     volumes:
       - minio-data:/data
 
@@ -39,7 +39,9 @@ services:
 
   # Marks a bundle COMPLETE/INCOMPLETE/CORRUPT from what is in the bucket (never from hook events).
   verifier:
-    build: ./verifier
+    build:
+      context: ..
+      dockerfile: dev-server/verifier/Dockerfile
     depends_on:
       minio-init:
         condition: service_completed_successfully
@@ -48,6 +50,10 @@ services:
       S3_BUCKET: scanbundles
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-capturekit}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-capturekit-dev-only}
+      CK_ACCESS_KEY: ${CK_ACCESS_KEY:-}   # empty = no access key (CI, failure matrix)
+      BRIDGE_URL: ${BRIDGE_URL:-}   # e.g. http://host.docker.internal:8082 (the bridge runs on the host)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8081:8081"
     restart: unless-stopped
@@ -66,7 +72,7 @@ services:
       - -base-path=/files/
       - -port=1080
       - -hooks-http=http://verifier:8081/hook
-      - -hooks-enabled-events=post-finish
+      - -hooks-enabled-events=pre-create,post-finish
     environment:
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-capturekit}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-capturekit-dev-only}

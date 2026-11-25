@@ -1,0 +1,22 @@
+{
+  "listen": "0.0.0.0:8082",
+  "access_key": "",
+  "verifier_url": "http://localhost:8081",
+  "work_dir": "C:/scanbridge-work",
+  "recon_dir": "C:/path/to/roomscan-recon",
+  "python": "C:/path/to/roomscan-recon/.venv/Scripts/python.exe",
+  "dataset": "scanbundle",
+  "timeout_s": 7200,
+  "steps": [
+    {
+      "name": "spatial",
+      "enabled": true,
+      "argv": ["{python}", "-m", "spatial.cli", "run", "--dataset", "{dataset}", "--src", "{bundle_dir}", "--out", "{run_dir}", "--prior", "device"]
+    },
+    {
+      "name": "recon",
+      "enabled": false,
+      "argv": ["{python}", "-m", "recon.cli", "run", "--spatial-map", "{run_dir}/spatial_map", "--out", "{run_dir}/reconstruction", "--splat", "auto"]
+    }
+  ]
+}
