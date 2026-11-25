@@ -1,5 +1,8 @@
 # nanobind module `_ckcore`, built into ${CMAKE_BINARY_DIR}/py (ckit adds it to sys.path).
 find_package(Python 3.11 COMPONENTS Interpreter Development.Module REQUIRED)
+if(NOT EXISTS "${CAPTUREKIT_THIRD_PARTY}/nanobind/CMakeLists.txt")
+  message(FATAL_ERROR "Missing ${CAPTUREKIT_THIRD_PARTY}/nanobind/CMakeLists.txt. Run: git submodule update --init --recursive")
+endif()
 add_subdirectory("${CAPTUREKIT_THIRD_PARTY}/nanobind" "${CMAKE_BINARY_DIR}/nanobind" EXCLUDE_FROM_ALL)
 file(GLOB CK_PY_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
 nanobind_add_module(_ckcore NB_STATIC ${CK_PY_SOURCES})

@@ -21,3 +21,10 @@ on the box; `grpcio-tools` bundles one and reproduces the committed file byte fo
     cd capturekit/spec/scanbundle/messages
     uv tool run --python 3.12 --from grpcio-tools python -m grpc_tools.protoc -I. \
       --descriptor_set_out=capturekit.desc capturekit.proto
+
+## Local CI (WSL)
+
+`scripts/ci_local.sh [--jobs core,sanitizers,python,schema,golden]` runs the Linux jobs of `.github/workflows/ci.yml`
+(default `core,python,schema,golden`; `sanitizers` is opt-in, it doubles the build time) with build trees in `~/ck-ci`
+and the venv in `~/ck-venv`, then prints `job PASS|FAIL|SKIP` and exits 1 on any FAIL. `upload` (docker) and `ios` (macOS) are SKIP.
+Android job on Windows, from `capturekit/android` with JDK 25: `./gradlew :capturekit:assembleDebug :sample-app:assembleStandardDebug :sample-app:assembleFieldDebug :capturekit:testDebugUnitTest :sample-app:testStandardDebugUnitTest --console=plain`.

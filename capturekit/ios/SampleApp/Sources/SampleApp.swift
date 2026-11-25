@@ -15,8 +15,38 @@ struct RootView: View {
             List {
                 NavigationLink("Raw recorder") { RecorderView(clockCheck: false) }
                 NavigationLink("Clock check") { RecorderView(clockCheck: true) }
+                NavigationLink("Sensor check") { SensorCheckView() }
             }.navigationTitle("CaptureKit")
         }
+    }
+}
+
+/// Debug screen for the pre-scan sensor check (ADR 0035): shows the core's message and the manifest summary.
+struct SensorCheckView: View {
+    @State private var capture = CaptureSession(dir: FileManager.default.temporaryDirectory.appendingPathComponent("sensor_check"))
+    @State private var runner: SensorCheckRunner?
+    @State private var message = "Press Check, then hold the phone still."
+    @State private var summary = ""
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Sensor check").font(.headline)
+            Text(message).multilineTextAlignment(.center)
+            Text(summary).font(.caption.monospaced())
+            Button("Check") { check() }.buttonStyle(.borderedProminent)
+        }
+        .padding()
+        .onDisappear { runner?.stop() }
+    }
+
+    private func check() {
+        let r = runner ?? capture.makeSensorCheck()
+        runner = r
+        summary = ""
+        r.run(onUpdate: { message = $0 }, onFinish: { msg, cfg in
+            message = msg
+            summary = cfg.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "\n")
+        })
     }
 }
 

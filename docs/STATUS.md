@@ -36,6 +36,8 @@ Rule: ON only if it PASSed on the phone ([DEVICE_TEST_LOG.md](DEVICE_TEST_LOG.md
 | Detector, camera boxes chip, object labels, review "Found" | OFF `detector` | never device-tested | H18, H19, H33 |
 | Voice commands (mic chip, VoiceController, StateAnswers) | OFF `voice_commands` (no mic permission asked) | never device-tested | H12, H31 |
 | Recalibration card | OFF `recalibrate_card` (core keyframe pause stays) | cover/uncover check not run | H36 |
+| Pre-scan sensor check | OFF `sensor_check` | never device-tested | H39 |
+| UI design system v3 (ADR 0037) | always on (visual only) | never device-tested | H40 |
 | Face redaction | ON, **unverified** | never device-tested | H14 (keep ON: off ships unblurred faces) |
 | Upload/tus, Sentry, research/trial chip | field flavour only | standard build has none | H16, H17, H30, H32 |
 | Raw recorder, Clock check | ON | needed for golden recordings | H1, H2 |

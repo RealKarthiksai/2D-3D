@@ -10,9 +10,10 @@ option(CAPTUREKIT_BUILD_PYTHON "Build the _ckcore nanobind module" OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(CAPTUREKIT_THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/../third_party" CACHE PATH "third_party root")
-foreach(dep eigen sophus mcap/cpp/mcap/include)
-  if(NOT EXISTS "${CAPTUREKIT_THIRD_PARTY}/${dep}")
-    message(FATAL_ERROR "Missing ${CAPTUREKIT_THIRD_PARTY}/${dep}. Run: git submodule update --init --recursive")
+# Sentinel files, not directories: an uninitialised submodule is an existing but EMPTY directory.
+foreach(sentinel eigen/Eigen/Core sophus/sophus/se3.hpp mcap/cpp/mcap/include/mcap/mcap.hpp)
+  if(NOT EXISTS "${CAPTUREKIT_THIRD_PARTY}/${sentinel}")
+    message(FATAL_ERROR "Missing ${CAPTUREKIT_THIRD_PARTY}/${sentinel}. Run: git submodule update --init --recursive")
   endif()
 endforeach()
 

@@ -54,3 +54,6 @@ dist/
 /android/capturekit/src/main/assets/*.tflite
 /android/capturekit/src/main/assets/*.bin
 .kotlin/
+
+# --- UI review screenshots (ui-design-system-v3) ---
+/android/ui-shots/

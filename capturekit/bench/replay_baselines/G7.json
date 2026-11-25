@@ -102,6 +102,11 @@
           "seen": 0.1581,
           "valid_cells": 2972
         },
+        "layout": {
+          "blocked_m": 0,
+          "closed": false,
+          "walls": 2
+        },
         "log": {
           "by_state": {
             "ACTIVE": 1,
@@ -126,7 +131,7 @@
           "obstacle_cells": 145,
           "passable_cells": 378
         },
-        "params_hash": "f6a8c2122d0421c2",
+        "params_hash": "c509693db83111f3",
         "planner": {
           "switches": 2,
           "target_gain": 132,
@@ -134,7 +139,15 @@
           "target_z": 1.55,
           "targets_reached": 0
         },
-        "tier": "B"
+        "tier": "B",
+        "timeline": [
+          {
+            "completeness": 0,
+            "prompts": 0,
+            "t_s": 0,
+            "walls": 0
+          }
+        ]
       },
       "first_instructions": [
         {
