@@ -22,6 +22,7 @@
 #include "capturekit/governor/governor.hpp"
 #include "capturekit/guide/engine.hpp"
 #include "capturekit/quality/quality.hpp"
+#include "capturekit/util/json.hpp"
 
 namespace capturekit::session {
 
@@ -42,6 +43,9 @@ struct SessionConfig {
   /// ADR 0034 (lean bundle): /imu/gyro and /imu/accel are written only when true (research). Off by default: nothing
   /// downstream reads them. The core still keeps the gyro in memory for blur risk and the tracking-recovery check.
   bool record_imu = false;
+  /// Pre-scan sensor check summary (ADR 0035), from "sensor_check.<key>" config keys; written to the manifest as
+  /// capture_settings.sensor_check only when non-empty (no keys = manifest unchanged).
+  json::Object sensor_check;
   bundle::BundleMeta meta;
   quality::QualityConfig quality;
   governor::GovernorConfig governor;

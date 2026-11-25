@@ -1,0 +1,5 @@
+# 0035 Pre-scan sensor check (hold-still IMU check + fresh AR start)
+
+Status: accepted (2026-11-24), behind FeatureFlags `sensor_check` (OFF) until H39 passes. Apps cannot recalibrate the gyro or accelerometer (no SensorManager/CoreMotion call; the OS already removes its own gyro bias), so before a scan the user holds the phone still ~2 s and the core (`ck_sensor_check`, pure, no clock) judges gyro bias, gyro/accel steadiness, |gravity| and the OS accuracy flag: pass | warn | fail | moving | insufficient. Shells only collect samples, show the message and follow the action (continue | restart | finish); Android also restarts ARCore (`ArHost.retry`), iOS already starts with `.resetTracking`.
+A result never blocks the scan ("scan anyway", as ADR 0031 "never trap the user"); Start during the check skips it (`skipped`). Only summary numbers go to manifest `capture_settings.sensor_check` (closed whitelist, no schema bump, no raw IMU per ADR 0034); no keys = manifest byte-identical. No magnetometer / figure-8: our ARKit `.gravity` and ARCore configs ignore heading.
+Thresholds (`SensorCheckParams`) are starting guesses: tune from the H39 values in a follow-up ADR.

@@ -1,9 +1,11 @@
 // C API implementation: thin translation onto capturekit::session::Session.
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "capturekit/capi/capturekit.h"
 #include "capturekit/geometry/geometry.hpp"
+#include "capturekit/quality/sensor_check.hpp"
 #include "capturekit/session/session.hpp"
 #include "capturekit/version.hpp"
 
@@ -217,6 +219,42 @@ ck_status ck_recover(const char* dir, char* report, size_t cap) {
     report[n] = '\0';
   }
   return r.ok ? CK_OK : CK_ERR_IO;
+}
+
+ck_status ck_sensor_check(const ck_imu* gyro, size_t n_gyro, const ck_imu* accel, size_t n_accel,
+                          const char* input_json, char* out, size_t cap) {
+  if (!out || !cap || (n_gyro && !gyro) || (n_accel && !accel)) return CK_ERR_ARG;
+  out[0] = '\0';
+  try {
+    auto in = json::parse_flat(input_json ? input_json : "{}");
+    if (!in) return CK_ERR_ARG;
+    int gyro_acc = -1, accel_acc = -1, restarts = 0;
+    double elapsed_s = 0;
+    for (auto& [k, v] : *in) {
+      auto* d = std::get_if<double>(&v);
+      if (!d) return CK_ERR_ARG;
+      if (k == "gyro_accuracy") gyro_acc = int(*d);
+      else if (k == "accel_accuracy") accel_acc = int(*d);
+      else if (k == "elapsed_s") elapsed_s = *d;
+      else if (k == "restarts") restarts = int(*d);
+      else return CK_ERR_ARG;
+    }
+    auto copy = [](const ck_imu* src, size_t n) {
+      std::vector<bundle::ImuSample> v(n);
+      for (size_t i = 0; i < n; ++i) {
+        v[i].t_ns = src[i].t_ns;
+        std::memcpy(v[i].v, src[i].v, sizeof v[i].v);
+      }
+      return v;
+    };
+    auto j = quality::sensor_check_json(copy(gyro, n_gyro), copy(accel, n_accel), gyro_acc, accel_acc, elapsed_s,
+                                        restarts);
+    if (j.size() >= cap) return CK_ERR_ARG;
+    std::memcpy(out, j.c_str(), j.size() + 1);
+    return CK_OK;
+  } catch (...) {
+    return CK_ERR_IO;
+  }
 }
 
 }  // extern "C"

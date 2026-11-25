@@ -1029,3 +1029,32 @@ TEST(SessionLeanBundle, SessionJsonFromBeforeTheChangeRecoversAsAnImuBundle) {
   EXPECT_GT(r.c.gyro.size(), 100u);
   EXPECT_NE(r.manifest.find("\"schema_version\": \"1.1.0\""), std::string::npos) << r.manifest.substr(0, 160);
 }
+
+// ADR 0035: the pre-scan sensor check summary reaches the manifest as capture_settings.sensor_check through a closed
+// whitelist; no keys leave the manifest exactly as before.
+TEST(SessionSensorCheck, SummaryKeysGoIntoCaptureSettings) {
+  auto r = imu_run("sensor_check_keys",
+                   "{\"threaded\":0, \"platform\":\"test\", \"sensor_check.result\":\"warn\", "
+                   "\"sensor_check.reasons\":\"GYRO_BIAS_HIGH\", \"sensor_check.gyro_bias_rad_s\":0.05, "
+                   "\"sensor_check.n_gyro\":401, \"sensor_check.attempts\":2, \"sensor_check.ar_reset\":1}");
+  EXPECT_TRUE(r.c.finalized);
+  EXPECT_NE(r.manifest.find("\"sensor_check\":{\"ar_reset\":1,\"attempts\":2,\"gyro_bias_rad_s\":0.05,\"n_gyro\":401,"
+                            "\"reasons\":\"GYRO_BIAS_HIGH\",\"result\":\"warn\"}"),
+            std::string::npos)
+      << r.manifest;
+}
+
+TEST(SessionSensorCheck, NoKeysMeansNoSensorCheckInTheManifest) {
+  auto r = imu_run("scheck_none", "{\"threaded\":0, \"platform\":\"test\"}");
+  EXPECT_EQ(r.manifest.find("\"sensor_check\""), std::string::npos) << r.manifest;
+}
+
+TEST(SessionSensorCheck, UnknownKeyBadResultAndWrongTypesAreRejected) {
+  for (const char* cfg : {"{\"sensor_check.raw_gyro\":1}", "{\"sensor_check.result\":\"great\"}",
+                          "{\"sensor_check.result\":1}", "{\"sensor_check.n_gyro\":\"401\"}",
+                          "{\"sensor_check.ar_reset\":true}"}) {
+    std::string err;
+    EXPECT_FALSE(session::SessionConfig::from_json(cfg, &err)) << cfg;
+    EXPECT_NE(err.find("sensor_check."), std::string::npos) << err;
+  }
+}

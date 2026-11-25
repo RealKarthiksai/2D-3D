@@ -162,3 +162,26 @@ FN(jstring, recover)(JNIEnv* e, jobject, jstring dir) {
   ck_recover(d.c_str(), rep, sizeof rep);
   return e->NewStringUTF(rep);
 }
+namespace {
+// t = n timestamps, v = flat [x, y, z] * n. Empty on a length mismatch.
+std::vector<ck_imu> imu_from(JNIEnv* e, jlongArray t, jdoubleArray v) {
+  const jsize n = t ? e->GetArrayLength(t) : 0;
+  if (n == 0 || !v || e->GetArrayLength(v) < 3 * n) return {};
+  std::vector<jlong> ts(static_cast<size_t>(n));
+  std::vector<double> vs(static_cast<size_t>(3 * n));
+  e->GetLongArrayRegion(t, 0, n, ts.data());
+  e->GetDoubleArrayRegion(v, 0, 3 * n, vs.data());
+  std::vector<ck_imu> out(static_cast<size_t>(n));
+  for (size_t i = 0; i < out.size(); ++i) out[i] = ck_imu{ts[i], {vs[3 * i], vs[3 * i + 1], vs[3 * i + 2]}};
+  return out;
+}
+}  // namespace
+// Pre-scan sensor check (ADR 0035). Returns the core's JSON, or "" on a bad argument.
+FN(jstring, sensorCheck)(JNIEnv* e, jobject, jlongArray gt, jdoubleArray gv, jlongArray at, jdoubleArray av,
+                         jstring input) {
+  auto g = imu_from(e, gt, gv), a = imu_from(e, at, av);
+  auto in = str(e, input);
+  char out[2048];
+  if (ck_sensor_check(g.data(), g.size(), a.data(), a.size(), in.c_str(), out, sizeof out) != CK_OK) out[0] = '\0';
+  return e->NewStringUTF(out);
+}

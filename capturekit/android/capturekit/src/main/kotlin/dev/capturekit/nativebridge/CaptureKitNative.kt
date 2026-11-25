@@ -42,6 +42,8 @@ object CaptureKitNative {
     /** [level, keyframe_rate_scale, ml_rate_scale, resolution_tier, overlay, upload, must_pause] */
     external fun policy(handle: Long): DoubleArray
     external fun recover(dir: String): String
+    /** Pre-scan sensor check (ADR 0035): times + flat [x,y,z] values per sensor; core JSON, or "" on a bad argument. */
+    external fun sensorCheck(gyroT: LongArray, gyroV: DoubleArray, accelT: LongArray, accelV: DoubleArray, inputJson: String): String
 }
 
 object Status {

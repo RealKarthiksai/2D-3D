@@ -159,6 +159,14 @@ ck_status ck_policy_get(const ck_session* s, ck_policy* out);
  * Writes a JSON summary into report (may be NULL). */
 ck_status ck_recover(const char* bundle_dir, char* report, size_t cap);
 
+/* Pre-scan sensor check (ADR 0035). Pure: no session, no clock. gyro rad/s, accel m/s^2 (either may be NULL with
+ * n = 0). input_json: flat object, keys gyro_accuracy, accel_accuracy (OS flag, -1 unknown), elapsed_s (since this
+ * attempt started), restarts; any other key returns CK_ERR_ARG. Writes one flat JSON object into out: "action"
+ * (continue | restart | finish), "message" and the sensor_check.* manifest summary keys. Output larger than cap:
+ * out = "" and CK_ERR_ARG. */
+ck_status ck_sensor_check(const ck_imu* gyro, size_t n_gyro, const ck_imu* accel, size_t n_accel,
+                          const char* input_json, char* out, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif

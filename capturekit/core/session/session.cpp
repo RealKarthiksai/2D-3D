@@ -54,10 +54,24 @@ std::optional<SessionConfig> SessionConfig::from_json(std::string_view text, std
     if (auto* b = std::get_if<bool>(&v)) return *b ? 1.0 : 0.0;
     return std::nullopt;
   };
+  // ADR 0035: the closed set of pre-scan sensor check summary keys the manifest may carry.
+  auto sensor_check_ok = [](std::string_view key, const json::FlatValue& v) {
+    static constexpr std::string_view kNumbers[] = {"gyro_bias_rad_s", "gyro_std_rad_s", "accel_norm_mps2",
+                                                    "accel_std_mps2",  "window_s",       "n_gyro",
+                                                    "n_accel",         "attempts",       "ar_reset"};
+    static constexpr std::string_view kResults[] = {"pass", "warn", "fail", "moving", "insufficient", "skipped"};
+    auto* s = std::get_if<std::string>(&v);
+    if (key == "result") return s && std::find(std::begin(kResults), std::end(kResults), *s) != std::end(kResults);
+    if (key == "reasons") return s != nullptr;
+    return std::holds_alternative<double>(v) && std::find(std::begin(kNumbers), std::end(kNumbers), key) != std::end(kNumbers);
+  };
   for (auto& [k, v] : *obj) {
     auto n = num(v);
     auto* str = std::get_if<std::string>(&v);
-    if (k.rfind("quality.", 0) == 0 && n) q.set(k.substr(8), *n);
+    if (k.rfind("sensor_check.", 0) == 0 && sensor_check_ok(std::string_view(k).substr(13), v)) {
+      if (str) c.sensor_check.set(k.substr(13), *str);
+      else c.sensor_check.set(k.substr(13), std::get<double>(v));
+    } else if (k.rfind("quality.", 0) == 0 && n) q.set(k.substr(8), *n);
     else if (k.rfind("governor.", 0) == 0 && n) g.set(k.substr(9), *n);
     else if (k.rfind("guide.", 0) == 0 && n) gd.set(k.substr(6), *n);
     else if (k == "threaded" && n) c.threaded = *n != 0;
@@ -137,6 +151,7 @@ std::unique_ptr<Session> Session::create(const std::string& dir, const SessionCo
       .raw("guide_config", cfg.guide.to_json())
       .set("guide_config_hash", cfg.guide.hash())
       .set("record_imu", cfg.record_imu);
+  if (cfg.sensor_check.dump() != "{}") settings.set("sensor_check", cfg.sensor_check);
   cfg.meta.capture_settings_json = settings.dump();
 
   std::unique_ptr<Session> s(new Session(dir, cfg));

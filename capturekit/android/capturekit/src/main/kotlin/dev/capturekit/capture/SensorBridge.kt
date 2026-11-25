@@ -8,6 +8,11 @@ import android.hardware.SensorManager
 import android.os.Handler
 import android.os.HandlerThread
 
+/** Receives one gyro (rad/s) or accel (m/s^2) sample with the OS accuracy flag ([SensorEvent.accuracy]). */
+fun interface ImuSink {
+    fun onImu(gyro: Boolean, tNs: Long, x: Double, y: Double, z: Double, accuracy: Int)
+}
+
 /**
  * Gyroscope + accelerometer at the fastest rate on a dedicated thread (never the AR/GL thread).
  * SensorEvent.timestamp is on the elapsedRealtimeNanos base; [clockOffsetNs] is the per-device offset
@@ -15,9 +20,16 @@ import android.os.HandlerThread
  */
 class SensorBridge(
     context: Context,
-    private val session: SessionManager,
+    private val sink: ImuSink,
     private val clockOffsetNs: Long = 0L,
 ) : SensorEventListener {
+    /** Feeds a capture session. */
+    constructor(context: Context, session: SessionManager, clockOffsetNs: Long = 0L) : this(
+        context,
+        ImuSink { gyro, t, x, y, z, _ -> if (gyro) session.onGyro(t, x, y, z) else session.onAccel(t, x, y, z) },
+        clockOffsetNs,
+    )
+
     private val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private var thread: HandlerThread? = null
 
@@ -39,8 +51,8 @@ class SensorBridge(
         val t = e.timestamp + clockOffsetNs
         val v = e.values
         when (e.sensor.type) {
-            Sensor.TYPE_GYROSCOPE -> session.onGyro(t, v[0].toDouble(), v[1].toDouble(), v[2].toDouble())
-            Sensor.TYPE_ACCELEROMETER -> session.onAccel(t, v[0].toDouble(), v[1].toDouble(), v[2].toDouble())
+            Sensor.TYPE_GYROSCOPE -> sink.onImu(true, t, v[0].toDouble(), v[1].toDouble(), v[2].toDouble(), e.accuracy)
+            Sensor.TYPE_ACCELEROMETER -> sink.onImu(false, t, v[0].toDouble(), v[1].toDouble(), v[2].toDouble(), e.accuracy)
         }
     }
 

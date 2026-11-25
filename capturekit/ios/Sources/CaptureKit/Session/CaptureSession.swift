@@ -55,6 +55,9 @@ public final class CaptureSession: NSObject, ARSessionDelegate, @unchecked Senda
     private static func tNs(_ seconds: TimeInterval) -> Int64 { Int64((seconds * 1e9).rounded()) }
     private var nowNs: Int64 { Self.tNs(ProcessInfo.processInfo.systemUptime) } // same base as ARFrame/CMLogItem
 
+    /// Pre-scan sensor check (ADR 0035) on this session's CMMotionManager (Apple: one per app). Stop it before start(config:).
+    public func makeSensorCheck() -> SensorCheckRunner { SensorCheckRunner(motion: motion) }
+
     public func start(config: [String: Any] = [:]) throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var cfg: [String: Any] = [
