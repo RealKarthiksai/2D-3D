@@ -73,7 +73,7 @@ class ResearchLog(private val activity: Activity) {
             addView(guided); addView(unguidedRb)
             check(if (cur?.arm == TrialArm.UNGUIDED) 2 else 1)
         }
-        val err = TextView(activity).apply { setTextColor(0xFFC62828.toInt()); visibility = android.view.View.GONE }
+        val err = TextView(activity).apply { setTextColor(dev.capturekit.sample.UiKit.c(activity).danger); visibility = android.view.View.GONE }
         val body = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(8), dp(20), 0)

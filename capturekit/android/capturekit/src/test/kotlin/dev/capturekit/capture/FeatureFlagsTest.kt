@@ -39,6 +39,7 @@ class FeatureFlagsTest {
         val d = FeatureFlags.Flags.DEFAULTS
         assertFalse(d.guidance); assertFalse(d.detector); assertFalse(d.voiceCommands); assertFalse(d.recalibrateCard); assertFalse(d.segmentation)
         assertFalse(d.recordImu)   // lean bundle by default (ADR 0034)
+        assertFalse(d.sensorCheck) // ADR 0035: off until H39 passes
         assertNull(d.understanding)
         // Release build (no props read) and a debuggable build with every property unset / junk give the defaults.
         assertEquals(d, FeatureFlags.fromProps { null })
@@ -55,11 +56,12 @@ class FeatureFlagsTest {
         assertEquals(FeatureFlags.Flags.DEFAULTS.copy(understanding = 1), only(FeatureFlags.PROP_UNDERSTANDING))
         assertEquals(FeatureFlags.Flags.DEFAULTS.copy(segmentation = true), only(FeatureFlags.PROP_SEGMENTATION))
         assertEquals(FeatureFlags.Flags.DEFAULTS.copy(recordImu = true), only(FeatureFlags.PROP_RECORD_IMU))
+        assertEquals(FeatureFlags.Flags.DEFAULTS.copy(sensorCheck = true), only(FeatureFlags.PROP_SENSOR_CHECK))
         val all = FeatureFlags.fromProps { if (it == FeatureFlags.PROP_UNDERSTANDING) "2" else "1" }
-        assertEquals(FeatureFlags.Flags(understanding = 2, detector = true, guidance = true, voiceCommands = true, recalibrateCard = true, segmentation = true, recordImu = true), all)
+        assertEquals(FeatureFlags.Flags(understanding = 2, detector = true, guidance = true, voiceCommands = true, recalibrateCard = true, segmentation = true, recordImu = true, sensorCheck = true), all)
         val names = listOf(FeatureFlags.PROP_GUIDANCE, FeatureFlags.PROP_DETECTOR, FeatureFlags.PROP_VOICE_COMMANDS,
             FeatureFlags.PROP_RECALIBRATE_CARD, FeatureFlags.PROP_UNDERSTANDING, FeatureFlags.PROP_SEGMENTATION,
-            FeatureFlags.PROP_RECORD_IMU)
+            FeatureFlags.PROP_RECORD_IMU, FeatureFlags.PROP_SENSOR_CHECK)
         assertEquals(names.size, names.toSet().size)
         for (n in names) assertTrue(n, n.startsWith("debug.capturekit."))
     }

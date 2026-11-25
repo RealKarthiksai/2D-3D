@@ -24,9 +24,9 @@ import kotlin.math.sin
 /**
  * Live mini-map (real-room-fix T3): a top-down plan, HEADING-UP (the user is fixed at the centre, their forward
  * direction is screen up; [MiniMapMath] owns the sign conventions, yaw positive = left). Draws the closed room outline
- * with corner dots, the layout walls (inked by the seen percentage, green from [DONE_PCT]), hatched spans for stretches
+ * with corner dots, the layout walls (inked by the seen percentage: grey while scanning, green from [DONE_PCT]), hatched spans for stretches
  * hidden by furniture (never demanded), dashed spans for missing stretches, doors / windows, detected objects (footprint
- * in a per-class colour with its name, e.g. "sofa", issue #2 B) and unseen-area marks when the core sends them, the
+ * in a muted per-class ink with its name, e.g. "sofa", issue #2 B) and unseen-area marks when the core sends them, the
  * 12-sector heading ring, the target dot and a ceiling icon.
  * Elements the core did not send are simply not drawn (older core, or `guide.understanding` off).
  * [setData] copies the snapshot into preallocated arrays (call at <= 4 Hz, UI thread); onDraw never allocates.
@@ -66,43 +66,49 @@ class RoomView(ctx: Context) : View(ctx) {
     private var snap = true
     private val tmp = FloatArray(2)
 
-    // ---- drawing resources ----
+    // ---- drawing resources (monochrome from the palette; green only for "done", orange only for unseen areas) ----
+    private val p = UiKit.c(ctx)
+    private val inkDone = p.green
+    private val inkScanning = p.label2
     private val floorFill = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = 0x99FFFFFF.toInt(); strokeJoin = Paint.Join.ROUND }
+    private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d; strokeJoin = Paint.Join.ROUND }
     private val wallInk = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 4.5f * d; strokeCap = Paint.Cap.ROUND }
-    private val blockedLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.8f * d; color = 0xFFFFB300.toInt() }
+    private val blockedLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.8f * d; color = p.label3 }
     private val missingLine = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; strokeWidth = 2.5f * d; color = 0x80FFFFFF.toInt()
+        style = Paint.Style.STROKE; strokeWidth = 2.5f * d; color = Tokens.withAlpha(p.label, 0x80)
         pathEffect = DashPathEffect(floatArrayOf(4f * d, 4f * d), 0f)
     }
-    private val cornerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt() }
-    private val cornerHaloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1f * d; color = 0x6600E676.toInt() }
-    private val doorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 5f * d; color = 0xFFFFB74D.toInt(); strokeCap = Paint.Cap.ROUND }
-    private val windowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 5f * d; color = 0xFF80DEEA.toInt(); strokeCap = Paint.Cap.ROUND }
-    private val objFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x66B0BEC5 }
-    private val objEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.2f * d; color = 0xCCCFD8DC.toInt() }
-    private val objLabel = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 8.5f * d; color = 0xFFFFFFFF.toInt(); textAlign = Paint.Align.CENTER }
+    private val cornerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = p.label }
+    private val cornerHaloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1f * d; color = Tokens.withAlpha(p.label, 0x40) }
+    private val doorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 5f * d; color = p.label; strokeCap = Paint.Cap.ROUND }
+    private val windowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE; strokeWidth = 3f * d; color = p.label2; strokeCap = Paint.Cap.ROUND
+        pathEffect = DashPathEffect(floatArrayOf(2f * d, 3f * d), 0f)
+    }
+    private val objFill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val objEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.2f * d }
+    private val objLabel = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 11f * d; color = p.label; textAlign = Paint.Align.CENTER }
     private val objLabelHalo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textSize = 8.5f * d; color = 0xCC000000.toInt(); textAlign = Paint.Align.CENTER
+        textSize = 11f * d; color = Tokens.withAlpha(p.bg, 0xCC); textAlign = Paint.Align.CENTER
         style = Paint.Style.STROKE; strokeWidth = 2.5f * d; strokeJoin = Paint.Join.ROUND
     }
     private val gapRing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = 0xCCFFB74D.toInt()
+        style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = p.orange
         pathEffect = DashPathEffect(floatArrayOf(3f * d, 3f * d), 0f)
     }
     private val userPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val userEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = 0xFF000000.toInt() }
-    private val fovBeamPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = 0x2600E5FF }
-    private val fovBeamStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1f * d; color = 0x4D00E5FF }
+    private val userEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = p.bg }
+    private val fovBeamPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = Tokens.withAlpha(p.label, 0x1A) }
+    private val fovBeamStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1f * d; color = Tokens.withAlpha(p.label, 0x33) }
     private val beamPath = Path()
-    private val targetPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFD54F.toInt() }
-    private val targetRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = 0xFFFFD54F.toInt() }
-    private val targetPulseRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.2f * d; color = 0x80FFD54F.toInt() }
-    private val ceilFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = INK_DONE }
-    private val ceilEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = 0xCCFFFFFF.toInt() }
+    private val targetPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = p.label }
+    private val targetRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = p.label }
+    private val targetPulseRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.2f * d; color = Tokens.withAlpha(p.label, 0x80) }
+    private val ceilFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = inkDone }
+    private val ceilEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = Tokens.withAlpha(p.label, 0xCC) }
     private val path = Path()
-    private val ringGhost = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2.5f * d; color = 0x33FFFFFF; strokeCap = Paint.Cap.ROUND }
-    private val ringDone = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2.5f * d; color = INK_DONE; strokeCap = Paint.Cap.ROUND }
+    private val ringGhost = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2.5f * d; color = Tokens.withAlpha(p.label, 0x33); strokeCap = Paint.Cap.ROUND }
+    private val ringDone = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2.5f * d; color = inkDone; strokeCap = Paint.Cap.ROUND }
 
     init { importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO }
 
@@ -231,8 +237,8 @@ class RoomView(ctx: Context) : View(ctx) {
             path.reset()
             for (i in 0 until nShell) { pt(shx[i], shz[i]); if (i == 0) path.moveTo(tmp[0], tmp[1]) else path.lineTo(tmp[0], tmp[1]) }
             if (shellClosed) path.close()
-            if (shellClosed) { floorFill.color = if (floorFound) 0x5566BB6A else 0x22FFFFFF; c.drawPath(path, floorFill) }
-            outline.color = if (shellClosed) 0xDDFFFFFF.toInt() else 0x66FFFFFF
+            if (shellClosed) { floorFill.color = if (floorFound) Tokens.withAlpha(inkDone, 0x33) else Tokens.withAlpha(p.label, 0x14); c.drawPath(path, floorFill) }
+            outline.color = Tokens.withAlpha(p.label, if (shellClosed) 0xDD else 0x66)
             c.drawPath(path, outline)
         }
 
@@ -284,8 +290,8 @@ class RoomView(ctx: Context) : View(ctx) {
                 if (k == 0) path.moveTo(tmp[0], tmp[1]) else path.lineTo(tmp[0], tmp[1])
             }
             path.close()
-            objFill.color = (obColor[i] and 0x00FFFFFF) or 0x66000000
-            objEdge.color = (obColor[i] and 0x00FFFFFF) or 0xDD000000.toInt()
+            objFill.color = Tokens.withAlpha(obColor[i], 0x66)
+            objEdge.color = Tokens.withAlpha(obColor[i], 0xDD)
             c.drawPath(path, objFill); c.drawPath(path, objEdge)
         }
         // Object names on top of every footprint (after all footprints, so a neighbour never covers a name).
@@ -346,7 +352,7 @@ class RoomView(ctx: Context) : View(ctx) {
             path.lineTo(ux, uy + b * 0.1f)
             path.lineTo(ux + b, uy + b * 0.6f)
             path.close()
-            userPaint.color = if (tracking) 0xFF00E5FF.toInt() else UiKit.AMBER
+            userPaint.color = if (tracking) p.label else p.orange
             c.drawPath(path, userPaint)
             c.drawPath(path, userEdge)
         }
@@ -368,9 +374,9 @@ class RoomView(ctx: Context) : View(ctx) {
         return -1
     }
 
-    private fun inkFor(pct: Int) = if (pct >= DONE_PCT) INK_DONE else INK_SCANNING
+    private fun inkFor(pct: Int) = if (pct >= DONE_PCT) inkDone else inkScanning
 
-    /** Hatched span: an amber centre line with diagonal ticks (hidden behind furniture; never demanded). */
+    /** Hatched span: a grey centre line with diagonal ticks (hidden behind furniture; never demanded). */
     private fun blockedSpan(c: Canvas, x0: Float, y0: Float, x1: Float, y1: Float) {
         c.drawLine(x0, y0, x1, y1, blockedLine)
         val dx = x1 - x0; val dy = y1 - y0
@@ -389,22 +395,8 @@ class RoomView(ctx: Context) : View(ctx) {
     }
 
     companion object {
-        /**
-         * Colour of an object class (core name) on the maps and the camera-feed boxes, by kind: seating blue, tables and
-         * desks amber, bed purple, screens cyan, plants green, kitchen and bathroom teal, storage brown, lamp yellow;
-         * anything else (newer core) grey.
-         */
-        fun objectColor(coreName: String): Int = when (coreName) {
-            "chair", "couch", "bench" -> 0xFF64B5F6.toInt()
-            "dining_table", "desk" -> 0xFFFFB74D.toInt()
-            "bed" -> 0xFFBA68C8.toInt()
-            "tv", "laptop" -> 0xFF4DD0E1.toInt()
-            "potted_plant" -> 0xFF81C784.toInt()
-            "toilet", "sink", "refrigerator", "oven" -> 0xFF4DB6AC.toInt()
-            "shelf", "cabinet" -> 0xFFA1887F.toInt()
-            "lamp" -> 0xFFFFF176.toInt()
-            else -> 0xFFB0BEC5.toInt()
-        }
+        /** Muted ink of an object class (core name) on the maps and the camera-feed boxes ([Tokens.objectInk]). */
+        fun objectColor(coreName: String): Int = Tokens.objectInk(coreName)
 
         /** Review hand-over encoders (overlay string formats; parse with EventParser). */
         fun encodeSurfaces(segs: List<WallSeg>): String = segs.joinToString(";") {
@@ -421,7 +413,5 @@ class RoomView(ctx: Context) : View(ctx) {
         const val MAX_PX_PER_M = 40f          // dp per metre cap
         const val SMOOTH = 0.35f              // fit easing per update (4 Hz)
         const val DONE_PCT = 80               // guess until Gate 0 data
-        const val INK_DONE = 0xFF00E676.toInt()
-        const val INK_SCANNING = 0xFF00B0FF.toInt()
     }
 }

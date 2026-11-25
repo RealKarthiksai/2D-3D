@@ -12,6 +12,7 @@ package dev.capturekit.capture
  *  - `segmentation`: issue #8 camera mask overlay + Masks chip (also needs the packaged SAM 2.1 model files)
  *  - `understanding 0|1|2`: core `guide.understanding` override (unchanged from U11-A)
  *  - `record_imu`: research only, keep the IMU channels in the bundle (ADR 0034; the default bundle is lean)
+ *  - `sensor_check`: pre-scan hold-still IMU check + fresh ARCore session before Start (ADR 0035, H39)
  * The core still records every instruction in /events; only display, speech and haptics are gated.
  */
 object FeatureFlags {
@@ -22,6 +23,7 @@ object FeatureFlags {
     const val PROP_RECALIBRATE_CARD = "debug.capturekit.recalibrate_card"
     const val PROP_SEGMENTATION = "debug.capturekit.segmentation"
     const val PROP_RECORD_IMU = "debug.capturekit.record_imu"
+    const val PROP_SENSOR_CHECK = "debug.capturekit.sensor_check"
 
     /** Understanding level when the detector runs and no property overrides it: objects only, no gap steering. */
     const val DEFAULT_UNDERSTANDING_WITH_DETECTOR = 1
@@ -42,6 +44,8 @@ object FeatureFlags {
         val segmentation: Boolean = false,
         /** Research only (ADR 0034): keep /imu/gyro and /imu/accel in the bundle. Off = the lean bundle. */
         val recordImu: Boolean = false,
+        /** ADR 0035: hold-still sensor check before the scan starts. */
+        val sensorCheck: Boolean = false,
     ) {
         companion object { val DEFAULTS = Flags() }
     }
@@ -64,6 +68,7 @@ object FeatureFlags {
             recalibrateCard = switchOn(get(PROP_RECALIBRATE_CARD), d.recalibrateCard),
             segmentation = switchOn(get(PROP_SEGMENTATION), d.segmentation),
             recordImu = switchOn(get(PROP_RECORD_IMU), d.recordImu),
+            sensorCheck = switchOn(get(PROP_SENSOR_CHECK), d.sensorCheck),
         )
     }
 

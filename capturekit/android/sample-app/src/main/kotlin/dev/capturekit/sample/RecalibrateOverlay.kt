@@ -3,11 +3,9 @@ package dev.capturekit.sample
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.RectF
-import android.graphics.Typeface
 import android.view.Gravity
 import android.view.View
 import android.view.animation.LinearInterpolator
@@ -27,20 +25,21 @@ import kotlin.math.sin
 class RecalibrateOverlay(ctx: Context) {
     private val d = ctx.resources.displayMetrics.density
     private fun dp(v: Int) = (v * d).toInt()
+    private val p = UiKit.c(ctx)
 
     private val anim = PhoneCircleView(ctx)
     private val title = TextView(ctx).apply {
-        text = Recalibration.TITLE; textSize = UiKit.TEXT_L; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
+        text = Recalibration.TITLE; UiKit.type(this, Tokens.HEADLINE); setTextColor(p.label)
         gravity = Gravity.CENTER
     }
     private val body = TextView(ctx).apply {
-        textSize = UiKit.TEXT_M; setTextColor(Color.WHITE); gravity = Gravity.CENTER; maxLines = 3
+        UiKit.type(this, Tokens.CALLOUT); setTextColor(p.label2); gravity = Gravity.CENTER; maxLines = 3
     }
     val card: View = LinearLayout(ctx).apply {
         orientation = LinearLayout.VERTICAL
         gravity = Gravity.CENTER_HORIZONTAL
-        background = UiKit.glass(ctx)
-        setPadding(dp(20), dp(16), dp(20), dp(16))
+        background = UiKit.glass(ctx, Tokens.GLASS_THICK, Tokens.R_SHEET)
+        setPadding(dp(Tokens.S24), dp(Tokens.S20), dp(Tokens.S24), dp(Tokens.S20))
         visibility = View.GONE
         isClickable = false; isFocusable = false
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
@@ -77,12 +76,12 @@ class RecalibrateOverlay(ctx: Context) {
     private class PhoneCircleView(ctx: Context) : View(ctx) {
         private val density = ctx.resources.displayMetrics.density
         private val track = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE; strokeWidth = 2 * density; color = 0x80FFFFFF.toInt()
+            style = Paint.Style.STROKE; strokeWidth = 2 * density; color = Tokens.withAlpha(Tokens.DARK.label, 0x80)
             pathEffect = DashPathEffect(floatArrayOf(6 * density, 6 * density), 0f)
         }
-        private val body = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = 0xFF263238.toInt() }
-        private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2.5f * density; color = Color.WHITE }
-        private val lens = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = UiKit.AMBER }
+        private val body = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = Tokens.DARK.surface2 }
+        private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2.5f * density; color = Tokens.DARK.label }
+        private val lens = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = Tokens.DARK.label2 }
         private val phone = RectF()
         private var angle = 0f   // radians, clockwise on screen
         private val animator = ValueAnimator.ofFloat(0f, (2 * Math.PI).toFloat()).apply {

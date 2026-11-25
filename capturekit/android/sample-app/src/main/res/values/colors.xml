@@ -1,0 +1,6 @@
+<resources>
+    <!-- Mirrors Tokens.LIGHT (bg, label); values-night mirrors Tokens.DARK. -->
+    <color name="ck_bg">#FFF2F2F7</color>
+    <color name="ck_label">#FF1D1D1F</color>
+    <bool name="ck_light_bars">true</bool>
+</resources>

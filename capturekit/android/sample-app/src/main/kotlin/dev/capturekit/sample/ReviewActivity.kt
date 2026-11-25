@@ -1,17 +1,20 @@
 package dev.capturekit.sample
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.os.Bundle
-import android.view.Gravity
+import android.util.Log
 import android.view.View
 import android.view.ViewGroup
-import dev.capturekit.capture.EventParser
-import dev.capturekit.guidance.ObjectSummary
-import kotlin.math.max
+import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.TextView
+import dev.capturekit.capture.EventParser
+import dev.capturekit.guidance.ObjectSummary
 import dev.capturekit.nativebridge.Status
 import dev.capturekit.sample.upload.UploadGate
 import dev.capturekit.upload.UploadState
@@ -20,15 +23,31 @@ import dev.capturekit.upload.UploadWorker
 import dev.capturekit.verdict.ScanInfo
 import dev.capturekit.verdict.VerdictText
 import java.io.File
+import kotlin.math.max
 
 /**
- * Review screen after Finish: save status, the validator verdict the core wrote into manifest.json
- * (PASS / WARN / FAIL) in plain language (assets/verdict_messages.json), keyframes, size, duration and the bundle
- * path. Field flavour: queues the upload when the user allowed it and the verdict is not FAIL, and shows its state.
- * Standard flavour has no INTERNET permission: nothing is queued and no upload state is shown.
+ * Slots on the Review screen that the upload / processing bridge fills in: room measurements, the processing stage
+ * and Share. Each stays GONE until wired (today only the field flavour's upload stage is).
+ */
+class ReviewLayout(val summary: RoomSummaryCard, val stage: StageRow, val share: Button) {
+    fun showShare(onShare: () -> Unit) {
+        share.setOnClickListener { onShare() }
+        share.visibility = View.VISIBLE
+    }
+}
+
+/**
+ * Review screen after Finish (portrait, follows light/dark): the room drawing, a plain headline with the validator
+ * verdict from manifest.json as a dot + words, the room parts, the [ReviewLayout] slots, the check notes as a grouped
+ * list and a collapsed Details section. Field flavour: queues the upload when the user allowed it and the verdict is
+ * not FAIL, and shows its stage. Standard flavour has no INTERNET permission: nothing is queued and no upload is shown.
  */
 class ReviewActivity : Activity() {
     data class Parsed(val verdict: String?, val keyframes: Int?, val issues: List<String>, val durationMs: Long? = null)
+
+    /** Bridge slots; null until the screen is built. */
+    var reviewLayout: ReviewLayout? = null
+        private set
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -36,33 +55,36 @@ class ReviewActivity : Activity() {
         val status = intent.getIntExtra(EXTRA_STATUS, Status.STATE)
         val elapsed = intent.getLongExtra(EXTRA_ELAPSED_MS, 0L)
         val kfLive = intent.getIntExtra(EXTRA_KEYFRAMES, 0)
-        setContentView(UiKit.page(this, TextView(this).apply {
-            text = "Checking the scan..."; textSize = 17f; setTextColor(UiKit.LABEL_2); gravity = Gravity.CENTER
+        if (status != Status.OK) Log.w(TAG, "scan not saved: ${UiKit.statusName(status)} (${dir.name})")
+        setContentView(UiKit.page(this, LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            contentDescription = "Checking the scan"
+            addView(UiKit.group(this@ReviewActivity).apply { repeat(2) { addView(UiKit.skeletonRow(context)) } })
+            UiKit.applyInsets(this, Tokens.SCREEN_MARGIN)
         }))
         // Disk reads (manifest, bundle size) stay off the UI thread.
         Thread {
-            val text = try { File(dir, "manifest.json").readText() } catch (t: Throwable) { "" }
+            val text = try { File(dir, "manifest.json").readText() } catch (t: Throwable) { Log.w(TAG, "manifest unreadable: ${dir.name}", t); "" }
             val parsed = parseManifest(text)
             val issues = VerdictText.issuesOf(text)
             val vt = ScanUi.verdictText(applicationContext)
             val size = try { UiKit.dirSizeBytes(dir) } catch (t: Throwable) { 0L }
             // Upload only with the user's upload consent and a non-FAIL verdict (field flavour; a no-op in standard).
             if (status == Status.OK && UploadGate.available) try {
-                // Only a never-queued scan is queued here; a failed one waits for the explicit Retry in My scans.
+                // Only a never-queued scan is queued here; a failed one waits for the explicit Retry on Home.
                 if (UploadWorker.status(applicationContext, dir).state == UploadState.NONE) UploadGate.enqueueIfAllowed(applicationContext, dir, parsed.verdict)
-            } catch (t: Throwable) { }
+            } catch (t: Throwable) { Log.w(TAG, "upload enqueue failed: ${dir.name}", t) }
             runOnUiThread { if (!isDestroyed) build(dir, status, elapsed, kfLive, parsed, size, vt, issues) }
         }.start()
     }
 
-    private var uploadChip: TextView? = null
-
     /** Polls WorkManager off the main thread until the upload reaches a final state or the screen closes. */
-    private fun watchUpload(dir: File) {
+    private fun watchUpload(dir: File, row: StageRow) {
         Thread {
             while (!isDestroyed) {
                 val st = UploadWorker.status(applicationContext, dir)
-                runOnUiThread { if (!isDestroyed) uploadChip?.let { ScanUi.paintUpload(it, st) } }
+                runOnUiThread { if (!isDestroyed) row.set(st) }
                 if (st.state == UploadState.VERIFIED || st.state == UploadState.FAILED || st.state == UploadState.NONE) break
                 try { Thread.sleep(2000) } catch (e: InterruptedException) { break }
             }
@@ -70,32 +92,16 @@ class ReviewActivity : Activity() {
     }
 
     private fun build(dir: File, status: Int, elapsed: Long, kfLive: Int, manifest: Parsed, size: Long, vt: VerdictText, issueList: List<VerdictText.Issue>) {
+        val p = UiKit.c(this)
         val verdict = if (status == Status.OK) manifest.verdict else null
         val kf = manifest.keyframes ?: kfLive
         val ok = status == Status.OK
         val ready = ok && verdict != "FAIL"
+        val features = Features.get(this)   // ADR 0032: room drawing + parts = guidance, "Found" = detector
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-        // Landscape: two columns; portrait: one column. The whole screen scrolls and the actions sit below the card,
-        // so they are reachable in both orientations.
-        val landscape = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL }
-        val card = LinearLayout(this).apply {
-            orientation = if (landscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
-            background = UiKit.card(this@ReviewActivity, 28)
-            setPadding(dp(24), dp(20), dp(24), dp(20))
-            if (landscape) {
-                addView(left, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(24) })
-                addView(right, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            } else {
-                addView(left, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(12) })
-                addView(right, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            }
-        }
-        // Feature switches (ADR 0032): room drawing + walls = guidance, "Found" counts = detector.
-        val features = Features.get(this)
-        // Final room: the last live snapshot (walls inked, floor/ceiling) and the parts checklist, from Intent extras.
-        if (features.guidance && intent.hasExtra(EXTRA_SURFACES)) {
+        // 1. Room drawing (full width, 4:3) from the last live snapshot, when guidance ran.
+        val checklist: ChecklistView? = if (features.guidance && intent.hasExtra(EXTRA_SURFACES)) {
             val segs = EventParser.parseSurfaces(intent.getStringExtra(EXTRA_SURFACES) ?: "")
             val floor = intent.getBooleanExtra(EXTRA_FLOOR, false)
             val ceiling = intent.getBooleanExtra(EXTRA_CEILING, false)
@@ -104,123 +110,146 @@ class ReviewActivity : Activity() {
             val spans = EventParser.parseSpans(intent.getStringExtra(EXTRA_SPANS) ?: "")
             val objects = EventParser.parseObjects(intent.getStringExtra(EXTRA_OBJECTS) ?: "")
             val openings = EventParser.parseOpenings(intent.getStringExtra(EXTRA_OPENINGS) ?: "")
-            var done = 0; var scanning = 0
-            for (w in segs) if (w.pct >= RoomView.DONE_PCT) done++ else if (w.pct >= ChecklistView.SCANNING_PCT) scanning++
-            val checklist = ChecklistView(this).apply {
-                set(floor, ceiling, max(intent.getIntExtra(EXTRA_WALLS_FOUND, 0), 0), done, scanning, -1)
-            }
-            val mid = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-                contentDescription = "Room parts. ${checklist.description}"
-                background = UiKit.rounded(UiKit.FILL, dp(18).toFloat())
-                setPadding(dp(6), dp(6), dp(6), dp(6))
-                if (segs.isNotEmpty() || shell.isNotEmpty()) addView(RoomView(this@ReviewActivity).also { it.setSnapshot(segs, floor, ceiling, shell, closed, spans, objects, openings) }, LinearLayout.LayoutParams(dp(170), dp(130)))
-                addView(checklist, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
-            }
-            card.addView(mid, 1, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(24); gravity = Gravity.CENTER_VERTICAL })
+            if (segs.isNotEmpty() || shell.isNotEmpty()) col.addView(Aspect43(this).apply {
+                background = UiKit.surface(context)
+                val pad = dp(Tokens.S8)
+                setPadding(pad, pad, pad, pad)
+                addView(RoomView(this@ReviewActivity).also { it.setSnapshot(segs, floor, ceiling, shell, closed, spans, objects, openings) },
+                    FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            }, lp(Tokens.S24))
+            val found = max(intent.getIntExtra(EXTRA_WALLS_FOUND, 0), 0)
+            ChecklistView(this).apply { set(RoomProgress.from(floor, ceiling, RoomProgress.pcts(segs.map { it.pct }, found), closed)) }
+        } else null
+
+        // 2. Headline, verdict badge and one plain sentence.
+        col.addView(UiKit.title(this, when {
+            !ok -> "Couldn't save this scan"
+            verdict == "FAIL" -> "Scan needs another pass"
+            else -> "Room saved"
+        }), lp(Tokens.S8))
+        col.addView(StatusBadge(this).apply {
+            if (!ok) set("Not saved", UiKit.Kind.ERROR) else set(ScanInfo.badgeText(verdict), ScanUi.verdictKind(verdict), hollow = verdict == null)
+        }, lp(Tokens.S12))
+        col.addView(UiKit.body(this, when {
+            !ok -> "Something went wrong while saving. Scan again."
+            !ready -> "The check failed. Scan again, moving slowly and covering the whole room."
+            verdict != null -> vt.headline(verdict)
+            else -> "The scan is stored on this phone."
+        }), lp(Tokens.S24))
+
+        // 3. Room parts.
+        if (checklist != null) col.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = UiKit.surface(context)
+            val pad = dp(Tokens.CARD_PAD)
+            setPadding(pad, pad, pad, pad)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            contentDescription = "Room parts. ${checklist.description}"
+            addView(checklist)
+        }, lp(Tokens.S16))
+
+        // 4. Bridge slots: measurements, stage, Share (GONE until wired).
+        val summary = RoomSummaryCard(this).also { col.addView(it, lp(Tokens.S16)) }
+        val stage = StageRow(this).apply { visibility = View.GONE }.also { col.addView(it, lp(Tokens.S16)) }
+        val share = UiKit.secondaryButton(this, "Share").apply {
+            visibility = View.GONE
+            setCompoundDrawablesRelativeWithIntrinsicBounds(getDrawable(R.drawable.ic_share)?.mutate()?.apply { setTint(p.label) }, null, null, null)
+            compoundDrawablePadding = dp(Tokens.S8)
+        }.also { col.addView(it, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(Tokens.S16) }) }
+        reviewLayout = ReviewLayout(summary, stage, share)
+        if (ready && UploadGate.available) {
+            stage.set(UploadStatus(UploadState.NONE))
+            stage.visibility = View.VISIBLE
+            watchUpload(dir, stage)
         }
-        left.addView(UiKit.title(this, if (ok) "Scan saved" else "Save failed", 28f), lp(10))
-        val (vText, vColor) = when {
-            !ok -> "Not saved (status ${UiKit.statusName(status)})" to UiKit.RED
-            else -> ScanInfo.badgeText(verdict) to ScanUi.verdictColor(verdict)
+
+        // 5. Check notes as a grouped list (errors first, as the verdict text orders them).
+        if (ok && verdict != null) {
+            val notes = vt.describe(issueList)
+            if (notes.isNotEmpty()) {
+                col.addView(UiKit.sectionHeader(this, "Notes"))
+                col.addView(UiKit.group(this).apply {
+                    for (n in notes) {
+                        val error = n.severity == "ERROR"
+                        addView(UiKit.listRow(this@ReviewActivity, if (error) R.drawable.ic_error else R.drawable.ic_warning, n.title, "${n.text} ${n.action}".trim()).apply {
+                            (getChildAt(0) as? ImageView)?.imageTintList = ColorStateList.valueOf(if (error) p.red else p.orange)
+                            contentDescription = "${if (error) "Problem" else "Note"}: ${n.title}. ${n.text} ${n.action}"
+                        })
+                    }
+                }, lp(Tokens.SECTION_GAP))
+            }
         }
-        left.addView(UiKit.chip(this).also { UiKit.setChip(it, vText, vColor) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(16) })
-        // Live elapsed time when coming from a scan; otherwise the bundle's own clock span (opened from My scans).
-        val durationMs = if (elapsed > 0) elapsed else manifest.durationMs
-        if (durationMs != null && durationMs > 0) left.addView(row("Duration", UiKit.mmss(durationMs)), lp(6))
-        left.addView(row("Keyframes", kf.toString()), lp(6))
-        // What the scan recognised (issue #2 D): objects by class plus doors / windows, from the last room snapshot.
+
+        // 6. Details, collapsed.
+        val details = UiKit.group(this).apply { visibility = View.GONE }
+        val durationMs = if (elapsed > 0) elapsed else manifest.durationMs   // live time from a scan, else the bundle's clock span
+        if (durationMs != null && durationMs > 0) details.addView(detailRow("Duration", UiKit.mmss(durationMs)))
+        details.addView(detailRow("Photos", kf.toString()))
         if (features.detector) {
             val found = ObjectSummary.text(
                 EventParser.parseObjects(intent.getStringExtra(EXTRA_OBJECTS) ?: ""),
                 EventParser.parseOpenings(intent.getStringExtra(EXTRA_OPENINGS) ?: ""),
             )
-            if (found.isNotEmpty()) left.addView(row("Found", found, wrap = true).apply { contentDescription = "Found in the room: $found" }, lp(6))
-            else if (intent.getBooleanExtra(EXTRA_OBJECTS_EXPECTED, false)) left.addView(row("Found", "No objects recognised"), lp(6))
+            if (found.isNotEmpty()) details.addView(detailRow("Found", found).apply { contentDescription = "Found in the room: $found" })
+            else if (intent.getBooleanExtra(EXTRA_OBJECTS_EXPECTED, false)) details.addView(detailRow("Found", "No objects recognised"))
         }
-        left.addView(row("Size", UiKit.humanSize(size)), lp(6))
-        left.addView(row("Folder", dir.name), lp(6))
-        // Full path, wrapped (never clipped); selectable so it can be copied.
-        left.addView(UiKit.pathText(this, dir.absolutePath, Int.MAX_VALUE).apply { ellipsize = null; setTextIsSelectable(true) }, lp(12))
-        // Plain-language result: headline, then up to three notes (title, what happened, what to do), errors first.
-        if (ok && verdict != null) {
-            right.addView(UiKit.text(this, vt.headline(verdict), 17f, UiKit.LABEL, UiKit.MEDIUM), lp(8))
-            val notes = vt.describe(issueList)
-            for (n in notes.take(3)) right.addView(TextView(this).apply {
-                text = UiKit.dotted("${n.title}. ${n.text} ${n.action}", if (n.severity == "ERROR") UiKit.RED else UiKit.AMBER)
-                textSize = 15f; setTextColor(UiKit.LABEL_2); setLineSpacing(0f, 1.15f)
-                contentDescription = "${if (n.severity == "ERROR") "Problem" else "Note"}: ${n.title}. ${n.text} ${n.action}"
-            }, lp(4))
-            if (notes.size > 3) right.addView(TextView(this).apply { text = "and ${notes.size - 3} more"; textSize = 14f; setTextColor(UiKit.LABEL_3) }, lp(4))
+        details.addView(detailRow("Size", UiKit.humanSize(size)))
+        details.addView(detailRow("Folder", dir.name))
+        details.addView(UiKit.pathText(this, dir.absolutePath).apply { val pad = dp(Tokens.S16); setPadding(pad, dp(Tokens.S12), pad, dp(Tokens.S12)) })
+        val toggle = UiKit.listRow(this, null, "Details", null) {}.apply { contentDescription = "Details, collapsed. Double tap to show." }
+        toggle.setOnClickListener {
+            val open = details.visibility != View.VISIBLE
+            details.visibility = if (open) View.VISIBLE else View.GONE
+            toggle.contentDescription = if (open) "Details, expanded. Double tap to hide." else "Details, collapsed. Double tap to show."
         }
-        right.addView(TextView(this).apply {
-            text = when {
-                ready && UploadGate.available -> "The scan is stored on this phone."
-                ready -> "The scan is stored on this phone."
-                ok -> "Not ready: the check failed. Scan again, moving slowly and covering the whole room."
-                else -> "Something went wrong while saving. Scan again."
-            }
-            textSize = 15f; setTextColor(UiKit.LABEL_2)
-        }, lp(8))
-        if (ready && UploadGate.available) {
-            val chip = UiKit.chip(this).also { uploadChip = it; it.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES; it.setPadding(dp(12), dp(6), dp(12), dp(6)) }
-            ScanUi.paintUpload(chip, UploadStatus(UploadState.NONE))
-            right.addView(chip, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(16) })
-            watchUpload(dir)
-        } else right.addView(View(this), lp(8))
+        col.addView(UiKit.group(this).apply { addView(toggle) }, lp(Tokens.S8))
+        col.addView(details, lp(Tokens.S24))
 
-        val newScan = UiKit.bigButton(this, "New scan").apply {
-            setOnClickListener { startActivity(Intent(this@ReviewActivity, CaptureActivity::class.java)); finish() }
-        }
-        val home = UiKit.secondaryButton(this, "Done").apply { setOnClickListener { finish() } }
-        val scans = UiKit.secondaryButton(this, "My scans").apply {
-            contentDescription = "Open My scans"
-            setOnClickListener { startActivity(Intent(this@ReviewActivity, ScansActivity::class.java)); finish() }
-        }
-        // Actions live below the card inside the scrolling content (visible/reachable in both orientations).
-        val actions = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(scans, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(12) })
-            addView(home, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(12) })
-            addView(newScan, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.3f))
-        }
+        // Bottom bar: Done when the scan is usable, else Scan again first; Done is always reachable.
+        val scanAgain = { startActivity(Intent(this, CaptureActivity::class.java)); finish() }
+        val primary = if (ready) UiKit.primaryButton(this, "Done").apply { setOnClickListener { finish() } }
+            else UiKit.primaryButton(this, "Scan again").apply { setOnClickListener { scanAgain() } }
+        val secondary = if (ready) UiKit.secondaryButton(this, "New scan").apply { setOnClickListener { scanAgain() } }
+            else UiKit.secondaryButton(this, "Done").apply { setOnClickListener { finish() } }
 
         val scroll = ScrollView(this).apply {
             isFillViewport = true
             isVerticalScrollBarEnabled = false
-            addView(LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER_VERTICAL
-                addView(UiKit.circularIconButton(context, R.drawable.ic_close, "Close", 44).apply { setOnClickListener { finish() } },
-                    LinearLayout.LayoutParams(dp(44), dp(44)).apply { bottomMargin = dp(12) })
-                addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(12) })
-                addView(actions, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            UiKit.applyInsets(this, 16)
+            addView(col)
+            UiKit.applyInsets(this, Tokens.SCREEN_MARGIN, bottom = false)
         }
-        setContentView(UiKit.page(this, scroll))
+        setContentView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(p.bg)
+            addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(UiKit.bottomActionBar(this@ReviewActivity, primary, secondary), lp(0))
+        })
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun lp(bottom: Int) = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(bottom) }
 
-    /** Label + value row; [wrap] lets a long value use several lines (else one line, middle-ellipsised). */
-    private fun row(label: String, value: String, wrap: Boolean = false) = LinearLayout(this).apply {
+    /** Label + value row inside the Details group (value wraps, never clipped). */
+    private fun detailRow(label: String, value: String): View = LinearLayout(this).apply {
+        val p = UiKit.c(context)
         orientation = LinearLayout.HORIZONTAL
-        addView(TextView(context).apply { text = label; textSize = 15f; setTextColor(UiKit.LABEL_3) }, LinearLayout.LayoutParams(dp(100), ViewGroup.LayoutParams.WRAP_CONTENT))
-        addView(TextView(context).apply {
-            text = value; textSize = 15f; typeface = UiKit.MEDIUM; setTextColor(UiKit.LABEL)
-            if (!wrap) { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE }
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        minimumHeight = dp(Tokens.TOUCH_MIN)
+        gravity = android.view.Gravity.CENTER_VERTICAL
+        setPadding(dp(Tokens.S16), dp(Tokens.S12), dp(Tokens.S16), dp(Tokens.S12))
+        addView(UiKit.text(context, label, Tokens.BODY, p.label2), LinearLayout.LayoutParams(dp(110), ViewGroup.LayoutParams.WRAP_CONTENT))
+        addView(UiKit.text(context, value, Tokens.BODY, p.label).apply { fontFeatureSettings = "tnum" }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
     }
 
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) UiKit.immersive(this)
+    /** Keeps a 4:3 frame at the full available width. */
+    private class Aspect43(ctx: Context) : FrameLayout(ctx) {
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val w = MeasureSpec.getSize(widthMeasureSpec)
+            super.onMeasure(MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(w * 3 / 4, MeasureSpec.EXACTLY))
+        }
     }
 
     companion object {
+        private const val TAG = "CKReview"
         const val EXTRA_DIR = "dir"
         const val EXTRA_STATUS = "status"
         const val EXTRA_ELAPSED_MS = "elapsed_ms"

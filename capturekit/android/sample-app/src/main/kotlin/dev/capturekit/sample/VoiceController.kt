@@ -5,8 +5,6 @@ import android.app.Activity
 import android.app.Dialog
 import android.content.Context
 import android.content.pm.PackageManager
-import android.graphics.Color
-import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -18,10 +16,8 @@ import android.speech.RecognitionSupportCallback
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
-import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.LinearLayout
-import android.widget.TextView
 import dev.capturekit.guidance.Confirmation
 import dev.capturekit.guidance.Hypothesis
 import dev.capturekit.guidance.PhraseTables
@@ -436,31 +432,20 @@ class VoiceController(
         main.removeCallbacks(parkedFeedbackClear); main.postDelayed(parkedFeedbackClear, ms)
     }
 
-    /** Two-button dialog in the review sheet's dark style. Dismissing by back counts as the negative button. */
+    /** Two-button sheet in the capture screen's dark style. Dismissing by back counts as the negative button. */
     private fun simpleDialog(title: String, body: String, positive: String, negative: String, onPositive: () -> Unit, onNegative: () -> Unit): Dialog {
-        val dlg = Dialog(activity)
-        fun text(t: String, sp: Float, bold: Boolean = false) = TextView(activity).apply {
-            this.text = t; textSize = sp; setTextColor(Color.WHITE)
-            if (bold) typeface = Typeface.DEFAULT_BOLD
+        val dlg = UiKit.sheet(activity) { content, d ->
+            val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
+            val match = ViewGroup.LayoutParams.MATCH_PARENT
+            content.addView(UiKit.title(activity, title))
+            content.addView(UiKit.body(activity, body), LinearLayout.LayoutParams(wrap, wrap).apply { topMargin = activity.dp(Tokens.S8) })
+            val yes = UiKit.primaryButton(activity, positive).apply {
+                setOnClickListener { d.setOnDismissListener(null); d.dismiss(); onPositive() }
+            }
+            val no = UiKit.secondaryButton(activity, negative).apply { setOnClickListener { d.dismiss() } }
+            content.addView(UiKit.sheetActions(activity, yes, no), LinearLayout.LayoutParams(match, wrap).apply { topMargin = activity.dp(Tokens.S24) })
         }
-        val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
-        val root = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            background = UiKit.rounded(0xFF101418.toInt(), activity.dp(UiKit.RADIUS_DP).toFloat())
-            setPadding(activity.dp(20), activity.dp(16), activity.dp(20), activity.dp(16))
-            addView(text(title, UiKit.TEXT_L, true))
-            addView(text(body, UiKit.TEXT_M), LinearLayout.LayoutParams(wrap, wrap).apply { topMargin = activity.dp(8) })
-            val btns = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
-            btns.addView(UiKit.bigButton(activity, negative, 0xFF455A64.toInt()).apply { setOnClickListener { dlg.dismiss() } })
-            btns.addView(UiKit.bigButton(activity, positive).apply {
-                setOnClickListener { dlg.setOnDismissListener(null); dlg.dismiss(); onPositive() }
-            }, LinearLayout.LayoutParams(wrap, wrap).apply { marginStart = activity.dp(12) })
-            addView(btns, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, wrap).apply { topMargin = activity.dp(16) })
-        }
-        dlg.window?.setBackgroundDrawableResource(android.R.color.transparent)
-        dlg.setContentView(root)
         dlg.setOnDismissListener { onNegative() }
-        dlg.show()
         return dlg
     }
 

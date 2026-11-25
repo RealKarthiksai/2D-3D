@@ -15,7 +15,10 @@ import dev.capturekit.capture.CoreEvent
 import dev.capturekit.capture.DetectedBox
 import dev.capturekit.capture.LiteRtKeyframeDetector
 import dev.capturekit.capture.Policy
+import dev.capturekit.capture.ImuWindow
 import dev.capturekit.capture.SensorBridge
+import dev.capturekit.capture.SensorCheck
+import dev.capturekit.capture.SensorCheckResult
 import dev.capturekit.capture.SessionManager
 import dev.capturekit.guidance.Recalibration
 import dev.capturekit.guidance.ScanStateSnapshot
@@ -42,7 +45,7 @@ import java.util.Locale
  * Bundles land in getExternalFilesDir("bundles"); interrupted sessions are recovered on the next launch.
  * Pull with: adb pull /sdcard/Android/data/dev.capturekit.sample/files/bundles
  */
-class CaptureActivity : Activity(), SessionManager.Listener {
+class CaptureActivity : Activity(), SessionManager.Listener, AlwaysDark {
     private lateinit var ar: ArHost
     private lateinit var hud: Hud
     private lateinit var boxView: DetectionOverlayView
@@ -157,7 +160,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         }
         hud.onTrialClick = { if (!recording) research.showSetup { applyTrial() } }
         applyTrial()
-        hud.setCoaching("Press Start, then move slowly around the room")
+        hud.setCoaching(IDLE_PROMPT)
         setContentView(FrameLayout(this).apply {
             addView(ar.view, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
             addView(maskView, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)   // same frame as ar.view
@@ -182,12 +185,76 @@ class CaptureActivity : Activity(), SessionManager.Listener {
      * Start pressed: with voice commands on, ask for the microphone first (rationale), then begin; a refusal only turns
      * voice commands off. With them off (default, ADR 0032) there is no microphone request.
      */
-    private fun start() { val v = voice; if (v != null) v.ensurePermissionThen { startScan() } else startScan() }
+    private fun start() { val v = voice; if (v != null) v.ensurePermissionThen { beginScanOrCheck() } else beginScanOrCheck() }
 
     /** Feature switches (ADR 0032): defaults everywhere, debug-build `setprop` overrides; see [Features]. */
     private val features: FeatureFlags.Flags by lazy { Features.get(this) }
 
-    private fun startScan() {
+    // ---- Pre-scan sensor check (ADR 0035, flag `sensor_check`): main thread only. A result never blocks the scan. ----
+    private val checkWindow = ImuWindow()
+    /** Non-null while a check is collecting samples. */
+    private var checkBridge: SensorBridge? = null
+    /** A finished non-pass result whose banner is showing: Start = scan anyway with it. */
+    private var checkResult: SensorCheckResult? = null
+    private var checkAttempts = 0
+    private var checkRestarts = 0
+    private var checkStartMs = 0L
+
+    /** Start pressed. Flag off: scan at once. Checking: Start skips the check. A warning showing: scan anyway. */
+    private fun beginScanOrCheck() {
+        if (session != null || finishing) return
+        if (!features.sensorCheck) { startScan(); return }
+        val attempts = checkAttempts
+        val shown = checkResult
+        when {
+            checkBridge != null -> { stopCheck(); checkAttempts = 0; startScan(SensorCheck.skipped(attempts)) }
+            shown != null -> { checkResult = null; checkAttempts = 0; startScan(shown.toSessionConfig(attempts, arReset = true)) }
+            else -> runCheck()
+        }
+    }
+
+    /** One attempt: fresh ARCore session (ARCore has no reset call) and a fresh IMU window. */
+    private fun runCheck() {
+        if (session != null || finishing) return
+        stopCheck()
+        checkResult = null
+        checkAttempts++
+        checkRestarts = 0
+        checkWindow.clear()
+        ar.retry()
+        checkBridge = SensorBridge(this, checkWindow).also { it.start() }
+        checkStartMs = SystemClock.elapsedRealtime()
+        stepCheck()   // shows the core's "hold still" sentence now, not at the next tick
+        refresh()
+    }
+
+    private fun stopCheck() { checkBridge?.stop(); checkBridge = null }
+
+    /** Tick while checking: the core decides; the shell shows the message and follows the action. */
+    private fun stepCheck() {
+        val now = SystemClock.elapsedRealtime()
+        val r = SensorCheck.evaluate(checkWindow, (now - checkStartMs) / 1000.0, checkRestarts)
+        if (r == null) { Log.w(TAG, "sensor check: core rejected the input"); return }
+        hud.setCoaching(r.message)
+        when (r.action) {
+            SensorCheck.RESTART -> { checkWindow.clear(); checkRestarts++; checkStartMs = now; speech.say(r.message) }
+            SensorCheck.FINISH -> {
+                stopCheck()
+                Log.i(TAG, "sensor check: ${r.config}")
+                if (r.result == "pass") {
+                    speech.say(r.message)
+                    val attempts = checkAttempts
+                    checkAttempts = 0
+                    startScan(r.toSessionConfig(attempts, arReset = true))
+                } else {
+                    checkResult = r
+                    speech.say(r.message)
+                }
+            }
+        }
+    }
+
+    private fun startScan(extra: Map<String, Any> = emptyMap()) {
         if (session != null || finishing) return
         // Consent keys (consent_version + consent_at + redaction_mode) are always passed together; no consent, no scan.
         val consentCfg = dev.capturekit.consent.ConsentStore.get(this).sessionConfig()
@@ -207,7 +274,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         val understanding = FeatureFlags.understandingFor(features.understanding, detectorWillRun && !research.unguided)
         val s = SessionManager(this, dir, listener = this, detectorEnabled = detector)
         // 8 core frame slots (default 4): absorbs ~800 ms worker stalls at 10 candidates/s before ErrFull.
-        if (!s.start(mapOf<String, Any>("frame_slots" to 8) + consentCfg + FeatureFlags.extraConfig(understanding, features.recordImu))) {
+        if (!s.start(mapOf<String, Any>("frame_slots" to 8) + consentCfg + FeatureFlags.extraConfig(understanding, features.recordImu) + extra)) {
             hud.setBanner("Could not start the capture session. Check free storage and try again.", UiKit.Kind.ERROR)
             return
         }
@@ -262,7 +329,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         } else {
             val st = s.resume()
             if (st == Status.OK) { clearInstruction(); hud.setCoaching(scanPrompt()) }
-            else hud.setBanner("Cannot resume yet: the phone needs to cool down or charge (status ${UiKit.statusName(st)}).", UiKit.Kind.WARN)
+            else { Log.w(TAG, "resume refused: status ${UiKit.statusName(st)}"); hud.setBanner("Cannot resume yet: the phone needs to cool down or charge.", UiKit.Kind.WARN) }
         }
     }
 
@@ -293,7 +360,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
                 reviewDialog = null
                 val st = s.resume()
                 if (st == Status.OK) { clearInstruction(); hud.setCoaching(scanPrompt()) }
-                else hud.setBanner("Cannot resume yet: the phone needs to cool down or charge (status ${UiKit.statusName(st)}). Press Resume when it is ready.", UiKit.Kind.WARN)
+                else { Log.w(TAG, "resume refused: status ${UiKit.statusName(st)}"); hud.setBanner("Cannot resume yet: the phone needs to cool down or charge. Press Resume when it is ready.", UiKit.Kind.WARN) }
             },
             onFinish = { reviewDialog = null; finishScan() })
     }
@@ -377,6 +444,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
     private val tick = object : Runnable {
         override fun run() {
             ar.checkStall()
+            if (checkBridge != null) stepCheck()
             refresh()
             ui.postDelayed(this, 250)
         }
@@ -415,6 +483,10 @@ class CaptureActivity : Activity(), SessionManager.Listener {
                 hud.setBanner("Camera permission is needed to scan the room.", UiKit.Kind.ERROR, CameraPermission.retryLabel()) { CameraPermission.retry(this) }
             am != null && ar.state != ArState.READY ->
                 hud.setBanner(am, UiKit.Kind.ERROR, "Retry") { arMessage = null; ar.retry(); refresh() }
+            // ADR 0035: kept here (not set once) because this `when` clears the banner on every tick.
+            checkResult != null && !recording -> checkResult?.let { r ->
+                hud.setBanner(r.message, if (r.result == "fail") UiKit.Kind.ERROR else UiKit.Kind.WARN, "Re-check") { runCheck() }
+            }
             !speech.available && recording && !research.unguided -> hud.setBanner("Voice guidance is unavailable: no offline text-to-speech voice. On-screen prompts still work.", UiKit.Kind.INFO)
             thermalMsg != null -> hud.setBanner(thermalMsg, UiKit.Kind.WARN)
             else -> hud.setBanner(null)
@@ -504,6 +576,8 @@ class CaptureActivity : Activity(), SessionManager.Listener {
     override fun onPause() {
         val t0 = SystemClock.elapsedRealtime()
         ui.removeCallbacks(tick)
+        // A check never survives leaving the screen; Start runs a new one, so drop its "hold still" line.
+        if (checkBridge != null) { stopCheck(); hud.setCoaching(IDLE_PROMPT) }
         // Leaving the screen mid-scan: pause the core session so no gap is recorded as tracking data.
         if (recording && !corePaused && !finishing) session?.pause()
         voice?.onPause()
@@ -521,6 +595,7 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         // nothing leaks (native handle, ck-events thread, sensor/thermal listeners). finish() writes a complete
         // bundle; if the process dies before it ends, the DB still says "recording" and next launch recovers it.
         reviewDialog?.dismiss(); reviewDialog = null
+        stopCheck()
         val s = session
         if (s != null && !finishing) {
             finishing = true
@@ -545,5 +620,8 @@ class CaptureActivity : Activity(), SessionManager.Listener {
         super.onDestroy()
     }
 
-    private companion object { const val STATE_PAUSED = 3; const val TAG = "CKCapture" }
+    private companion object {
+        const val STATE_PAUSED = 3; const val TAG = "CKCapture"
+        const val IDLE_PROMPT = "Press Start, then move slowly around the room"
+    }
 }

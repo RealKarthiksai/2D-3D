@@ -22,7 +22,7 @@ import java.util.Locale
  * Phase 0 raw recorder screen: Start/Stop writes a session folder under
  * getExternalFilesDir("sessions"). Pull with: adb pull /sdcard/Android/data/dev.capturekit.sample/files/sessions
  */
-open class RecorderActivity : Activity(), SensorEventListener {
+open class RecorderActivity : Activity(), SensorEventListener, AlwaysDark {
     protected open val clockCheck = false
     private lateinit var ar: ArHost
     private lateinit var hud: Hud

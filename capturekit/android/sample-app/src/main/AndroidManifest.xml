@@ -11,11 +11,14 @@
             </intent-filter>
         </activity>
         <activity android:name=".ConsentActivity" android:configChanges="orientation|screenSize|keyboardHidden" />
-        <activity android:name=".RecorderActivity" android:screenOrientation="landscape" />
-        <activity android:name=".CaptureActivity" android:screenOrientation="landscape" />
-        <activity android:name=".ReviewActivity" android:screenOrientation="landscape" />
-        <activity android:name=".ScansActivity" android:configChanges="orientation|screenSize|keyboardHidden" />
-        <activity android:name=".ClockCheckActivity" android:screenOrientation="landscape" />
+        <activity android:name=".SettingsActivity" />
+        <!-- Debug design gallery; MainActivity links to it only in debuggable builds. -->
+        <activity android:name=".DesignGalleryActivity" android:exported="false" />
+        <activity android:name=".RecorderActivity" android:screenOrientation="landscape" android:theme="@style/AppTheme.Camera" />
+        <!-- uiMode: a light/dark switch mid-scan must not recreate the activity (that would end the scan). -->
+        <activity android:name=".CaptureActivity" android:screenOrientation="landscape" android:theme="@style/AppTheme.Camera" android:configChanges="uiMode" />
+        <activity android:name=".ReviewActivity" />
+        <activity android:name=".ClockCheckActivity" android:screenOrientation="landscape" android:theme="@style/AppTheme.Camera" />
         <meta-data android:name="com.google.ar.core" android:value="required" />
     </application>
 </manifest>

@@ -2,10 +2,7 @@ package dev.capturekit.sample
 
 import android.app.Activity
 import android.content.Intent
-import android.graphics.Color
-import android.graphics.Typeface
 import android.os.Bundle
-import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
@@ -30,52 +27,51 @@ class ConsentActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.decorView.setBackgroundColor(UiKit.BG)
+        val p = UiKit.c(this)
         val text = resources.openRawResource(
             resources.getIdentifier(ConsentStore.TEXT_RESOURCE, "raw", packageName).also { check(it != 0) { "missing raw/${ConsentStore.TEXT_RESOURCE}" } }).bufferedReader().use { it.readText() }
         val (head, rest) = text.lines().let { it.first() to it.drop(1).joinToString("\n").trim() }
 
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        content.addView(TextView(this).apply {
-            this.text = "Before you scan"; textSize = 32f; typeface = UiKit.BOLD; letterSpacing = -0.02f; setTextColor(UiKit.LABEL)
-            isFocusable = true
-        }, lp(12))
-        content.addView(UiKit.banner(this, head.lowercase().replaceFirstChar { it.uppercase() }, UiKit.Kind.WARN), lp(16))
-        content.addView(TextView(this).apply {
-            this.text = rest; textSize = 16f; setTextColor(UiKit.LABEL_2); setLineSpacing(0f, 1.25f)
-        }, lp(24))
+        content.addView(UiKit.largeTitle(this, "Before you scan").apply { isFocusable = true }, lp(Tokens.S16))
+        content.addView(InlineAlert(this).apply { set(head.lowercase().replaceFirstChar { it.uppercase() }, UiKit.Kind.WARN) }, lp(Tokens.S24))
+        content.addView(UiKit.body(this, rest), lp(Tokens.S24))
         upload = toggle("Allow uploading my finished scans (optional)")
         telemetry = toggle("Allow anonymous crash and usage reports (optional)")
-        content.addView(upload, lp(8)); content.addView(telemetry, lp(24))
+        content.addView(UiKit.group(this).apply { addView(upload); addView(telemetry) }, lp(Tokens.S24))
 
         scroll = ScrollView(this).apply {
             isFillViewport = false
+            isVerticalScrollBarEnabled = false
             contentDescription = "Consent text. Scroll to the end to enable the Accept button."
             addView(content)
             setOnScrollChangeListener { _, _, _, _, _ -> checkEnd() }
             viewTreeObserver.addOnGlobalLayoutListener { checkEnd() }   // text shorter than the screen: nothing to scroll
+            UiKit.applyInsets(this, Tokens.SCREEN_MARGIN, bottom = false)
         }
 
-        hint = TextView(this).apply { textSize = 13f; setTextColor(UiKit.LABEL_3); gravity = android.view.Gravity.CENTER }
-        accept = UiKit.bigButton(this, "Accept and continue").apply {
+        hint = UiKit.footnote(this, "").apply { gravity = android.view.Gravity.CENTER }
+        accept = UiKit.primaryButton(this, "Accept and continue").apply {
             contentDescription = "Accept and continue. Available after you scroll to the end of the consent text."
             setOnClickListener { onAccept() }
         }
-        val decline = UiKit.secondaryButton(this, "Decline").apply {
+        val decline = UiKit.textButton(this, "Decline").apply {
             contentDescription = "Decline. You will not be able to scan without consent."
             setOnClickListener { setResult(RESULT_CANCELED); finish() }
         }
-        val bar = LinearLayout(this).apply {
+        val actions = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(hint, lp(8)); addView(accept, lp(8)); addView(decline, lp(0))
+            addView(hint, lp(Tokens.S8))
+            addView(UiKit.sheetActions(this@ConsentActivity, accept, decline), lp(0))
         }
+        val bar = UiKit.bottomActionBar(this, actions)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setBackgroundColor(p.bg)
             addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-            addView(bar, lp(0).apply { topMargin = dp(8) })
-            UiKit.applyInsets(this, 20)
+            addView(bar, lp(0))
         }
-        setContentView(UiKit.page(this, root))
+        setContentView(root)
         paint()
     }
 
@@ -90,8 +86,7 @@ class ConsentActivity : Activity() {
 
     private fun paint() {
         accept.isEnabled = reachedEnd
-        UiKit.recolor(accept, if (reachedEnd) UiKit.PRIMARY else UiKit.GLASS)
-        accept.setTextColor(if (reachedEnd) Color.BLACK else UiKit.LABEL_3)
+        UiKit.paintButton(accept, UiKit.ButtonStyle.PRIMARY)
         hint.text = if (reachedEnd) "You can accept now. Both optional choices are off unless you turned them on."
             else "Scroll down and read to the end to enable Accept."
     }
@@ -107,9 +102,8 @@ class ConsentActivity : Activity() {
     }
 
     private fun toggle(label: String) = UiKit.toggle(this, false).apply {
-        text = label; textSize = 16f; setTextColor(UiKit.LABEL); isChecked = false
-        minHeight = dp(56); setPadding(dp(12), dp(8), dp(12), dp(8))
-        background = UiKit.card(context, 18)
+        text = label; UiKit.type(this, Tokens.BODY); setTextColor(UiKit.c(context).label); isChecked = false
+        minHeight = dp(Tokens.ROW_MIN); setPadding(dp(Tokens.S16), dp(Tokens.S8), dp(Tokens.S16), dp(Tokens.S8))
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()

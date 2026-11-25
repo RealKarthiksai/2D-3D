@@ -2,17 +2,15 @@ package dev.capturekit.sample
 
 import android.Manifest
 import android.app.Activity
+import android.app.Dialog
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
-import android.content.res.ColorStateList
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.content.res.Configuration
 import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.ColorFilter
-import android.graphics.Outline
 import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.PixelFormat
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
@@ -22,9 +20,7 @@ import android.graphics.drawable.RippleDrawable
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
-import android.text.SpannableString
-import android.text.Spanned
-import android.text.style.ForegroundColorSpan
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
@@ -32,6 +28,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowManager
+import android.view.animation.PathInterpolator
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -43,74 +40,82 @@ import dev.capturekit.nativebridge.Status
 import java.io.File
 import java.util.Locale
 import kotlin.math.min
+import kotlin.math.roundToInt
+
+/** Marks the camera screens: always the dark palette, whatever the phone's light/dark setting. */
+interface AlwaysDark
 
 /**
- * CaptureKit design system: monochrome (Apple / Notion), Liquid Glass surfaces, one type scale.
- * Colour only carries meaning (status); everything else is white at different opacities over near-black.
+ * CaptureKit design system v3 (ADR 0036): calm monochrome surfaces from [Tokens], one type scale, status hue only as a
+ * drawn dot or icon next to words. Content screens follow the phone's light/dark setting; glass is used only over the
+ * camera. Every builder reads its colours from [c] at build time, so there is no global mutable palette.
  */
 object UiKit {
-    // ---- Palette ----
-    const val BG = 0xFF0A0A0B.toInt()
-    const val LABEL = 0xFFF5F5F7.toInt()          // primary text
-    const val LABEL_2 = 0xA6EBEBF5.toInt()        // secondary text (65%)
-    const val LABEL_3 = 0x61EBEBF5                // tertiary text / captions (38%)
-    const val SEPARATOR = 0x1AFFFFFF
-    const val FILL = 0x14FFFFFF                   // icon tiles, quiet fills
+    enum class Kind { OK, WARN, ERROR, INFO }
 
-    // Status only (Apple dark-mode system colours).
-    const val GREEN = 0xFF30D158.toInt()
-    const val AMBER = 0xFFFF9F0A.toInt()
-    const val RED = 0xFFFF453A.toInt()
-    /** Primary action: off-white with black text. (Name kept for existing call sites; there is no blue accent.) */
-    const val BLUE_ACCENT = LABEL
-    const val PRIMARY = LABEL
-    /** "In progress" ink for live room data; neutral white, no hue. */
-    const val CYAN_ACCENT = 0xFFE5E5EA.toInt()
-    const val PANEL = 0xFF3A3A3C.toInt()
-
-    // ---- Glass ----
-    const val GLASS = 0x8C2C2C2E.toInt()          // glass body: translucent graphite, reads on black and over the camera
-    const val GLASS_STRONG = 0xB32C2C2E.toInt()   // over busy camera content
-    const val BORDER_STROKE = 0x1FFFFFFF          // one even hairline edge
-
-    // ---- Shape / type ----
-    const val RADIUS_DP = 22
-    const val RADIUS_PILL_DP = 999
-    const val TEXT_S = 13f
-    const val TEXT_M = 16f
-    const val TEXT_L = 20f
-    val MEDIUM: Typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-    val BOLD: Typeface = Typeface.create("sans-serif", Typeface.BOLD)
-
-    enum class Kind(val color: Int) { OK(GREEN), WARN(AMBER), ERROR(RED), INFO(PANEL) }
-
-    fun Context.dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
-    fun Context.dpF(v: Float): Float = v * resources.displayMetrics.density
-
-    private fun isStatus(c: Int) = c == GREEN || c == AMBER || c == RED ||
-        (Color.alpha(c) == 0xFF && saturation(c) > 0.35f && c != PRIMARY)
-    private fun saturation(c: Int): Float { val hsv = FloatArray(3); Color.colorToHSV(c, hsv); return hsv[1] }
-    private fun withAlpha(c: Int, a: Int) = (c and 0x00FFFFFF) or (a shl 24)
-
-    /** Glass body for [color]: primary = solid off-white; status = glass tinted by the hue; anything else = plain glass. */
-    private fun surfaceFor(ctx: Context, radiusDp: Int, color: Int): Drawable {
-        val r = ctx.dpF(radiusDp.toFloat())
-        val d = ctx.resources.displayMetrics.density
-        return when {
-            color == PRIMARY -> LiquidGlass(r, d, fill = PRIMARY, rimStrength = 0.5f)
-            isStatus(color) -> LiquidGlass(r, d, fill = GLASS, tint = withAlpha(color, 0x3D))
-            else -> LiquidGlass(r, d, fill = GLASS)
+    /** Palette for [ctx]: dark for [AlwaysDark] screens, else the night bit of the current configuration. */
+    fun c(ctx: Context): Tokens.Palette {
+        var x: Context? = ctx
+        while (x != null) {
+            if (x is AlwaysDark) return Tokens.DARK
+            x = (x as? ContextWrapper)?.baseContext
         }
+        val night = ctx.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+        return if (night) Tokens.DARK else Tokens.LIGHT
     }
 
-    /** Liquid Glass panel. */
-    fun glass(ctx: Context, radiusDp: Int = RADIUS_DP, @Suppress("UNUSED_PARAMETER") strokeColor: Int = BORDER_STROKE, strokeWidthDp: Int = 1): Drawable =
-        LiquidGlass(ctx.dpF(radiusDp.toFloat()), ctx.resources.displayMetrics.density, fill = GLASS, rimStrength = if (strokeWidthDp > 0) 1f else 0f)
+    /** Status hue of [kind] (dots and icons only, never text). */
+    fun hue(p: Tokens.Palette, kind: Kind): Int = when (kind) {
+        Kind.OK -> p.green
+        Kind.WARN -> p.orange
+        Kind.ERROR -> p.red
+        Kind.INFO -> p.label3
+    }
 
-    /** Capsule glass. */
-    fun nowBar(ctx: Context, @Suppress("UNUSED_PARAMETER") bgColor: Int = GLASS): Drawable =
-        LiquidGlass(ctx.dpF(RADIUS_PILL_DP.toFloat()), ctx.resources.displayMetrics.density, fill = GLASS_STRONG)
+    fun Context.dp(v: Int): Int = (v * resources.displayMetrics.density).roundToInt()
+    fun Context.dpF(v: Float): Float = v * resources.displayMetrics.density
+    private fun Context.hairline(): Int = maxOf(1, (0.5f * resources.displayMetrics.density).roundToInt())
 
+    // ---- Motion ----
+    val EASE_STANDARD = Tokens.EASE_STANDARD.let { PathInterpolator(it[0], it[1], it[2], it[3]) }
+    val EASE_ENTER = Tokens.EASE_EMPHASIZED_DECELERATE.let { PathInterpolator(it[0], it[1], it[2], it[3]) }
+
+    // ---- Type ----
+    private val REGULAR: Typeface = Typeface.DEFAULT
+    private val MEDIUM: Typeface =
+        if (Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.DEFAULT, 500, false) else Typeface.create("sans-serif-medium", Typeface.NORMAL)
+    private val SEMIBOLD: Typeface =
+        if (Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.DEFAULT, 600, false) else Typeface.create("sans-serif-medium", Typeface.NORMAL)
+
+    fun face(weight: Int): Typeface = when {
+        weight >= 600 -> SEMIBOLD
+        weight >= 500 -> MEDIUM
+        else -> REGULAR
+    }
+
+    /** Applies size, weight and line height of [t] to [tv]. */
+    fun type(tv: TextView, t: Tokens.TypeStyle): TextView {
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, t.sp)
+        tv.typeface = face(t.weight)
+        val lh = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, t.lineSp, tv.resources.displayMetrics).roundToInt()
+        if (Build.VERSION.SDK_INT >= 28) tv.lineHeight = lh
+        else tv.setLineSpacing((lh - tv.paint.getFontMetricsInt(null)).coerceAtLeast(0).toFloat(), 1f)
+        return tv
+    }
+
+    fun text(ctx: Context, s: CharSequence, t: Tokens.TypeStyle = Tokens.BODY, color: Int = c(ctx).label): TextView =
+        type(TextView(ctx).apply { text = s; setTextColor(color) }, t)
+
+    fun largeTitle(ctx: Context, s: String): TextView = heading(text(ctx, s, Tokens.LARGE_TITLE))
+    fun title(ctx: Context, s: String): TextView = heading(text(ctx, s, Tokens.TITLE))
+    fun headline(ctx: Context, s: CharSequence, color: Int = c(ctx).label): TextView = text(ctx, s, Tokens.HEADLINE, color)
+    fun body(ctx: Context, s: CharSequence, color: Int = c(ctx).label2): TextView = text(ctx, s, Tokens.BODY, color)
+    fun callout(ctx: Context, s: CharSequence, color: Int = c(ctx).label2): TextView = text(ctx, s, Tokens.CALLOUT, color)
+    fun footnote(ctx: Context, s: CharSequence, color: Int = c(ctx).label3): TextView = text(ctx, s, Tokens.FOOTNOTE, color)
+
+    private fun heading(tv: TextView): TextView = tv.apply { if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true }
+
+    // ---- Surfaces ----
     fun rounded(color: Int, radiusPx: Float, strokeColor: Int = 0, strokeWidthPx: Int = 0): GradientDrawable =
         GradientDrawable().apply {
             setColor(color)
@@ -118,20 +123,22 @@ object UiKit {
             if (strokeWidthPx > 0) setStroke(strokeWidthPx, strokeColor)
         }
 
-    /** Glass card. The colour arguments are kept for call-site compatibility; cards are always neutral glass. */
-    @Suppress("UNUSED_PARAMETER")
-    fun card(ctx: Context, radiusDp: Int = 24, bgColor: Int = GLASS, strokeColor: Int = BORDER_STROKE): Drawable =
-        LiquidGlass(ctx.dpF(radiusDp.toFloat()), ctx.resources.displayMetrics.density, fill = GLASS)
+    /** Opaque content surface (cards, groups). */
+    fun surface(ctx: Context, color: Int = c(ctx).surface, radiusDp: Int = Tokens.R_CARD): GradientDrawable =
+        rounded(color, ctx.dpF(radiusDp.toFloat()))
 
-    /** Tappable glass with a soft white ripple. */
-    fun rippleSurface(ctx: Context, radiusDp: Int, bgColor: Int, @Suppress("UNUSED_PARAMETER") strokeColor: Int = BORDER_STROKE): RippleDrawable {
-        val mask = GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = ctx.dpF(radiusDp.toFloat()) }
-        val ripple = if (bgColor == PRIMARY) 0x22000000 else 0x1FFFFFFF
-        return RippleDrawable(ColorStateList.valueOf(ripple), surfaceFor(ctx, radiusDp, bgColor), mask)
+    /** Camera glass: flat graphite at [alpha] plus one hairline. No blur, gradient, shadow or glow. */
+    fun glass(ctx: Context, alpha: Int = Tokens.GLASS_REGULAR, radiusDp: Int = Tokens.R_SHEET): GradientDrawable =
+        rounded(Tokens.glass(alpha), ctx.dpF(radiusDp.toFloat()), Tokens.HAIRLINE, ctx.hairline())
+
+    private fun ripple(ctx: Context, content: Drawable?, radiusDp: Int): RippleDrawable {
+        val mask = rounded(Tokens.WHITE, ctx.dpF(radiusDp.toFloat()))
+        return RippleDrawable(ColorStateList.valueOf(Tokens.withAlpha(c(ctx).label, 0x1F)), content, mask)
     }
 
     /** Ripple only (rows inside a grouped list). */
-    fun rowRipple(): RippleDrawable = RippleDrawable(ColorStateList.valueOf(0x1AFFFFFF), null, ColorDrawable(Color.WHITE))
+    fun rowRipple(ctx: Context): RippleDrawable =
+        RippleDrawable(ColorStateList.valueOf(Tokens.withAlpha(c(ctx).label, 0x14)), null, ColorDrawable(Tokens.WHITE))
 
     fun iconImage(ctx: Context, drawableId: Int, tint: Int): ImageView = ImageView(ctx).apply {
         setImageResource(drawableId)
@@ -140,206 +147,249 @@ object UiKit {
         scaleType = ImageView.ScaleType.FIT_CENTER
     }
 
-    fun circularIconButton(ctx: Context, drawableId: Int, description: String, sizeDp: Int = 44, bgColor: Int = GLASS): FrameLayout =
-        FrameLayout(ctx).apply {
-            isClickable = true
-            isFocusable = true
-            minimumWidth = ctx.dp(sizeDp)
-            minimumHeight = ctx.dp(sizeDp)
-            contentDescription = description
-            background = rippleSurface(ctx, RADIUS_PILL_DP, bgColor)
-            addView(iconImage(ctx, drawableId, LABEL), FrameLayout.LayoutParams(ctx.dp(20), ctx.dp(20), Gravity.CENTER))
-        }
+    // ---- Buttons ----
+    enum class ButtonStyle { PRIMARY, SECONDARY, TEXT }
 
-    fun statusText(ctx: Context, sizeSp: Float = 16f): TextView = TextView(ctx).apply {
-        textSize = sizeSp
-        setTextColor(LABEL)
-        background = glass(ctx, 16)
-        setPadding(ctx.dp(14), ctx.dp(10), ctx.dp(14), ctx.dp(10))
-    }
-
-    /** Capsule button. [color] PRIMARY = off-white with black text (the one prominent action); others = glass. */
-    fun bigButton(ctx: Context, label: String, color: Int = PRIMARY): Button = Button(ctx).apply {
+    fun button(ctx: Context, label: String, style: ButtonStyle = ButtonStyle.PRIMARY): Button = Button(ctx).apply {
         text = label
-        textSize = 17f
         isAllCaps = false
         stateListAnimator = null
-        typeface = MEDIUM
-        setTextColor(if (color == PRIMARY) Color.BLACK else LABEL)
-        background = rippleSurface(ctx, RADIUS_PILL_DP, color)
-        minimumHeight = ctx.dp(54)
-        minHeight = ctx.dp(54)
-        setPadding(ctx.dp(24), ctx.dp(12), ctx.dp(24), ctx.dp(12))
+        type(this, Tokens.BUTTON)
+        gravity = Gravity.CENTER
+        minimumHeight = ctx.dp(Tokens.TOUCH_MIN); minHeight = ctx.dp(Tokens.TOUCH_MIN)
+        minimumWidth = ctx.dp(Tokens.TOUCH_MIN); minWidth = ctx.dp(Tokens.TOUCH_MIN)
+        setPadding(ctx.dp(Tokens.S20), ctx.dp(Tokens.S12), ctx.dp(Tokens.S20), ctx.dp(Tokens.S12))
+        paintButton(this, style)
         pressScale(this)
     }
 
-    /** Circular glass button. */
-    fun circularButton(ctx: Context, iconText: String, sizeDp: Int = 48, bgColor: Int = GLASS): Button =
-        Button(ctx).apply {
-            text = iconText
-            textSize = 18f
-            setTextColor(LABEL)
-            typeface = MEDIUM
-            isAllCaps = false
-            stateListAnimator = null
-            background = rippleSurface(ctx, RADIUS_PILL_DP, bgColor)
-            minimumWidth = ctx.dp(sizeDp)
-            minWidth = ctx.dp(sizeDp)
-            minimumHeight = ctx.dp(sizeDp)
-            minHeight = ctx.dp(sizeDp)
-            setPadding(0, 0, 0, 0)
-            gravity = Gravity.CENTER
-            pressScale(this)
+    fun primaryButton(ctx: Context, label: String): Button = button(ctx, label, ButtonStyle.PRIMARY)
+    fun secondaryButton(ctx: Context, label: String): Button = button(ctx, label, ButtonStyle.SECONDARY)
+    fun textButton(ctx: Context, label: String): Button = button(ctx, label, ButtonStyle.TEXT)
+
+    /** (Re)paints [b] in [style]; a disabled button always reads as a quiet secondary with tertiary text. */
+    fun paintButton(b: Button, style: ButtonStyle) {
+        val ctx = b.context
+        val p = c(ctx)
+        val shown = if (!b.isEnabled && style == ButtonStyle.PRIMARY) ButtonStyle.SECONDARY else style
+        b.background = when (shown) {
+            ButtonStyle.PRIMARY -> ripple(ctx, rounded(p.primaryFill, ctx.dpF(Tokens.R_PILL.toFloat())), Tokens.R_PILL)
+            ButtonStyle.SECONDARY -> ripple(ctx, rounded(p.surface2, ctx.dpF(Tokens.R_PILL.toFloat())), Tokens.R_PILL)
+            ButtonStyle.TEXT -> ripple(ctx, null, Tokens.R_PILL)
         }
-
-    /** Small quiet capsule (tags, status). */
-    @Suppress("UNUSED_PARAMETER")
-    fun pillBadge(ctx: Context, label: String, bgColor: Int, textColor: Int, strokeColor: Int = 0): TextView =
-        TextView(ctx).apply {
-            text = label
-            textSize = 12f
-            setTextColor(if (isStatus(textColor)) textColor else LABEL_2)
-            typeface = MEDIUM
-            gravity = Gravity.CENTER
-            background = rounded(if (isStatus(bgColor)) withAlpha(bgColor, 0x2E) else FILL, ctx.dpF(999f))
-            setPadding(ctx.dp(10), ctx.dp(4), ctx.dp(10), ctx.dp(4))
-        }
-
-    fun recolor(button: Button, color: Int) {
-        button.background = rippleSurface(button.context, RADIUS_PILL_DP, color)
-        button.setTextColor(if (color == PRIMARY) Color.BLACK else LABEL)
+        b.setTextColor(when {
+            !b.isEnabled -> p.label3
+            shown == ButtonStyle.PRIMARY -> p.onPrimary
+            else -> p.label
+        })
     }
 
-    /** Capsule chip (text set by [setChip]). */
-    fun chip(ctx: Context): TextView = TextView(ctx).apply {
-        textSize = 14f
-        setTextColor(LABEL)
-        typeface = MEDIUM
-        gravity = Gravity.CENTER_VERTICAL
-        setPadding(ctx.dp(14), ctx.dp(8), ctx.dp(14), ctx.dp(8))
+    /** 48 dp round icon button; [onGlass] = over the camera (glass body), else a quiet secondary fill. */
+    fun iconButton(ctx: Context, drawableId: Int, description: String, onGlass: Boolean = false): FrameLayout = FrameLayout(ctx).apply {
+        isClickable = true
+        isFocusable = true
+        minimumWidth = ctx.dp(Tokens.TOUCH_MIN)
+        minimumHeight = ctx.dp(Tokens.TOUCH_MIN)
+        contentDescription = description
+        val body = if (onGlass) glass(ctx, Tokens.GLASS_REGULAR, Tokens.R_PILL) else rounded(c(ctx).surface2, ctx.dpF(Tokens.R_PILL.toFloat()))
+        background = ripple(ctx, body, Tokens.R_PILL)
+        addView(iconImage(ctx, drawableId, c(ctx).label), FrameLayout.LayoutParams(ctx.dp(24), ctx.dp(24), Gravity.CENTER))
+        pressScale(this)
     }
 
-    /** Glass chip; the hue shows only as a small status dot and a faint tint, so the text stays readable. */
-    fun setChip(v: TextView, text: String, color: Int) {
-        if (v.tag == color && v.text.toString().removePrefix("● ") == text.removePrefix("● ")) return
-        v.tag = color
-        val status = isStatus(color)
-        val body = text.removePrefix("● ")
-        val shown = if (status || text.startsWith("● ")) "● $body" else body
-        v.text = SpannableString(shown).apply {
-            if (shown.startsWith("●")) setSpan(ForegroundColorSpan(if (status) color else LABEL_2), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        }
-        v.setTextColor(LABEL)
-        v.background = rippleSurface(v.context, RADIUS_PILL_DP, color)
+    /** Swaps the glyph of an [iconButton]. */
+    fun setIcon(button: FrameLayout, drawableId: Int, description: String) {
+        (button.getChildAt(0) as? ImageView)?.setImageResource(drawableId)
+        if (button.contentDescription != description) button.contentDescription = description
     }
 
-    /** Message strip: glass with a faint status tint and a coloured dot. */
-    fun banner(ctx: Context, msg: String, kind: Kind): TextView = TextView(ctx).apply { applyBanner(this, msg, kind) }
-
-    fun applyBanner(v: TextView, msg: String, kind: Kind) {
-        val ctx = v.context
-        v.text = if (kind == Kind.INFO) msg else SpannableString("●  $msg").apply {
-            setSpan(ForegroundColorSpan(kind.color), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        }
-        v.textSize = 16f
-        v.setTextColor(LABEL)
-        v.background = LiquidGlass(ctx.dpF(18f), ctx.resources.displayMetrics.density, fill = GLASS_STRONG,
-            tint = if (kind == Kind.INFO) 0 else withAlpha(kind.color, 0x2E))
-        v.setPadding(ctx.dp(16), ctx.dp(12), ctx.dp(16), ctx.dp(12))
+    // ---- Grouped list (inset-grouped) ----
+    fun sectionHeader(ctx: Context, s: String): TextView = heading(footnote(ctx, s.uppercase(Locale.getDefault()), c(ctx).label2)).apply {
+        letterSpacing = 0.04f
+        setPadding(ctx.dp(Tokens.S16), 0, ctx.dp(Tokens.S16), ctx.dp(Tokens.S8))
     }
 
-    // ---- Type ----
-    fun largeTitle(ctx: Context, s: String): TextView = text(ctx, s, 32f, LABEL, BOLD).apply {
-        letterSpacing = -0.02f
-        if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
-    }
-    fun title(ctx: Context, s: String, size: Float = 22f): TextView = text(ctx, s, size, LABEL, BOLD).apply { letterSpacing = -0.01f }
-    fun body(ctx: Context, s: String, color: Int = LABEL_2, size: Float = 15f): TextView = text(ctx, s, size, color).apply { setLineSpacing(0f, 1.2f) }
-    fun caption(ctx: Context, s: String): TextView = text(ctx, s, 13f, LABEL_3)
-    fun text(ctx: Context, s: CharSequence, size: Float, color: Int = LABEL, face: Typeface = Typeface.DEFAULT): TextView = TextView(ctx).apply {
-        text = s; textSize = size; setTextColor(color); typeface = face
-    }
-
-    /** "● text" with only the dot coloured. */
-    fun dotted(s: String, color: Int): CharSequence = SpannableString("●  $s").apply {
-        setSpan(ForegroundColorSpan(color), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-    }
-
-    // ---- Grouped list (iOS inset-grouped / Notion settings) ----
-    fun sectionHeader(ctx: Context, s: String): TextView = text(ctx, s, 13f, LABEL_3, MEDIUM).apply {
-        setPadding(ctx.dp(16), 0, ctx.dp(16), ctx.dp(8))
-        if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
-    }
-
-    /** Glass group whose children are separated by hairlines. */
+    /** Opaque group whose rows are separated by inset hairlines. */
     fun group(ctx: Context): LinearLayout = LinearLayout(ctx).apply {
         orientation = LinearLayout.VERTICAL
-        background = card(ctx, RADIUS_DP)
+        background = surface(ctx)
         clipToOutline = true
         showDividers = LinearLayout.SHOW_DIVIDER_MIDDLE
-        dividerDrawable = GradientDrawable().apply { setColor(SEPARATOR); setSize(1, maxOf(1, ctx.dp(1) / 2)) }
+        dividerDrawable = GradientDrawable().apply { setColor(c(ctx).separator); setSize(1, ctx.hairline()) }
         dividerPadding = 0
     }
 
-    /** One row: optional icon tile, title + subtitle, trailing view (chevron when tappable and nothing else given). */
+    /** One row (>= 56 dp): optional icon, title + subtitle, trailing view (chevron when tappable and nothing else given). */
     fun listRow(
         ctx: Context, icon: Int?, title: CharSequence, subtitle: CharSequence? = null,
-        trailing: View? = null, titleColor: Int = LABEL, chevron: Boolean = true, onClick: (() -> Unit)? = null,
+        trailing: View? = null, titleColor: Int = c(ctx).label, chevron: Boolean = true, onClick: (() -> Unit)? = null,
     ): LinearLayout = LinearLayout(ctx).apply {
+        val p = c(ctx)
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        minimumHeight = ctx.dp(56)
-        setPadding(ctx.dp(16), ctx.dp(12), ctx.dp(14), ctx.dp(12))
-        if (icon != null) addView(iconImage(ctx, icon, LABEL_2),
-            LinearLayout.LayoutParams(ctx.dp(20), ctx.dp(20)).apply { rightMargin = ctx.dp(16) })
+        minimumHeight = ctx.dp(Tokens.ROW_MIN)
+        setPadding(ctx.dp(Tokens.S16), ctx.dp(Tokens.S12), ctx.dp(Tokens.S16), ctx.dp(Tokens.S12))
+        if (icon != null) addView(iconImage(ctx, icon, p.label2),
+            LinearLayout.LayoutParams(ctx.dp(24), ctx.dp(24)).apply { rightMargin = ctx.dp(Tokens.S16) })
         addView(LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            addView(text(ctx, title, 16f, titleColor, if (titleColor == LABEL) MEDIUM else Typeface.DEFAULT))
-            if (subtitle != null) addView(text(ctx, subtitle, 13.5f, LABEL_2).apply { setPadding(0, ctx.dp(2), 0, 0) })
+            addView(text(ctx, title, Tokens.BODY, titleColor))
+            if (subtitle != null) addView(footnote(ctx, subtitle, p.label2).apply { setPadding(0, ctx.dp(2), 0, 0) })
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        val end = trailing ?: if (onClick != null && chevron) iconImage(ctx, R.drawable.ic_chevron_right, LABEL_3) else null
-        if (end != null) addView(end, if (trailing == null) LinearLayout.LayoutParams(ctx.dp(18), ctx.dp(18)).apply { leftMargin = ctx.dp(8) }
-            else LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = ctx.dp(8) })
+        val end = trailing ?: if (onClick != null && chevron) iconImage(ctx, R.drawable.ic_chevron_right, p.label3) else null
+        if (end != null) addView(end, if (trailing == null) LinearLayout.LayoutParams(ctx.dp(20), ctx.dp(20)).apply { leftMargin = ctx.dp(Tokens.S8) }
+            else LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = ctx.dp(Tokens.S8) })
         if (onClick != null) {
             isClickable = true; isFocusable = true
-            foreground = rowRipple()
+            foreground = rowRipple(ctx)
             setOnClickListener { onClick() }
         }
     }
 
-    /** iOS-style switch: white thumb, green track when on. */
+    /** Switch: white thumb, green track when on, separator grey when off. */
     fun toggle(ctx: Context, checked: Boolean): Switch = Switch(ctx).apply {
+        val p = c(ctx)
         isChecked = checked
         val states = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf())
-        thumbTintList = ColorStateList(states, intArrayOf(Color.WHITE, 0xFFE5E5EA.toInt()))
-        trackTintList = ColorStateList(states, intArrayOf(GREEN, 0x52787880))
+        thumbTintList = ColorStateList(states, intArrayOf(Tokens.WHITE, Tokens.WHITE))
+        trackTintList = ColorStateList(states, intArrayOf(p.green, p.separator))
         if (Build.VERSION.SDK_INT >= 29) trackTintMode = android.graphics.PorterDuff.Mode.SRC
+        minimumHeight = ctx.dp(Tokens.TOUCH_MIN)
     }
 
-    /** Full-screen page: flat near-black behind [content]. */
+    // ---- Page scaffolding ----
+    /** Full-screen page in the palette's background colour. */
     fun page(ctx: Context, content: View): FrameLayout = FrameLayout(ctx).apply {
-        setBackgroundColor(BG)
+        setBackgroundColor(c(ctx).bg)
         addView(content, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     }
 
-    /** Springy press feedback (scale 0.97) without consuming the touch. */
+    /**
+     * Opaque bottom bar with a top hairline: [primary] on the right / full width, [secondary] beside it. Pads itself by
+     * the navigation bar inset.
+     */
+    fun bottomActionBar(ctx: Context, primary: View, secondary: View? = null): LinearLayout = LinearLayout(ctx).apply {
+        val p = c(ctx)
+        orientation = LinearLayout.VERTICAL
+        setBackgroundColor(p.surface)
+        addView(View(ctx).apply { setBackgroundColor(p.separator) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ctx.hairline()))
+        val row = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            val pad = ctx.dp(Tokens.S16)
+            setPadding(ctx.dp(Tokens.SCREEN_MARGIN), pad, ctx.dp(Tokens.SCREEN_MARGIN), pad)
+            if (secondary != null) addView(secondary, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = ctx.dp(Tokens.S12) })
+            addView(primary, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        addView(row)
+        insetBottom(row, Tokens.S16)
+    }
+
+    /** Pads [v] by the bottom system bar inset plus [baseDp] (horizontal padding is kept). */
+    private fun insetBottom(v: View, baseDp: Int) {
+        val base = v.context.dp(baseDp)
+        v.setOnApplyWindowInsetsListener { view, ins ->
+            if (Build.VERSION.SDK_INT >= 30) {
+                val b = ins.getInsets(WindowInsets.Type.systemBars())
+                view.setPadding(view.paddingLeft, view.paddingTop, view.paddingRight, base + b.bottom)
+            }
+            ins
+        }
+    }
+
+    /** Static loading placeholder shaped like a library row (no shimmer). */
+    fun skeletonRow(ctx: Context): View = LinearLayout(ctx).apply {
+        val fill = c(ctx).surface2
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        minimumHeight = ctx.dp(72)
+        setPadding(ctx.dp(Tokens.S16), ctx.dp(Tokens.S8), ctx.dp(Tokens.S16), ctx.dp(Tokens.S8))
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        addView(View(ctx).apply { background = rounded(fill, ctx.dpF(Tokens.R_THUMB.toFloat())) },
+            LinearLayout.LayoutParams(ctx.dp(56), ctx.dp(56)).apply { rightMargin = ctx.dp(Tokens.S12) })
+        addView(LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(View(ctx).apply { background = rounded(fill, ctx.dpF(4f)) }, LinearLayout.LayoutParams(ctx.dp(140), ctx.dp(14)).apply { bottomMargin = ctx.dp(Tokens.S8) })
+            addView(View(ctx).apply { background = rounded(fill, ctx.dpF(4f)) }, LinearLayout.LayoutParams(ctx.dp(90), ctx.dp(12)))
+        })
+    }
+
+    /** Centred icon, title, one line of body and an optional action. */
+    fun emptyState(ctx: Context, icon: Int, title: String, body: String, action: View? = null): LinearLayout = LinearLayout(ctx).apply {
+        val p = c(ctx)
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        setPadding(ctx.dp(Tokens.S24), ctx.dp(Tokens.S40), ctx.dp(Tokens.S24), ctx.dp(Tokens.S24))
+        addView(iconImage(ctx, icon, p.label3), LinearLayout.LayoutParams(ctx.dp(40), ctx.dp(40)).apply { bottomMargin = ctx.dp(Tokens.S16) })
+        addView(headline(ctx, title).apply { gravity = Gravity.CENTER }, wrapLp(Tokens.S8))
+        addView(callout(ctx, body).apply { gravity = Gravity.CENTER }, wrapLp(if (action != null) Tokens.S24 else 0))
+        if (action != null) addView(action, wrapLp(0))
+    }
+
+    private fun View.wrapLp(bottomDp: Int) =
+        LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = context.dp(bottomDp) }
+
+    // ---- Sheet (replaces AlertDialog and hand-made dialog frames) ----
+    /**
+     * Bottom sheet over a scrim: surface colour, 20 dp top corners, a handle, then whatever [build] adds to the
+     * vertical content column. Max 560 dp wide (centred in landscape). [cancelable] false = only the sheet's own buttons
+     * close it.
+     */
+    fun sheet(act: Activity, cancelable: Boolean = true, build: (content: LinearLayout, dialog: Dialog) -> Unit): Dialog {
+        val p = c(act)
+        val dlg = Dialog(act)
+        val r = act.dpF(Tokens.R_SHEET.toFloat())
+        val content = LinearLayout(act).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply { setColor(p.surface); cornerRadii = floatArrayOf(r, r, r, r, 0f, 0f, 0f, 0f) }
+            setPadding(act.dp(Tokens.S24), act.dp(Tokens.S8), act.dp(Tokens.S24), act.dp(Tokens.S24))
+            addView(View(act).apply { background = rounded(p.separator, act.dpF(3f)) },
+                LinearLayout.LayoutParams(act.dp(36), act.dp(5)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = act.dp(Tokens.S16) })
+        }
+        build(content, dlg)
+        insetBottom(content, Tokens.S24)
+        dlg.setContentView(content)
+        dlg.setCancelable(cancelable)
+        dlg.window?.let { w ->
+            w.setBackgroundDrawable(ColorDrawable(0))
+            w.setGravity(Gravity.BOTTOM)
+            val dm = act.resources.displayMetrics
+            w.setLayout(min(dm.widthPixels, act.dp(560)), ViewGroup.LayoutParams.WRAP_CONTENT)
+            w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            w.setDimAmount(((Tokens.SCRIM ushr 24) and 0xFF) / 255f)
+        }
+        dlg.show()
+        return dlg
+    }
+
+    /** Title + body + actions in the standard sheet layout. [secondary] closes as "cancel" (the dialog's dismiss handler runs). */
+    fun sheetActions(ctx: Context, primary: Button, secondary: Button?): LinearLayout = LinearLayout(ctx).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(primary, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        if (secondary != null) addView(secondary, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = ctx.dp(Tokens.S8) })
+    }
+
+    // ---- Helpers ----
+    /** Gentle press feedback (scale 0.97) without consuming the touch. */
     fun pressScale(v: View) {
         v.setOnTouchListener { view, e ->
             when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> view.animate().scaleX(0.97f).scaleY(0.97f).setDuration(90).start()
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> view.animate().scaleX(1f).scaleY(1f).setDuration(160).start()
+                MotionEvent.ACTION_DOWN -> view.animate().scaleX(0.97f).scaleY(0.97f).setDuration(Tokens.MOTION_SHORT).setInterpolator(EASE_STANDARD).start()
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> view.animate().scaleX(1f).scaleY(1f).setDuration(Tokens.MOTION_MEDIUM).setInterpolator(EASE_STANDARD).start()
             }
             false
         }
     }
 
+    /** Status code name for logs only (never shown to the user). */
     fun statusName(st: Int): String = when (st) {
         Status.OK -> "OK"; Status.STATE -> "STATE"; Status.ARG -> "ARG"
         Status.IO -> "IO"; Status.POLICY -> "POLICY"; Status.FULL -> "FULL"
         else -> "status $st"
     }
 
-    fun mmss(ms: Long): String { val s = ms / 1000; return String.format(Locale.US, "%02d:%02d", s / 60, s % 60) }
+    /** "m:ss" (timers use tabular figures). */
+    fun mmss(ms: Long): String { val s = ms / 1000; return String.format(Locale.US, "%d:%02d", s / 60, s % 60) }
 
     fun dirSizeBytes(dir: File): Long = dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
 
@@ -349,14 +399,18 @@ object UiKit {
         else -> "$b B"
     }
 
-    /** Pads [v] by the system bars/cutout (targetSdk 37 is edge-to-edge) plus [basePadDp]. */
-    fun applyInsets(v: View, basePadDp: Int = 12) {
+    /**
+     * Pads [v] by the system bars/cutout (targetSdk 37 is edge-to-edge) plus [basePadDp]. [bottom] false leaves the
+     * bottom edge to a [bottomActionBar] below it.
+     */
+    fun applyInsets(v: View, basePadDp: Int = Tokens.S12, bottom: Boolean = true) {
         val base = v.context.dp(basePadDp)
-        v.setPadding(base, base, base, base)
+        val baseBottom = if (bottom) base else 0
+        v.setPadding(base, base, base, baseBottom)
         v.setOnApplyWindowInsetsListener { view, ins ->
             if (Build.VERSION.SDK_INT >= 30) {
                 val b = ins.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
-                view.setPadding(base + b.left, base + b.top, base + b.right, base + b.bottom)
+                view.setPadding(base + b.left, base + b.top, base + b.right, if (bottom) base + b.bottom else 0)
             }
             ins
         }
@@ -376,7 +430,7 @@ object UiKit {
         }
     }
 
-    /** Hides the system bars (swipe brings them back briefly) so the preview is edge to edge. */
+    /** Camera screens only: hides the system bars (swipe brings them back briefly) so the preview is edge to edge. */
     fun immersive(a: Activity) {
         if (Build.VERSION.SDK_INT >= 30) {
             val lp = a.window.attributes
@@ -384,8 +438,6 @@ object UiKit {
                 lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
                 a.window.attributes = lp
             }
-        }
-        if (Build.VERSION.SDK_INT >= 30) {
             a.window.insetsController?.let {
                 it.hide(WindowInsets.Type.systemBars())
                 it.systemBarsBehavior = android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -398,55 +450,146 @@ object UiKit {
         }
     }
 
-    /** Quiet secondary button (glass), same shape as [bigButton]. */
-    fun secondaryButton(ctx: Context, label: String): Button = bigButton(ctx, label, GLASS)
+    /** Selectable text that keeps the whole value (long file paths). */
+    fun pathText(ctx: Context, text: String): TextView = footnote(ctx, text).apply { setTextIsSelectable(true) }
+}
 
-    /** Text that keeps one or two lines and cuts the middle (long file paths). */
-    fun pathText(ctx: Context, text: String, lines: Int = 2): TextView = TextView(ctx).apply {
-        this.text = text; textSize = 13f; setTextColor(LABEL_3)
-        maxLines = lines; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+/** Drawn status dot ([sizeDp] dp). [hollow] = a ring (not yet / unknown). */
+class DotView(ctx: Context, private val sizeDp: Int = 8) : View(ctx) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var hollow = false
+
+    init { importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO }
+
+    fun set(color: Int, hollow: Boolean = false) {
+        if (paint.color == color && this.hollow == hollow) return
+        paint.color = color
+        this.hollow = hollow
+        paint.style = if (hollow) Paint.Style.STROKE else Paint.Style.FILL
+        paint.strokeWidth = 1.5f * resources.displayMetrics.density
+        invalidate()
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val s = (sizeDp * resources.displayMetrics.density).roundToInt()
+        setMeasuredDimension(s, s)
+    }
+
+    override fun onDraw(c: Canvas) {
+        val r = min(width, height) / 2f - (if (hollow) paint.strokeWidth / 2f else 0f)
+        c.drawCircle(width / 2f, height / 2f, r, paint)
     }
 }
 
-/**
- * Liquid Glass surface: a flat translucent body (optionally tinted by a status hue) and one even hairline edge.
- * No gradients, sheens or glows. Pure Canvas, cheap enough to sit over the AR camera on every phone (API 26+).
- */
-class LiquidGlass(
-    private val radius: Float,
-    density: Float,
-    fill: Int,
-    tint: Int = 0,
-    private val rimStrength: Float = 1f,
-) : Drawable() {
-    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = fill }
-    private val tintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = tint }
-    private val solid = Color.alpha(fill) == 0xFF
-    private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; strokeWidth = maxOf(1f, 0.75f * density)
-        color = UiKit.BORDER_STROKE
+/** Drawn 8 dp dot + words. [onGlass] = camera pill (glass body); else plain inline text. */
+class StatusBadge(ctx: Context, private val onGlass: Boolean = false) : LinearLayout(ctx) {
+    private val dot = DotView(ctx)
+    private val label = UiKit.text(ctx, "", if (onGlass) Tokens.LABEL else Tokens.FOOTNOTE, UiKit.c(ctx).let { if (onGlass) it.label else it.label2 })
+    private var key = ""
+
+    init {
+        orientation = HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        addView(dot, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { rightMargin = (Tokens.S8 * resources.displayMetrics.density).roundToInt() })
+        addView(label)
+        if (onGlass) {
+            background = UiKit.glass(ctx, Tokens.GLASS_REGULAR, Tokens.R_PILL)
+            val d = resources.displayMetrics.density
+            setPadding((14 * d).roundToInt(), (10 * d).roundToInt(), (16 * d).roundToInt(), (10 * d).roundToInt())
+            minimumHeight = (Tokens.TOUCH_MIN * d).roundToInt()
+        }
     }
+
+    /** No-op when unchanged. [hollow] draws a ring instead of a filled dot (e.g. "not checked"). */
+    fun set(text: String, kind: UiKit.Kind, hollow: Boolean = false) {
+        val k = "$text|$kind|$hollow"
+        if (k == key) return
+        key = k
+        label.text = text
+        dot.set(UiKit.hue(UiKit.c(context), kind), hollow)
+    }
+
+    var maxTextWidth: Int
+        get() = label.maxWidth
+        set(v) { label.maxWidth = v; label.maxLines = 1; label.ellipsize = android.text.TextUtils.TruncateAt.END }
+}
+
+/**
+ * One-line alert with a status icon, the message and an optional text action. Replaces the old solid banners and
+ * alert cards. [onGlass] = camera HUD (thick glass, dark); else an opaque surface card.
+ */
+class InlineAlert(ctx: Context, private val onGlass: Boolean = false) : LinearLayout(ctx) {
+    private val p = UiKit.c(ctx)
+    private val icon = ImageView(ctx).apply { importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO }
+    private val titleView = UiKit.headline(ctx, "").apply { visibility = GONE }
+    private val message = UiKit.callout(ctx, "", p.label)
+    val action: Button = UiKit.textButton(ctx, "")
+    private var key: String? = null
+
+    init {
+        orientation = HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        val d = resources.displayMetrics.density
+        fun px(v: Int) = (v * d).roundToInt()
+        background = if (onGlass) UiKit.glass(ctx, Tokens.GLASS_THICK, Tokens.R_CARD) else UiKit.surface(ctx)
+        setPadding(px(Tokens.CARD_PAD), px(Tokens.S12), px(Tokens.S8), px(Tokens.S12))
+        addView(icon, LayoutParams(px(24), px(24)).apply { rightMargin = px(Tokens.S12) })
+        addView(LinearLayout(ctx).apply {
+            orientation = VERTICAL
+            addView(titleView)
+            addView(message)
+        }, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
+        addView(action, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { leftMargin = px(Tokens.S8) })
+        visibility = GONE
+    }
+
+    /** Shows [msg] (null hides). Unchanged content allocates nothing. */
+    fun set(msg: String?, kind: UiKit.Kind, actionLabel: String? = null, onAction: (() -> Unit)? = null, title: String? = null) {
+        if (msg == null) { visibility = GONE; key = null; return }
+        if (onAction != null) action.setOnClickListener { onAction() }
+        val k = "$title|$msg|$kind|$actionLabel|${onAction != null}"
+        if (k == key && visibility == VISIBLE) return
+        key = k
+        icon.setImageResource(when (kind) {
+            UiKit.Kind.OK -> R.drawable.ic_check_circle
+            UiKit.Kind.WARN -> R.drawable.ic_warning
+            UiKit.Kind.ERROR -> R.drawable.ic_error
+            UiKit.Kind.INFO -> R.drawable.ic_check_circle
+        })
+        icon.imageTintList = ColorStateList.valueOf(UiKit.hue(p, kind))
+        titleView.text = title ?: ""
+        titleView.visibility = if (title == null) GONE else VISIBLE
+        message.text = msg
+        message.setTextColor(if (title == null) p.label else p.label2)
+        action.visibility = if (onAction != null) VISIBLE else GONE
+        if (onAction != null) action.text = actionLabel ?: "Retry"
+        contentDescription = (if (kind == UiKit.Kind.ERROR) "Problem: " else if (kind == UiKit.Kind.WARN) "Warning: " else "") + (title?.let { "$it. " } ?: "") + msg
+        visibility = VISIBLE
+    }
+}
+
+/** Drawn determinate bar: track in surface2 (or separator on glass), fill in label. [fraction] in 0..1. */
+class LinearProgress(ctx: Context) : View(ctx) {
+    private val p = UiKit.c(ctx)
+    private val track = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = p.separator }
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = p.label }
     private val rect = RectF()
 
-    override fun draw(c: Canvas) {
-        val b = bounds
-        val half = rimPaint.strokeWidth / 2f
-        rect.set(b.left + half, b.top + half, b.right - half, b.bottom - half)
-        val r = min(radius, rect.height() / 2f)
-        c.drawRoundRect(rect, r, r, fillPaint)
-        if (Color.alpha(tintPaint.color) > 0) c.drawRoundRect(rect, r, r, tintPaint)
-        if (!solid && rimStrength > 0f) c.drawRoundRect(rect, r, r, rimPaint)
+    var fraction = 0f
+        set(v) { val f = v.coerceIn(0f, 1f); if (f != field) { field = f; invalidate() } }
+
+    init { importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), (4 * resources.displayMetrics.density).roundToInt())
     }
 
-    override fun getOutline(outline: Outline) {
-        val b = bounds
-        outline.setRoundRect(b, min(radius, b.height() / 2f))
+    override fun onDraw(c: Canvas) {
+        val r = height / 2f
+        rect.set(0f, 0f, width.toFloat(), height.toFloat())
+        c.drawRoundRect(rect, r, r, track)
+        if (fraction > 0f) { rect.right = width * fraction; c.drawRoundRect(rect, r, r, fill) }
     }
-
-    override fun setAlpha(alpha: Int) { fillPaint.alpha = alpha }
-    override fun setColorFilter(colorFilter: ColorFilter?) { fillPaint.colorFilter = colorFilter }
-    @Deprecated("Deprecated in Java")
-    override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
 }
 
 /** Camera shutter with a distinct recording state, touch animation, and haptic feedback. */
@@ -464,17 +607,13 @@ class ShutterButton(ctx: Context) : Button(ctx) {
     private val outerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = dp(4f)
-        color = 0xF2FFFFFF.toInt()
+        color = Tokens.withAlpha(Tokens.WHITE, 0xF2)
     }
 
-    private val innerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    /** Record red: the only colour on the capture deck. */
+    private val recordPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = UiKit.RED // record red (the only colour on the capture deck)
-    }
-
-    private val stopSquarePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
-        color = UiKit.RED
+        color = Tokens.DARK.red
     }
 
     private val rectF = RectF()
@@ -490,11 +629,11 @@ class ShutterButton(ctx: Context) : Button(ctx) {
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
-                animate().scaleX(0.92f).scaleY(0.92f).setDuration(100).start()
+                animate().scaleX(0.92f).scaleY(0.92f).setDuration(Tokens.MOTION_SHORT).start()
                 performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                animate().scaleX(1.0f).scaleY(1.0f).setDuration(120).start()
+                animate().scaleX(1.0f).scaleY(1.0f).setDuration(Tokens.MOTION_SHORT).start()
             }
         }
         return super.onTouchEvent(event)
@@ -504,73 +643,15 @@ class ShutterButton(ctx: Context) : Button(ctx) {
         val cx = width / 2f
         val cy = height / 2f
         val outerRadius = (min(width, height) / 2f) - dp(2f)
-
-        // Outer white camera ring
         canvas.drawCircle(cx, cy, outerRadius, outerPaint)
-
         if (!isRecording) {
-            // Idle camera record button: solid red circle
-            val innerRadius = outerRadius - dp(7f)
-            canvas.drawCircle(cx, cy, innerRadius, innerPaint)
+            canvas.drawCircle(cx, cy, outerRadius - dp(7f), recordPaint)
         } else {
-            // Active recording stop glyph: rounded square in the center
             val halfSize = dp(13f)
             val cornerRadius = dp(6f)
             rectF.set(cx - halfSize, cy - halfSize, cx + halfSize, cy + halfSize)
-            canvas.drawRoundRect(rectF, cornerRadius, cornerRadius, stopSquarePaint)
+            canvas.drawRoundRect(rectF, cornerRadius, cornerRadius, recordPaint)
         }
-    }
-}
-
-/** Spatial viewfinder corner-bracket reticle. */
-class ReticleView(ctx: Context) : View(ctx) {
-    private val d = ctx.resources.displayMetrics.density
-    private fun dp(v: Float) = v * d
-
-    private val bracketPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = dp(2f)
-        color = 0x80FFFFFF.toInt()
-        strokeCap = Paint.Cap.ROUND
-    }
-
-    private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
-        color = 0xCCFFFFFF.toInt()
-    }
-
-    private val path = Path()
-
-    override fun onDraw(canvas: Canvas) {
-        val cx = width / 2f
-        val cy = height / 2f
-        val size = min(width, height) / 2f - dp(2f)
-        val arm = dp(14f)
-
-        path.reset()
-        // Top-left corner
-        path.moveTo(cx - size, cy - size + arm)
-        path.lineTo(cx - size, cy - size)
-        path.lineTo(cx - size + arm, cy - size)
-
-        // Top-right corner
-        path.moveTo(cx + size - arm, cy - size)
-        path.lineTo(cx + size, cy - size)
-        path.lineTo(cx + size, cy - size + arm)
-
-        // Bottom-left corner
-        path.moveTo(cx - size, cy + size - arm)
-        path.lineTo(cx - size, cy + size)
-        path.lineTo(cx - size + arm, cy + size)
-
-        // Bottom-right corner
-        path.moveTo(cx + size - arm, cy + size)
-        path.lineTo(cx + size, cy + size)
-        path.lineTo(cx + size, cy + size - arm)
-
-        canvas.drawPath(path, bracketPaint)
-        // Center crosshair / dot
-        canvas.drawCircle(cx, cy, dp(2.5f), dotPaint)
     }
 }
 

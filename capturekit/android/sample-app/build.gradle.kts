@@ -48,4 +48,5 @@ dependencies {
     implementation(project(":capturekit"))
     // Crash reports exist only in the field flavour: the standard build has no Sentry classes and no INTERNET.
     "fieldImplementation"(libs.sentry.android)
+    testImplementation(libs.junit)
 }

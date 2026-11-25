@@ -1,0 +1,5 @@
+# 0037 UI design system v3 (Android sample app)
+
+Status: accepted (2026-11-24); visual only, so no FeatureFlag (ADR 0032 covers features). Every colour, type style, spacing step, radius and motion value lives in `Tokens.kt` (pure Kotlin, JVM-tested for 4.5:1 text contrast and no teal/cyan or violet hues). Content screens follow the phone's light/dark setting (`Theme.Material.Light` / values-night). The capture, recorder and clock-check screens are always dark (`AppTheme.Camera`, `AlwaysDark`) and are the only screens that use glass: flat graphite plus a hairline, no blur.
+Status hue (HIG green/orange/red) only as a drawn dot or icon beside words. Progress is shown as room parts (floor, wall segments with a ghost while the outline is open, ceiling), never a percentage. System font, Material Symbols Rounded icons (Apache-2.0), no new dependencies.
+Home is the library (ScansActivity merged in, rows updated in place); Settings is its own screen; Review is portrait with `ReviewLayout` slots (summary, stage, Share) for the scan bridge (ADR 0036). Light label3/danger were darkened (#6B6B70, #D91D1F) to pass 4.5:1.

@@ -120,10 +120,10 @@ object EventParser {
         WallSeg(v[0], v[1], v[2], v[3], v[4].toInt(), if (f.size == 6) v[5].toInt().coerceAtLeast(0) else 0)
     }
 
-    private fun str(line: String, key: String): String? =
+    internal fun str(line: String, key: String): String? =
         Regex("\"$key\":\"((?:[^\"\\\\]|\\\\.)*)\"").find(line)?.groupValues?.get(1)
 
-    private fun num(line: String, key: String): Double? =
+    internal fun num(line: String, key: String): Double? =
         Regex("\"$key\":(-?[0-9.eE+-]+)").find(line)?.groupValues?.get(1)?.toDoubleOrNull()
 
     /** Integer field without a round trip through Double (t_ns needs all 64 bits). */

@@ -1,0 +1,5 @@
+<resources>
+    <color name="ck_bg">#FF000000</color>
+    <color name="ck_label">#FFF5F5F7</color>
+    <bool name="ck_light_bars">false</bool>
+</resources>
