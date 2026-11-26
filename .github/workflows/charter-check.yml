@@ -9,6 +9,10 @@ on:
 jobs:
   test:
     runs-on: windows-latest
+    env:
+      # CI environment variables
+      CI: true
+      RUNNING_IN_CI: "true"
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python
